@@ -440,6 +440,17 @@ pub struct Task {
     /// archived first. `None` on tasks archived before this field existed.
     #[serde(default)]
     pub archived_at: Option<String>,
+    /// RFC3339 UTC timestamp of the last time the user ACTIVATED this task
+    /// (the frontend's `setActiveTask`, i.e. a sidebar click or a Cmd-number
+    /// switch). Written by the app itself, never typed by a person, so it is
+    /// not part of the New Task form and not editable anywhere.
+    /// `None` on records written before the field existed.
+    /// The dashboard's age label reads it and shows NOTHING for `None`,
+    /// rather than guessing from `created`: a task created months ago and
+    /// opened this morning is not a months-old task, and the two facts are
+    /// not interchangeable.
+    #[serde(default)]
+    pub last_opened_at: Option<String>,
     /// True when this task points at the project's main repo checkout
     /// (no git worktree created). Used by the "open repo directly" feature:
     /// archive skips `git worktree remove`, and the UI shows a distinct icon.
@@ -5733,6 +5744,7 @@ fn task_open_repo(
         right_split_tabs: Vec::new(),
         split_layout: None,
         archived_at: None,
+        last_opened_at: None,
         pr_url: None,
         pr_number: None,
         pr_provider: None,
@@ -5993,6 +6005,7 @@ fn task_import_worktree(
         right_split_tabs: Vec::new(),
         split_layout: None,
         archived_at: None,
+        last_opened_at: None,
         pr_url: None,
         pr_number: None,
         pr_provider: None,
@@ -6392,6 +6405,7 @@ fn task_create_sync(app: AppHandle, args: CreateTaskArgs) -> Result<Task, String
         right_split_tabs: Vec::new(),
         split_layout: None,
         archived_at: None,
+        last_opened_at: None,
         pr_url: None,
         pr_number: None,
         pr_provider: None,
@@ -6884,6 +6898,7 @@ fn task_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<Task,
         right_split_tabs: Vec::new(),
         split_layout: None,
         archived_at: None,
+        last_opened_at: None,
         pr_url: None,
         pr_number: None,
         pr_provider: None,
@@ -8722,6 +8737,88 @@ fn task_record_spawn(id: String) -> Result<u32, String> {
     w.spawn_count = w.spawn_count.saturating_add(1);
     save_task(w).map_err(|e| e.to_string())?;
     Ok(w.spawn_count)
+}
+
+/// How long a `last_opened_at` stamp stays fresh. A task switched away from
+/// and back inside this window is one visit, not two, and rewriting the file
+/// for the second one buys nothing the dashboard can render.
+const TOUCH_MIN_SECS: i64 = 60;
+
+/// Stamp `w.last_opened_at` unless it is already younger than
+/// [`TOUCH_MIN_SECS`]. Returns true iff the record changed and so needs
+/// saving.
+///
+/// `now` is a PARAMETER rather than a `Utc::now()` call inside, which is the
+/// whole reason this is a free function: the bail is the interesting part and
+/// it is untestable against a real clock.
+///
+/// An unparseable stamp (hand-edited file, a record from some future schema)
+/// re-stamps rather than bailing. So does a stamp in the FUTURE: a machine
+/// whose clock jumped backwards would otherwise bail on every activation
+/// until real time caught up, which can be hours.
+fn touch_task_record(w: &mut Task, now: chrono::DateTime<chrono::Utc>) -> bool {
+    let fresh = w
+        .last_opened_at
+        .as_deref()
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|prev| {
+            let age = now.signed_duration_since(prev.with_timezone(&chrono::Utc));
+            age >= chrono::Duration::zero() && age < chrono::Duration::seconds(TOUCH_MIN_SECS)
+        })
+        .unwrap_or(false);
+    if fresh { return false; }
+    w.last_opened_at = Some(now.to_rfc3339());
+    true
+}
+
+/// Stamp `last_opened_at` on one task and return the stamp now on disk.
+///
+/// Fires on EVERY activation (every sidebar click, every Cmd-number switch),
+/// and two things follow from that.
+///
+/// It reads exactly ONE record. The siblings above call `load_tasks_all()`,
+/// re-parsing every task file of every profile, which is fine a handful of
+/// times per session and wrong on a path the user walks dozens of times an
+/// hour.
+///
+/// It is SYNC on purpose, like those siblings. Every per-task setter in this
+/// file is an unlocked read-modify-write of the whole record, and they get
+/// away with it because sync commands run on the main thread and therefore
+/// one after another. The first version of this command was async +
+/// `spawn_blocking`, which put it on another thread at the exact moment
+/// `task_set_tabs` and `task_record_spawn` fire for the same task (the pane
+/// mounts and spawns within milliseconds of the activation that fires this),
+/// and the e2e run turned up a task activated seconds earlier with
+/// `last_opened_at: null` on disk: a sibling had read the record before this
+/// wrote it and written its own copy back after. One small read and one
+/// atomic write is not the IO-heavy case docs/ipc.md's long-running discipline
+/// is about; the siblings do strictly more work on the same thread. See
+/// docs/gotchas.md, "Task record setters serialize on the main thread".
+#[tauri::command]
+fn task_touch(id: String) -> Result<String, String> {
+    task_touch_sync(id)
+}
+
+fn task_touch_sync(id: String) -> Result<String, String> {
+    // Sweep the profiles for the one file, the way `delete_task_file` does:
+    // the caller has only an id, and a `stat` per profile is nothing next to
+    // parsing every record in all of them.
+    for pid in profiles_registry().ids() {
+        let Ok(dir) = tasks_dir_in(&pid) else { continue };
+        let Ok(s) = fs::read_to_string(dir.join(format!("{id}.json"))) else { continue };
+        let Ok(mut w) = serde_json::from_str::<Task>(&s) else { continue };
+        // `profile` is `serde(skip)`, so a record parsed straight from a file
+        // carries the DEFAULT profile, not the one it came from. Without this
+        // line `save_task` would write a second copy of a non-root profile's
+        // task into the root tree.
+        w.profile = pid.clone();
+        if !touch_task_record(&mut w, chrono::Utc::now()) {
+            return Ok(w.last_opened_at.clone().unwrap_or_default());
+        }
+        save_task(&w).map_err(|e| e.to_string())?;
+        return Ok(w.last_opened_at.clone().unwrap_or_default());
+    }
+    Err("no such task".into())
 }
 
 /// Set the persisted `has_resumable_history` flag for a task.
@@ -22206,7 +22303,7 @@ pub fn run() {
             repo_config_load, repo_config_load_at, repo_config_save, repo_config_scaffold, repo_config_add_allowed_host, repo_config_add_allowed_path,
 
             task_reorder,
-            task_restore, task_delete, task_run_script, task_run_script_stream, task_ensure_extra_ports, task_stop_script, task_record_spawn, task_set_has_history, task_set_agent_session_id,
+            task_restore, task_delete, task_run_script, task_run_script_stream, task_ensure_extra_ports, task_stop_script, task_record_spawn, task_set_has_history, task_touch, task_set_agent_session_id,
             task_set_tabs, task_set_tab_session_id,
             task_set_split_layout,
             task_set_right_tabs, task_set_right_tab_session_id,
@@ -29597,6 +29694,117 @@ filename f.rs
         assert_eq!(value["agent_args"], serde_json::json!(["--reasoning-effort", "low"]));
         let back: Task = serde_json::from_value(value).unwrap();
         assert_eq!(back.agent_args, task.agent_args);
+    }
+
+    // ── last_opened_at / task_touch ─────────────────────────────────
+    //
+    // The stamp is written on EVERY activation, so the 60s bail is the
+    // feature: without it a user flicking between two tasks with ⌘1/⌘2
+    // rewrites two files per keystroke. The bail lives in
+    // `touch_task_record`, which takes `now` as an argument precisely so
+    // these cases can name a time instead of sleeping.
+
+    // Every task record on disk today predates the field. They must
+    // deserialize with `None` rather than failing the whole load, and `None`
+    // has to survive the trip: it is what tells the dashboard to say nothing
+    // instead of guessing from `created`.
+    #[test]
+    fn a_task_written_before_last_opened_at_existed_reads_as_never_opened() {
+        let mut value = serde_json::to_value(Task::default()).unwrap();
+        assert!(value.get("last_opened_at").is_some(), "the field stopped serializing");
+        value.as_object_mut().unwrap().remove("last_opened_at");
+
+        let back: Task = serde_json::from_value(value).unwrap();
+        assert_eq!(back.last_opened_at, None);
+    }
+
+    #[test]
+    fn touching_a_never_opened_task_stamps_it_and_the_stamp_round_trips() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-01-01T12:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let mut task = Task::default();
+        assert_eq!(task.last_opened_at, None);
+
+        assert!(touch_task_record(&mut task, now), "a never-opened task must be stamped");
+        let stamp = task.last_opened_at.clone().expect("stamped");
+
+        let back: Task = serde_json::from_value(serde_json::to_value(&task).unwrap()).unwrap();
+        assert_eq!(back.last_opened_at.as_deref(), Some(stamp.as_str()));
+        // The value is a real RFC3339 instant, not just a string that survived.
+        assert_eq!(
+            chrono::DateTime::parse_from_rfc3339(&stamp).unwrap().with_timezone(&chrono::Utc),
+            now,
+        );
+    }
+
+    #[test]
+    fn a_second_touch_inside_the_window_does_not_rewrite_the_stamp() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-01-01T12:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let mut task = Task::default();
+        touch_task_record(&mut task, now);
+        let first = task.last_opened_at.clone().unwrap();
+
+        // 59s later: the same visit, as far as anything that renders this is
+        // concerned. No write, and the value is byte-identical.
+        assert!(!touch_task_record(&mut task, now + chrono::Duration::seconds(59)));
+        assert_eq!(task.last_opened_at.as_deref(), Some(first.as_str()));
+
+        // 61s later: a new visit.
+        assert!(touch_task_record(&mut task, now + chrono::Duration::seconds(61)));
+        assert_ne!(task.last_opened_at.as_deref(), Some(first.as_str()));
+    }
+
+    // A stamp nobody can parse, and a stamp from the future, both re-stamp.
+    // Bailing on either would freeze the value: a clock that jumped backwards
+    // would otherwise suppress every activation for hours.
+    #[test]
+    fn an_unreadable_or_future_stamp_is_replaced_rather_than_trusted() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-01-01T12:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+
+        let mut garbage = Task { last_opened_at: Some("yesterday".into()), ..Default::default() };
+        assert!(touch_task_record(&mut garbage, now));
+        assert_eq!(garbage.last_opened_at.as_deref(), Some(now.to_rfc3339().as_str()));
+
+        let mut ahead =
+            Task { last_opened_at: Some("2027-01-01T00:00:00Z".into()), ..Default::default() };
+        assert!(touch_task_record(&mut ahead, now));
+        assert_eq!(ahead.last_opened_at.as_deref(), Some(now.to_rfc3339().as_str()));
+    }
+
+    #[test]
+    fn task_touch_writes_back_to_the_profile_the_task_came_from() {
+        // The command reads ONE file rather than `load_tasks_all()`, which
+        // means it parses a record whose `profile` tag is `serde(skip)` and
+        // therefore default. If it forgets to re-tag, the save lands in the
+        // root profile and the task exists twice.
+        with_scratch_data_dir(|data| {
+            crate::profiles::save_registry(data, &two_profile_registry()).unwrap();
+            crate::save_task(&a_task("t2", ProfileId::Slug("home".into()))).unwrap();
+
+            let stamp = crate::task_touch_sync("t2".into()).expect("the task is there");
+            assert!(chrono::DateTime::parse_from_rfc3339(&stamp).is_ok(), "not RFC3339: {stamp}");
+            assert!(!data.join("tasks/t2.json").exists(), "the touch moved t2 into the root");
+
+            let home = crate::load_tasks_in(&ProfileId::Slug("home".into()));
+            assert_eq!(home.len(), 1);
+            assert_eq!(home[0].last_opened_at.as_deref(), Some(stamp.as_str()));
+
+            // Straight back in: inside the window, so the same stamp comes
+            // back and nothing is rewritten.
+            assert_eq!(crate::task_touch_sync("t2".into()).unwrap(), stamp);
+        });
+    }
+
+    #[test]
+    fn touching_a_task_that_does_not_exist_is_an_error() {
+        with_scratch_data_dir(|_data| {
+            assert_eq!(crate::task_touch_sync("nope".into()), Err("no such task".into()));
+        });
     }
 
     // ── Extra named ports (GH #196) ─────────────────────────────────

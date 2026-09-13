@@ -3,6 +3,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // Mocks must be declared before the module under test is imported.
 vi.mock("@/lib/ipc", () => ({
+  // Every task activation stamps `last_opened_at` through these; a mock
+  // missing them throws on property access, not on call.
+  taskTouch: vi.fn().mockResolvedValue("2026-01-01T00:00:00Z"),
+  taskRecordSpawn: vi.fn().mockResolvedValue(1),
   ptyWrite: vi.fn(),
   ptyKill: vi.fn().mockResolvedValue(undefined),
   projectsList: vi.fn().mockResolvedValue([]),
@@ -29,7 +33,7 @@ vi.mock("@/lib/agents", () => ({
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn().mockResolvedValue(undefined) }));
 
 import { invoke } from "@tauri-apps/api/core";
-import { isTabOnScreenIn, isUserWatching, RECENT_TASKS_CAP, useApp } from "@/store/app";
+import { isTabOnScreenIn, isUserWatching, RECENT_TASKS_CAP, TOUCH_MIN_MS, useApp } from "@/store/app";
 import * as ipc from "@/lib/ipc";
 import { markUnattendedSpawn, takeUnattendedSpawn } from "@/lib/unattendedSpawns";
 import type { QueueItem, PaneLeaf, Tab, TerminalTab, PersistedTab } from "@/lib/types";
@@ -1579,5 +1583,211 @@ describe("previewPlace", () => {
     useApp.getState().setActiveTask("A");
     unsub();
     expect(real).toBeGreaterThan(1);
+  });
+});
+
+// ── last_opened_at (task activation stamp) ────────────────────────────
+//
+// The stamp is written on EVERY activation, which is the hottest store path
+// the sidebar has: a ⌘1/⌘2 flick between two tasks is two activations per
+// keystroke. So both halves of the design are count assertions, the class that
+// survives a 3-core CI runner (docs/perf-ci.md):
+//
+//   1. a second activation inside TOUCH_MIN_MS writes NOTHING, keeping the
+//      `tasks` array identity that every mounted task's selectors hang off
+//      (docs/performance.md bear trap 8); and
+//   2. the write that does happen rides INSIDE the set() `setActiveTask` was
+//      making anyway, so the feature adds zero subscriber notifications.
+describe("setActiveTask last_opened_at", () => {
+  const stamped = (id: string) => useApp.getState().tasks.find(w => w.id === id)?.last_opened_at;
+
+  beforeEach(() => {
+    useApp.setState({ tasks: [makeTask({ id: "ws1" }), makeTask({ id: "ws2" })] });
+  });
+
+  it("stamps the task and persists it exactly once", () => {
+    const before = Date.now();
+    useApp.getState().setActiveTask("ws1");
+
+    const at = stamped("ws1");
+    expect(at).toBeTruthy();
+    expect(Date.parse(at!)).toBeGreaterThanOrEqual(before);
+    expect(ipc.taskTouch).toHaveBeenCalledTimes(1);
+    expect(ipc.taskTouch).toHaveBeenCalledWith("ws1");
+    // The sibling is untouched: a stamp is per task, not per activation.
+    expect(stamped("ws2")).toBeUndefined();
+  });
+
+  it("does not touch the store again inside the 60s window", () => {
+    // Both tasks stamped once, which is the only real work here.
+    useApp.getState().setActiveTask("ws1");
+    useApp.getState().setActiveTask("ws2");
+    const first = stamped("ws1");
+
+    // Now the ⌘1/⌘2 flick: straight back and forth, all inside the window.
+    const before = useApp.getState();
+    useApp.getState().setActiveTask("ws1");
+    useApp.getState().setActiveTask("ws2");
+    useApp.getState().setActiveTask("ws1");
+    const after = useApp.getState();
+
+    // Same ARRAY, not merely equal: a fresh `tasks` is what invalidates every
+    // selector in every mounted task.
+    expect(after.tasks).toBe(before.tasks);
+    expect(stamped("ws1")).toBe(first);
+    // Still the two opening touches: the flick added none.
+    expect(ipc.taskTouch).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(ipc.taskTouch).mock.calls.map(c => c[0])).toEqual(["ws1", "ws2"]);
+  });
+
+  it("re-stamps once the window has passed", () => {
+    const old = new Date(Date.now() - TOUCH_MIN_MS - 1_000).toISOString();
+    useApp.setState({ tasks: [makeTask({ id: "ws1", last_opened_at: old })] });
+
+    useApp.getState().setActiveTask("ws1");
+
+    expect(stamped("ws1")).not.toBe(old);
+    expect(ipc.taskTouch).toHaveBeenCalledTimes(1);
+  });
+
+  // Both halves of the freshness predicate's escape hatch, pinned to the same
+  // rule `touch_task_record` follows in lib.rs. They matter here more than
+  // there: a stamp THIS side calls fresh never reaches Rust to be judged.
+  //
+  // NaN because `Date.now() - Date.parse("nonsense")` is NaN and every
+  // comparison against NaN is false; a guard written as `>= TOUCH_MIN_MS`
+  // would freeze the value forever. Negative because a clock that jumped
+  // backwards would otherwise suppress every activation until it caught up.
+  it("replaces a stamp it cannot parse", () => {
+    useApp.setState({ tasks: [makeTask({ id: "ws1", last_opened_at: "yesterday" })] });
+
+    useApp.getState().setActiveTask("ws1");
+
+    expect(Date.parse(stamped("ws1")!)).not.toBeNaN();
+    expect(ipc.taskTouch).toHaveBeenCalledTimes(1);
+  });
+
+  it("replaces a stamp from the future rather than waiting it out", () => {
+    const ahead = new Date(Date.now() + 3_600_000).toISOString();
+    useApp.setState({ tasks: [makeTask({ id: "ws1", last_opened_at: ahead })] });
+
+    useApp.getState().setActiveTask("ws1");
+
+    expect(stamped("ws1")).not.toBe(ahead);
+    expect(Date.parse(stamped("ws1")!)).toBeLessThanOrEqual(Date.now());
+    expect(ipc.taskTouch).toHaveBeenCalledTimes(1);
+  });
+
+  it("adds ZERO subscriber notifications to an activation", () => {
+    const notificationsFor = (id: string) => {
+      let n = 0;
+      const unsub = useApp.subscribe(() => { n++; });
+      useApp.getState().setActiveTask(id);
+      unsub();
+      return n;
+    };
+
+    // Warm both so the second measurement below is a BAILED touch, not a
+    // first visit.
+    useApp.getState().setActiveTask("ws2");
+    useApp.getState().setActiveTask("ws1");
+
+    // An activation that does stamp, versus one inside the window that does
+    // not. The measurement is the comparison: the stamp rides inside a set()
+    // `setActiveTask` was making anyway, so the two must be equal.
+    useApp.setState({ tasks: [makeTask({ id: "ws1" }), makeTask({ id: "ws2" })] });
+    useApp.getState().setActiveTask("ws2");
+    vi.mocked(ipc.taskTouch).mockClear();
+    const stamping = notificationsFor("ws1");
+    const touchCallsWhileStamping = vi.mocked(ipc.taskTouch).mock.calls.length;
+
+    useApp.getState().setActiveTask("ws2");
+    const bailing = notificationsFor("ws1");
+
+    expect(touchCallsWhileStamping).toBe(1);
+    expect(bailing).toBe(stamping);
+    // 2 is the PRE-EXISTING cost of one activation with no tabs open: the
+    // main set(), plus the read-clearing set() under it. The stamp is inside
+    // the first of those, so this number must not move.
+    expect(stamping).toBe(2);
+  });
+
+  it("never touches when the active task is cleared", () => {
+    useApp.getState().setActiveTask("ws1");
+    vi.mocked(ipc.taskTouch).mockClear();
+
+    useApp.getState().setActiveTask(null);
+
+    expect(ipc.taskTouch).not.toHaveBeenCalled();
+  });
+
+  // Agent Race mounts N tasks at once without focusing them. Mounting is not
+  // opening, and stamping there would backdate every task in the race to the
+  // moment the user pressed one button.
+  it("mountTasks never touches", () => {
+    useApp.getState().mountTasks(["ws1", "ws2"]);
+
+    expect(ipc.taskTouch).not.toHaveBeenCalled();
+    expect(stamped("ws1")).toBeUndefined();
+  });
+
+  it("is a no-op for an id that resolves to no task", () => {
+    useApp.getState().setActiveTask("nope");
+
+    expect(ipc.taskTouch).not.toHaveBeenCalled();
+  });
+});
+
+// ── recordSpawn ───────────────────────────────────────────────────────
+//
+// `task_record_spawn` always WROTE the count; nothing read the answer back,
+// so a task created this session stayed at spawn_count 0 in the store until
+// the next `loadAll`. The dashboard's derived phase reads that field.
+describe("recordSpawn", () => {
+  const count = (id: string) => useApp.getState().tasks.find(w => w.id === id)?.spawn_count;
+
+  beforeEach(() => {
+    useApp.setState({ tasks: [makeTask({ id: "ws1", spawn_count: 0 })] });
+  });
+
+  it("folds the persisted count back into the store", async () => {
+    vi.mocked(ipc.taskRecordSpawn).mockResolvedValueOnce(3);
+
+    useApp.getState().recordSpawn("ws1");
+
+    await vi.waitFor(() => expect(count("ws1")).toBe(3));
+    expect(ipc.taskRecordSpawn).toHaveBeenCalledWith("ws1");
+  });
+
+  it("leaves state identity alone when the count did not change", async () => {
+    vi.mocked(ipc.taskRecordSpawn).mockResolvedValueOnce(0);
+    const before = useApp.getState();
+
+    useApp.getState().recordSpawn("ws1");
+    await vi.waitFor(() => expect(ipc.taskRecordSpawn).toHaveBeenCalled());
+    await Promise.resolve();
+
+    expect(useApp.getState()).toBe(before);
+    expect(useApp.getState().tasks).toBe(before.tasks);
+  });
+
+  it("drops the answer for a task that is gone by the time it lands", async () => {
+    vi.mocked(ipc.taskRecordSpawn).mockResolvedValueOnce(2);
+
+    useApp.getState().recordSpawn("ws1");
+    // Archived and reloaded out from under the in-flight call.
+    useApp.setState({ tasks: [] });
+    await vi.waitFor(() => expect(ipc.taskRecordSpawn).toHaveBeenCalled());
+    await Promise.resolve();
+
+    expect(useApp.getState().tasks).toEqual([]);
+  });
+
+  it("survives a rejected write without throwing", async () => {
+    vi.mocked(ipc.taskRecordSpawn).mockRejectedValueOnce(new Error("disk full"));
+
+    expect(() => useApp.getState().recordSpawn("ws1")).not.toThrow();
+    await vi.waitFor(() => expect(ipc.taskRecordSpawn).toHaveBeenCalled());
+    expect(count("ws1")).toBe(0);
   });
 });

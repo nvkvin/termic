@@ -2308,9 +2308,11 @@ const captureArmedRef = useRef(false);
         // race possible). Render the warning chip immediately when the
         // cage degraded.
         setSandboxWarning(spawn.sandbox.warning || null);
-        // Fire-and-forget analytics. Real resume gating lives on the
-        // has_resumable_history flag below, not here.
-        ipc.taskRecordSpawn(task.id).catch(() => {});
+        // Persist the spawn and fold the new count back into the store, so a
+        // task launched this session stops reading as never-spawned. Real
+        // resume gating still lives on the has_resumable_history flag below,
+        // not here.
+        useApp.getState().recordSpawn(task.id);
         // Launching a task is exactly the moment its PR/MR status is worth
         // knowing, not something to wait on the user opening the Git tab
         // for - only the primary agent tab counts as "the task launched",

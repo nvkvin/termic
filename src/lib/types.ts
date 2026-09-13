@@ -282,6 +282,15 @@ export interface Task {
   created: string;
   archived: boolean;
   archived_at?: string;
+  /** RFC3339 UTC, written by the app on every task activation (`setActiveTask`,
+   *  and `task_touch` behind it). Never typed by a person.
+   *
+   *  Serde writes Rust's `None` as `null`, so this arrives as `null` on a record
+   *  that has one and is ABSENT on a record written before the field existed.
+   *  Both mean the same thing here, "never opened since this was recorded", so
+   *  collapsing them with `??` is correct. (CLAUDE.md forbids that only where
+   *  `null` is a distinct answer from "nothing there yet"; it is not, here.) */
+  last_opened_at?: string | null;
   /** Manual sidebar position within the project, written by drag-to-reorder
    *  (`taskReorder`). Undefined on tasks the user has never dragged, which
    *  sort AFTER any ordered sibling — so untouched projects stay in creation

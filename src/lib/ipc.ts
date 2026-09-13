@@ -579,6 +579,11 @@ export const taskRecentDenials = (id: string, minutes?: number) =>
 // miss the only emission.
 export const taskRename   = (id: string, name: string) => invoke<void>("task_rename", { id, name });
 export const taskRecordSpawn = (id: string) => invoke<number>("task_record_spawn", { id });
+/** Stamp the task's `last_opened_at` and resolve with whatever is now on disk
+ *  (unchanged when the previous stamp is still inside the 60s window). Fired on
+ *  every activation, so the Rust side reads ONE record rather than every
+ *  profile's whole tasks dir. */
+export const taskTouch = (id: string) => invoke<string>("task_touch", { id });
 export const taskSetHasHistory = (id: string, value: boolean) =>
   invoke<void>("task_set_has_history", { id, value });
 export const taskSetAgentSessionId = (id: string, cli: string, uuid: string) =>

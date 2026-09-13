@@ -217,6 +217,18 @@ export interface AppState {
    *  so opening the task again respawns the agents with their conversations
    *  resumed. */
   stopTask: (taskId: string) => void;
+  /** Persist one more agent spawn for the task and fold the new count back
+   *  into the store's copy of it.
+   *
+   *  `task_record_spawn` has always written the number to disk, but nothing
+   *  read the answer: the store's `spawn_count` was only ever refreshed by
+   *  `loadAll`, so a task created this session read as never-spawned until
+   *  the next reload. The dashboard's derived phase (a follow-up commit) reads
+   *  that field, and "created it, launched an agent, still says never
+   *  spawned" is the bug that would follow.
+   *
+   *  Bails when the count is unchanged, leaving state identity intact. */
+  recordSpawn: (taskId: string) => void;
   setView: (page: View["page"]) => void;
   openSettings: (tab?: View["settingsTab"], repoId?: string, highlight?: string) => void;
   closeSettings: () => void;
@@ -440,6 +452,11 @@ const LS_RECENT_TASKS   = scoped("recentTasks"); // string[] of task ids, newest
  *  you were just doing, not a second history view — `History` already lists
  *  everything, and a long list here would push the projects off the screen. */
 export const RECENT_TASKS_CAP = 8;
+/** How long a task's `last_opened_at` stamp stays fresh. Mirrors
+ *  `TOUCH_MIN_SECS` in lib.rs: the two guards are independent (this one skips
+ *  the store write and the IPC, that one skips the disk write), and a task
+ *  switched away from and back inside the window is one visit either way. */
+export const TOUCH_MIN_MS = 60_000;
 const initialCollapsed   = (() => { try { return JSON.parse(localStorage.getItem(LS_COLLAPSED_PROJ) || "{}"); } catch { return {}; } })();
 const initialCollapsedTask = (() => { try { return JSON.parse(localStorage.getItem(LS_COLLAPSED_TASK)   || "{}"); } catch { return {}; } })();
 const initialCollapsedGrp = (() => { try { return JSON.parse(localStorage.getItem(LS_COLLAPSED_GRP) || "{}"); } catch { return {}; } })();
@@ -879,8 +896,34 @@ export const useApp = create<AppState>((set, get) => ({
     // to a task under a collapsed project.
     let nextCollapsed = get().collapsedProjects;
     let nextCollapsedGroups = get().collapsedGroups;
+    let nextTasks = get().tasks;
     if (id) {
-      const task = get().tasks.find(w => w.id === id);
+      const task = nextTasks.find(w => w.id === id);
+      // Stamp "last opened" and persist it, at most once per TOUCH_MIN_MS.
+      //
+      // The stamp is computed HERE rather than taken from what `task_touch`
+      // resolves with: the two differ by the IPC round trip, nothing renders
+      // milliseconds, and writing the reply back would cost a second copy of
+      // the whole ~233-key state (docs/performance.md bear trap 8) on a path
+      // the user walks dozens of times an hour. So the promise is
+      // fire-and-forget and its value is dropped on purpose.
+      //
+      // Same predicate as `touch_task_record` in lib.rs, and it has to be:
+      // a stamp this side thinks is fresh never reaches the Rust side to be
+      // judged. So an age BELOW zero (clock jumped backwards, or a stamp from
+      // a machine that is ahead) re-stamps rather than bailing, which would
+      // otherwise suppress every activation until real time caught up.
+      // NaN re-stamps too: `NaN >= 0` is false, so a corrupt stamp read from
+      // disk cannot freeze the value forever.
+      const opened = task?.last_opened_at ? Date.parse(task.last_opened_at) : NaN;
+      const age = Date.now() - opened;
+      if (task && !(age >= 0 && age < TOUCH_MIN_MS)) {
+        const stamp = new Date().toISOString();
+        // Rides along in the set() below, exactly like `recentTasks`: a
+        // separate write would re-run every mounted task's selectors.
+        nextTasks = nextTasks.map(w => (w.id === id ? { ...w, last_opened_at: stamp } : w));
+        ipc.taskTouch(id).catch(() => {});
+      }
       // Force the parent project expanded (explicit false) — covers the
       // case where it was either explicitly collapsed by the user OR
       // default-collapsed-because-empty after a worktree just got added.
@@ -915,6 +958,7 @@ export const useApp = create<AppState>((set, get) => ({
       collapsedProjects: nextCollapsed,
       collapsedGroups: nextCollapsedGroups,
       recentTasks: nextRecent,
+      tasks: nextTasks,
     });
     if (id) {
       // Mark the WHOLE task as read on activation. Previously we
@@ -954,6 +998,19 @@ export const useApp = create<AppState>((set, get) => ({
         return { tabs: { ...s.tabs, [id]: next } };
       });
     }
+  },
+
+  recordSpawn: (taskId) => {
+    ipc.taskRecordSpawn(taskId).then(count => {
+      set(s => {
+        // Read `tasks` from the CALLBACK's state, never from a value captured
+        // before the await: a `loadAll` can land in between and replace the
+        // whole array.
+        const task = s.tasks.find(w => w.id === taskId);
+        if (!task || task.spawn_count === count) return s;
+        return { tasks: s.tasks.map(w => (w.id === taskId ? { ...w, spawn_count: count } : w)) };
+      });
+    }).catch(() => {});
   },
 
   setView: (page) => set({ view: { page }, activeTaskId: null }),

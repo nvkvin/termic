@@ -3,6 +3,10 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // Same mock set app.test.ts uses — the store pulls IPC in at import time.
 vi.mock("@/lib/ipc", () => ({
+  // Every task activation stamps `last_opened_at` through these; a mock
+  // missing them throws on property access, not on call.
+  taskTouch: vi.fn().mockResolvedValue("2026-01-01T00:00:00Z"),
+  taskRecordSpawn: vi.fn().mockResolvedValue(1),
   ptyWrite: vi.fn(),
   ptyKill: vi.fn().mockResolvedValue(undefined),
   projectsList: vi.fn().mockResolvedValue([]),
