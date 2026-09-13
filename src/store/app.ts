@@ -161,11 +161,14 @@ export interface AppState {
    *  only way back into a task from the home screen without hunting the
    *  sidebar for it.
    *
-   *  localStorage rather than a persisted `last_opened_at` on the Task
-   *  record, for the same reason collapsedGroups lives here: it is a
-   *  per-machine UI convenience, and a disk write on every task click to
-   *  store it would be the wrong trade. Pruned in `loadAll` alongside the
-   *  group maps, so an archived or deleted task leaves no ghost. */
+   *  localStorage rather than the Task record, for the same reason
+   *  collapsedGroups lives here: it is a per-machine UI convenience, an
+   *  ORDERED list of the last eight visits at finer than a minute. The
+   *  record's `last_opened_at` (stamped below, at most once a minute) is
+   *  the coarse durable answer to a different question, "how long since I
+   *  was in here", and cannot reproduce this order. Pruned in `loadAll`
+   *  alongside the group maps, so an archived or deleted task leaves no
+   *  ghost. */
   recentTasks: string[];
   /** Editable agent registry from settings.json. Loaded by `loadAll` so
    *  `spawnArgsForCli` can consult `agent.command + args + capabilities`

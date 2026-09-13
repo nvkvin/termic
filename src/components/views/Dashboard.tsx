@@ -3,9 +3,11 @@
 // and the populated state share the same shape — adding a project doesn't yank
 // you somewhere else.
 
+import { useMemo } from "react";
 import { useApp, selectTaskTabs } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { usePrefs } from "@/store/prefs";
+import { usePr } from "@/store/pr";
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { TaskLocationIcon } from "@/components/TaskLocationIcon";
 import { TaskWorkBadge } from "@/components/TaskWorkBadge";
@@ -13,6 +15,10 @@ import { TaskPrBadge } from "@/components/TaskPrBadge";
 import { GroupActionsMenuItems } from "@/components/sidebar/GroupActionsMenuItems";
 import { taskLabel } from "@/lib/taskLabel";
 import { taskWorkBadge } from "@/lib/taskWorkState";
+import {
+  taskPhase, taskAgeLabel, phaseCounts, PHASE_ORDER, PHASE_LABEL, PHASE_EMPTY_LABEL,
+} from "@/lib/taskPhase";
+import type { TaskPhase } from "@/lib/taskPhase";
 import { groupOf, projectSections, sortSectionsActiveFirst } from "@/lib/projectGroups";
 import { accentCss } from "@/lib/accents";
 import { projectSetGroup } from "@/lib/ipc";
@@ -27,6 +33,21 @@ interface TaskRowContext {
   useBranchAsTaskName: boolean;
   workPrefs: WorkStatePrefs;
 }
+
+/** A task plus its derived phase, computed ONCE per task at the Dashboard
+ *  level (see the memo in `Dashboard`) and carried down to the row. */
+interface PhasedTask {
+  task: Task;
+  phase: TaskPhase;
+}
+
+// Module-level, not per row: `Intl.DateTimeFormat` is expensive to construct
+// and the age tooltip wants the same format on every row anyway.
+const AGE_TITLE_FMT = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
+
+/** Shared frozen empty list, so a project with no rows hands its card the
+ *  SAME reference every render instead of a fresh `[]`. */
+const EMPTY_ROWS: readonly PhasedTask[] = Object.freeze([]);
 
 // Module-level flag: animate the hero logo ONCE per app launch, not every
 // time the user navigates back to the dashboard from a task tab. The
@@ -57,6 +78,14 @@ export function Dashboard() {
   const setGroupColor     = useApp(s => s.setGroupColor);
   const openNewProject   = useUI(s => s.openNewProject);
   const agents = useApp(s => s.agents);
+  const dashboardPhase    = useUI(s => s.dashboardPhase);
+  const setDashboardPhase = useUI(s => s.setDashboardPhase);
+  // ONE PR subscription for the whole page. Every row needs a phase and the
+  // phase needs the live PR, but a `usePr` hook per row would put N
+  // subscribers on a store that re-publishes `byTask` on every poll tick.
+  // Subscribing once here costs one re-render of a page that is only mounted
+  // while no task is open (docs/performance.md bear traps 5 and 8).
+  const byTask = usePr(s => s.byTask);
   // Prefs and the agent registry are hoisted rather than read per row: they
   // are stable references shared by every task, and this component already
   // re-renders on any `tasks` change, so a subscription per row would buy no
@@ -70,6 +99,36 @@ export function Dashboard() {
 
   const hasActiveTask = (projId: string) =>
     tasks.some(w => w.project_id === projId && !w.archived);
+
+  // Counts are over every non-archived task and are deliberately NOT keyed on
+  // the selected phase: the numbers on the pills describe the fleet, not the
+  // current view, so they must not move when you click one.
+  const counts = useMemo(
+    () => phaseCounts(tasks.filter(w => !w.archived), id => byTask[id]?.lookup?.pr ?? null),
+    [tasks, byTask],
+  );
+  const taskCount = tasks.reduce((n, w) => (w.archived ? n : n + 1), 0);
+
+  // One pass over `tasks` IN STORE ORDER (see DashboardProjectCard's comment
+  // on why order matters), bucketed by project and carrying each task's
+  // phase. Two things need this above the card level: hiding a whole group
+  // whose members all filtered out, and knowing that the filter matched
+  // nothing at all. Computing it per card would answer neither.
+  const visibleByProject = useMemo(() => {
+    const byProject = new Map<string, PhasedTask[]>();
+    for (const w of tasks) {
+      if (w.archived) continue;
+      const phase = taskPhase(w, byTask[w.id]?.lookup?.pr ?? null);
+      if (dashboardPhase !== null && phase !== dashboardPhase) continue;
+      const list = byProject.get(w.project_id);
+      if (list) list.push({ task: w, phase });
+      else byProject.set(w.project_id, [{ task: w, phase }]);
+    }
+    return byProject;
+  }, [tasks, byTask, dashboardPhase]);
+
+  const filtered = dashboardPhase !== null;
+  const nothingMatches = filtered && visibleByProject.size === 0;
 
   // Section FIRST, then sort the sections — never the other way round. A group
   // is anchored at its first member's index, so sorting projects first both
@@ -143,43 +202,78 @@ export function Dashboard() {
           </div>
         )}
 
+        {/* Phase filter — hidden until there is at least one task, so a fresh
+            install sees exactly the page it sees today. It also stays while a
+            filter is selected, for the same reason the Backlog pill does:
+            archiving the last task would otherwise take the row away and leave
+            "Nothing in progress" on screen with nothing to click to clear it. */}
+        {(taskCount > 0 || filtered) && (
+          <PhaseFilterRow
+            selected={dashboardPhase}
+            counts={counts}
+            total={taskCount}
+            onPick={setDashboardPhase}
+          />
+        )}
+
         {/* Projects */}
         {projects.length === 0 ? (
           <EmptyProjectsCard onClick={openNewProject} />
         ) : (
           <>
+            {/* The count is the number of PROJECTS, which a task filter does
+                not change: the header still names how many projects exist,
+                and only the cards below it thin out. */}
             <div className="mb-3 flex items-baseline justify-between">
               <h2 className="text-[14px] font-semibold">Projects</h2>
               <span className="text-[12px] text-[var(--color-fg-faint)]">{projects.length}</span>
             </div>
             <div className="flex flex-col gap-3">
-              {sections.map(sec => sec.kind === "loose" ? (
-                <DashboardProjectCard
-                  key={sec.p.id}
-                  project={sec.p}
-                  tasks={tasks}
-                  ctx={rowCtx}
-                  onSettings={() => openSettings("repositories", sec.p.id)}
-                />
+              {nothingMatches ? (
+                <div
+                  data-testid="dashboard-phase-empty"
+                  className="rounded-lg border border-dashed border-[var(--color-border-soft)] px-3 py-4 text-center text-[12.5px] text-[var(--color-fg-faint)]"
+                >
+                  {PHASE_EMPTY_LABEL[dashboardPhase]}
+                </div>
+              ) : sections.map(sec => sec.kind === "loose" ? (
+                // A card with nothing left after filtering is dropped rather
+                // than shown empty: a filter that leaves a page of empty
+                // cards has not filtered anything.
+                (!filtered || visibleByProject.has(sec.p.id)) && (
+                  <DashboardProjectCard
+                    key={sec.p.id}
+                    project={sec.p}
+                    rows={visibleByProject.get(sec.p.id) ?? EMPTY_ROWS}
+                    filtered={filtered}
+                    ctx={rowCtx}
+                    onSettings={() => openSettings("repositories", sec.p.id)}
+                  />
+                )
               ) : (
-                <GroupSection
-                  key={`group:${sec.name}`}
-                  name={sec.name}
-                  members={sec.members}
-                  tasks={tasks}
-                  ctx={rowCtx}
-                  collapsed={!!collapsedGroups[sec.name]}
-                  accent={accentCss(groupColors[sec.name])}
-                  onToggle={() => setGroupCollapsed(sec.name, !collapsedGroups[sec.name])}
-                  onSetColor={key => setGroupColor(sec.name, key)}
-                  onUngroup={async () => {
-                    const ids = useApp.getState().projects
-                      .filter(p => groupOf(p) === sec.name).map(p => p.id);
-                    try { await projectSetGroup(ids, null); } catch (e) { console.error("ungroup failed", e); }
-                    void loadAll();
-                  }}
-                  onSettings={id => openSettings("repositories", id)}
-                />
+                // Same rule one level up: a folder whose every member card
+                // went away takes its header and guide line with it.
+                (!filtered || sec.members.some(p => visibleByProject.has(p.id))) && (
+                  <GroupSection
+                    key={`group:${sec.name}`}
+                    name={sec.name}
+                    members={sec.members}
+                    visibleByProject={visibleByProject}
+                    filtered={filtered}
+                    ctx={rowCtx}
+                    collapsed={!!collapsedGroups[sec.name]}
+                    accent={accentCss(groupColors[sec.name])}
+                    onToggle={() => setGroupCollapsed(sec.name, !collapsedGroups[sec.name])}
+                    onSetColor={key => setGroupColor(sec.name, key)}
+                    onUngroup={async () => {
+                      const ids = useApp.getState().projects
+                        .filter(p => groupOf(p) === sec.name).map(p => p.id);
+                      try { await projectSetGroup(ids, null); } catch (e) { console.error("ungroup failed", e); }
+                      void loadAll();
+                    }}
+                    onSettings={id => openSettings("repositories", id)}
+                  />
+                )
               ))}
             </div>
           </>
@@ -198,11 +292,12 @@ export function Dashboard() {
 // the sidebar owns, and a second way to do them here would be two sources of
 // truth for one gesture — hence `GroupActionsMenuItems` without `onRename`.
 function GroupSection({
-  name, members, tasks, ctx, collapsed, accent, onToggle, onSetColor, onUngroup, onSettings,
+  name, members, visibleByProject, filtered, ctx, collapsed, accent, onToggle, onSetColor, onUngroup, onSettings,
 }: {
   name: string;
   members: Project[];
-  tasks: Task[];
+  visibleByProject: Map<string, PhasedTask[]>;
+  filtered: boolean;
   ctx: TaskRowContext;
   collapsed: boolean;
   accent: string | undefined;
@@ -258,8 +353,15 @@ function GroupSection({
           style={accent ? { borderColor: `color-mix(in srgb, ${accent} 45%, transparent)` } : undefined}
           className="ml-[7px] flex flex-col gap-3 border-l border-[var(--color-border-soft)] pl-3"
         >
-          {members.map(p => (
-            <DashboardProjectCard key={p.id} project={p} tasks={tasks} ctx={ctx} onSettings={() => onSettings(p.id)} />
+          {members.map(p => (!filtered || visibleByProject.has(p.id)) && (
+            <DashboardProjectCard
+              key={p.id}
+              project={p}
+              rows={visibleByProject.get(p.id) ?? EMPTY_ROWS}
+              filtered={filtered}
+              ctx={ctx}
+              onSettings={() => onSettings(p.id)}
+            />
           ))}
         </div>
       )}
@@ -267,16 +369,21 @@ function GroupSection({
   );
 }
 
-function DashboardProjectCard({ project, tasks, ctx, onSettings }: {
+// `rows` arrives already filtered and already carrying each task's phase (see
+// the `visibleByProject` memo). `filtered` says whether a phase is selected,
+// which is the difference between "this project has no tasks" (show the
+// placeholder) and "none of its tasks match the filter" (the parent already
+// dropped the card, so this never renders empty).
+function DashboardProjectCard({ project, rows, filtered, ctx, onSettings }: {
   project: Project;
-  tasks: Task[];
+  rows: readonly PhasedTask[];
+  filtered: boolean;
   ctx: TaskRowContext;
   onSettings: () => void;
 }) {
-  const taskList = tasks.filter(w => w.project_id === project.id && !w.archived);
   return (
     <ProjectCard projectId={project.id} name={project.name} onSettings={onSettings}>
-      {taskList.length === 0 ? (
+      {rows.length === 0 && !filtered ? (
         <div className="px-3 py-2 text-[12.5px] text-[var(--color-fg-faint)]">
           Nothing here yet. Click <b>+</b> to start a new worktree or open the <b>main checkout</b>.
         </div>
@@ -286,7 +393,7 @@ function DashboardProjectCard({ project, tasks, ctx, onSettings }: {
               on the manual drag `order` then `created`. Sorting
               by `created` here would ignore a sidebar reorder
               and show the two views a different list. */}
-          {taskList.map(w => <DashboardTaskRow key={w.id} task={w} ctx={ctx} />)}
+          {rows.map(r => <DashboardTaskRow key={r.task.id} task={r.task} phase={r.phase} ctx={ctx} />)}
         </div>
       )}
     </ProjectCard>
@@ -297,7 +404,16 @@ function DashboardProjectCard({ project, tasks, ctx, onSettings }: {
 // Its own component so each row subscribes to only its own tab state
 // (`selectTaskTabs`), the way the sidebar's TaskRow does. Selecting the whole
 // `tabs` record here would re-run this list on every keystroke in every task.
-function DashboardTaskRow({ task: w, ctx }: { task: Task; ctx: TaskRowContext }) {
+// The phase arrives as a PROP, not from a `usePr` hook here. The card above
+// already holds the one PR subscription for the page, and the rows re-render
+// with it anyway, so a per-row subscription would buy no isolation and add one
+// subscriber per task to a store that republishes on every poll.
+//
+// And the phase is NOT drawn on the row. The filter row above carries the
+// vocabulary; a row reading "In review" beside a PR chip that already says
+// open is the redundancy PR #292 was rejected for, and it would cost the row
+// width the task name currently gets.
+function DashboardTaskRow({ task: w, phase, ctx }: { task: Task; phase: TaskPhase; ctx: TaskRowContext }) {
   const setActive = useApp(s => s.setActiveTask);
   const tabs      = useApp(selectTaskTabs(w.id));
   const { agents, useBranchAsTaskName } = ctx;
@@ -305,6 +421,9 @@ function DashboardTaskRow({ task: w, ctx }: { task: Task; ctx: TaskRowContext })
   // Same helper, same precedence as the sidebar (attention > done > working),
   // so one task can never wear two different badges on two surfaces.
   const badge = taskWorkBadge(tabs, ctx.workPrefs);
+  // Recomputed at render, which is enough: this page is remounted on every
+  // visit and the label's finest bucket is a whole day.
+  const age = taskAgeLabel(w.last_opened_at);
 
   return (
     // A div with a button role, not a <button>: the PR chip is itself a button
@@ -317,6 +436,7 @@ function DashboardTaskRow({ task: w, ctx }: { task: Task; ctx: TaskRowContext })
       // silently diverged once already.
       data-dashboard-task-id={w.id}
       data-dashboard-task-project-id={w.project_id}
+      data-task-phase={phase}
       role="button"
       tabIndex={0}
       onClick={() => setActive(w.id)}
@@ -355,6 +475,18 @@ function DashboardTaskRow({ task: w, ctx }: { task: Task; ctx: TaskRowContext })
           are read-only here: the PR chip renders what the poller already
           resolved and never kicks a fetch of its own. */}
       <span className="ml-auto flex shrink-0 items-center gap-2 pl-2">
+        {/* Age leads the right cluster: it is the quietest thing here and
+            the two badges are the ones you scan for. Uncoloured for the same
+            reason the filter pills are, the PR chip owns colour on this page.
+            The name spans are `min-w-0 shrink truncate`, so this fixed-width
+            cluster takes its width from the name, never the other way round. */}
+        {age && w.last_opened_at && (
+          <span
+            data-testid="task-age"
+            className="shrink-0 text-[11.5px] tabular-nums text-[var(--color-fg-faint)]"
+            title={`Last opened ${AGE_TITLE_FMT.format(new Date(w.last_opened_at))}`}
+          >{age}</span>
+        )}
         <TaskPrBadge task={w} />
         {badge && <TaskWorkBadge reason={badge} />}
       </span>
@@ -362,9 +494,93 @@ function DashboardTaskRow({ task: w, ctx }: { task: Task; ctx: TaskRowContext })
   );
 }
 
+// ─── Phase filter ───────────────────────────────────────────────────────
+// One row of pills over the project list. Shaped like `RecentChip` so the two
+// rows above the projects read as one family.
+//
+// DELIBERATELY UNCOLOURED. The PR chip owns green / purple / red on this page,
+// and a coloured phase pill sitting a few pixels from it invites the reader to
+// match two colour vocabularies that mean different things. That collision is
+// what sank the first attempt (PR #292): a status you could colour turned into
+// a second, hand-maintained signal competing with the live one.
+//
+// No `transition-colors` either, on the selected state or anywhere on these
+// pills: WKWebView does not repaint a themed `border-color` through a colour
+// transition, so a selected pill would move its text and background and leave
+// its border on the unselected colour. The hover rules are plain class swaps
+// for the same reason.
+function PhaseFilterRow({ selected, counts, total, onPick }: {
+  selected: TaskPhase | null;
+  counts: Record<TaskPhase, number>;
+  total: number;
+  onPick: (phase: TaskPhase | null) => void;
+}) {
+  return (
+    <div className="mb-8 flex flex-wrap items-center gap-2" data-testid="dashboard-phase-filter">
+      <PhasePill
+        phase="all"
+        label="All"
+        count={total}
+        selected={selected === null}
+        onClick={() => onPick(null)}
+      />
+      {PHASE_ORDER
+        // All, In progress, In review and Done are always on screen so the
+        // vocabulary stays put between visits. Backlog is not: every
+        // GUI-created task is In progress within a second of existing, so a
+        // permanent "Backlog 0" would be a word the user learns to ignore.
+        // It appears when it has members, and stays while it is the filter
+        // (otherwise clearing the last backlog task pulls the pill out from
+        // under the selection).
+        .filter(p => p !== "backlog" || counts.backlog > 0 || selected === "backlog")
+        .map(p => (
+          <PhasePill
+            key={p}
+            phase={p}
+            label={PHASE_LABEL[p]}
+            count={counts[p]}
+            selected={selected === p}
+            // Clicking the selected pill again clears the filter: the pill
+            // you just pressed is the obvious place to press to undo it.
+            onClick={() => onPick(selected === p ? null : p)}
+          />
+        ))}
+    </div>
+  );
+}
+
+function PhasePill({ phase, label, count, selected, onClick }: {
+  phase: TaskPhase | "all";
+  label: string;
+  count: number;
+  selected: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      data-phase={phase}
+      data-count={count}
+      aria-pressed={selected}
+      onClick={onClick}
+      className={cn(
+        "flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[12px]",
+        selected
+          ? "border-[var(--color-accent-soft)] bg-[var(--color-bg-2)] text-[var(--color-fg)]"
+          : "border-[var(--color-border-soft)] bg-[var(--color-bg-1)] text-[var(--color-fg-dim)] hover:border-[var(--color-accent-soft)] hover:text-[var(--color-fg)]",
+      )}
+    >
+      <span>{label}</span>
+      <span className="tabular-nums text-[var(--color-fg-faint)]">{count}</span>
+    </button>
+  );
+}
+
 // A recently visited task, as a chip. Terse on purpose: this row is a way back
 // into what you were just doing, and anything wider than the name plus its
-// project would push the projects list off the first screen.
+// project would push the projects list off the first screen. That is why it
+// carries no age label and is not filtered by the phase pills: these eight are
+// where you just were, which is a different question from what state the fleet
+// is in.
 function RecentChip({ task: w, ctx, projectName, onOpen }: {
   task: Task; ctx: TaskRowContext; projectName: string | undefined; onOpen: () => void;
 }) {

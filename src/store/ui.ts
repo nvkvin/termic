@@ -3,6 +3,7 @@
 
 import { create } from "zustand";
 import type { Prompt } from "@/store/prompts";
+import type { TaskPhase } from "@/lib/taskPhase";
 
 export interface ConfirmCheckbox {
   label: string;
@@ -268,6 +269,11 @@ interface UIState {
    *  Settings overlay, so it can't refresh itself). RightPanel folds this
    *  into its local reload token. */
   fileTreeNonce: number;
+  /** Dashboard phase filter; `null` is "All". Session-only ON PURPOSE: the
+   *  dashboard unmounts the moment a task is opened, so component state would
+   *  reset on every visit anyway, and a filter is not worth a localStorage
+   *  key (or the migration and pruning that come with one). */
+  dashboardPhase: TaskPhase | null;
 
   // actions
   openNewProject: () => void;
@@ -338,6 +344,8 @@ interface UIState {
   closeFindInFiles: () => void;
   setBusy: (msg: string | null) => void;
   reloadFileTree: () => void;
+  /** Pick the dashboard's phase filter, or `null` for All. */
+  setDashboardPhase: (phase: TaskPhase | null) => void;
   /** Open the global confirm modal. Returns a Promise that resolves
    *  to true (user confirmed) or false (cancelled / dismissed). Drop-in
    *  replacement for `window.confirm()` with our own chrome + theming. */
@@ -461,6 +469,7 @@ export const useUI = create<UIState>(set => ({
   renameRequest: null,
   busyMessage: null,
   fileTreeNonce: 0,
+  dashboardPhase: null,
   confirm: null,
   terminalDrop: null,
   scratchClose: null,
@@ -541,6 +550,10 @@ export const useUI = create<UIState>(set => ({
   })),
   setBusy:           (msg) => set({ busyMessage: msg }),
   reloadFileTree:    () => set(s => ({ fileTreeNonce: s.fileTreeNonce + 1 })),
+  // Bails on an unchanged value like `setWindowFocused` does: re-picking the
+  // pill that is already selected must not copy the store and wake every
+  // subscriber (docs/performance.md bear trap 8).
+  setDashboardPhase: (phase) => set(s => (s.dashboardPhase === phase ? s : { dashboardPhase: phase })),
   askConfirm: (req: any) =>
     // Defer mounting the confirm dialog by a macrotask. When a Radix
     // ContextMenu / Dropdown item's onSelect calls askConfirm, the menu is

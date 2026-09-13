@@ -757,6 +757,70 @@ own components (`TaskWorkBadge`, `TaskPrBadge`), fed by the same
 (attention > done > working). The PR chip renders what the poller already
 resolved and never starts a lookup, so listing every task costs nothing.
 
+### Phase and age are derived, never stored
+
+A task's phase comes from `taskPhase()` (`src/lib/taskPhase.ts`): the task
+record plus the live PR snapshot in `usePr`, and nothing a person types. There
+is no status field to set and none to go stale. Four values, first match wins:
+**Done** when the task is archived or its PR is merged, **In review** when the
+PR is open, **In progress** when the PR is draft or closed-unmerged or the task
+has ever spawned (`spawn_count > 0`) or has resumable history, **Backlog**
+otherwise.
+
+The decisions that table encodes, all of them argued in that file's header:
+archived beats merged (a shelved task is finished whatever its PR did); a draft
+PR is In progress, because a draft says outright that it is not ready to look
+at; a closed unmerged PR falls back to In progress, not Backlog, because the
+branch has real work on it; `changes_requested` stays In review, so the phase
+does not oscillate with every review round; a failing check does not move the
+phase at all (CI is a property of the work, not a stage of it, and the PR chip
+already turns red); a failed lookup has `pr === null` like "no PR" does and
+therefore falls through to the record, so a machine with no `gh`/`glab` still
+phases correctly; a shell spawn counts as progress, because `task_record_spawn`
+fires for every spawn; and a main-checkout task is never polled at all
+(`pollableTasks` skips `is_main_checkout`), so it only leaves In progress by
+being archived. Backlog is rare in practice: every GUI create path activates
+the new task and activation spawns its default tab, so a task is In progress
+within a second of existing.
+
+**The filter row** (`data-testid="dashboard-phase-filter"`) sits between Recent
+and the Projects header and renders only when at least one non-archived task
+exists, so a fresh install sees the page it always saw, or while a filter is
+selected, so archiving the last task cannot strand the empty line with no pill
+to clear it. Pills are All then
+`PHASE_ORDER`, each a `<button>` carrying `data-phase`, `data-count` and
+`aria-pressed`. All, In progress, In review and Done are always on screen so
+the vocabulary stays stable between visits; Backlog appears only when its count
+is above zero or it is the current filter, since a permanent "Backlog 0" is a
+word the user learns to ignore. Clicking the selected pill clears the filter.
+Counts are over every non-archived task and do not change when a pill is
+picked. Selecting a phase drops non-matching rows, then drops a card with no
+rows left, then drops a group whose members all went; the Projects header count
+stays the number of projects, because a task filter does not change how many
+projects exist. When nothing matches, one line replaces the cards
+(`data-testid="dashboard-phase-empty"`): "Nothing in progress" / "Nothing in
+review" / "Nothing done" / "Nothing in the backlog", an explicit map
+(`PHASE_EMPTY_LABEL`) rather than a sentence assembled from a label. Recent is
+not filtered: those eight are where you just were, which is a different
+question. The filter lives in `useUI` and is session-only on purpose, since the
+dashboard unmounts the moment a task is opened.
+
+**The age label** (`data-testid="task-age"`) is `taskAgeLabel(last_opened_at)`,
+in the right-hand cluster before the PR chip, with the full stamp in its
+`title`. It appears only from one day old, because a row stamped minutes ago
+does not need telling, and it shows nothing at all for a record written before
+`last_opened_at` existed rather than guessing one. It is uncoloured.
+
+**Neither the pills nor the age carry colour, and the phase is not drawn on the
+row.** The PR chip owns green, purple and red on this page; a coloured phase
+pill invites the reader to match two colour vocabularies that mean different
+things, and a row reading "In review" beside a chip that already says open is
+the redundancy PR #292 was rejected for. The row still exposes
+`data-task-phase` for the e2e suite. The sidebar gets no phase in this pass
+either: its rows are the densest thing in the app and already carry a CLI
+glyph, a work badge and a PR chip. It is the obvious follow-up once the ladder
+has been lived with, not something to add at the same time as inventing it.
+
 ### `work-badge` is no longer a unique testid
 
 The sidebar is always mounted and the dashboard sits on top of it, so a task
@@ -775,9 +839,12 @@ are pruned in `loadAll` alongside the group maps, so the row never offers a
 dead link. It is hidden entirely when empty, so a fresh install sees the page
 it always saw.
 
-It is localStorage and not a `last_opened_at` on the `Task` record for the same
-reason folder colours are: it is a per-machine UI convenience, and a disk write
-on every task click would be the wrong trade.
+`last_opened_at` on the `Task` record now exists and is the durable, coarse
+stamp the age label reads: one record write, at most once a minute, guarded on
+both sides (see [ipc.md](ipc.md), `task_touch`). Recent stays in localStorage
+anyway, because it is a different thing: an ordered list of the last eight
+visits, at a resolution finer than a minute, which a single per-task stamp
+cannot reproduce.
 
 ## A gauge that is a background, and what it costs the text on it
 

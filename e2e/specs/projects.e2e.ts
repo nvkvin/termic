@@ -2,7 +2,7 @@ import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { archiveTask, clickByText, clickMenuItemUntil, clickWhenVisible, dashboardBadge, dismissOverlays, ensureActiveTask, pointerDrag, requireTermicApi, keysIn, snap, waitForAppShell, waitForText, waitForTextGone, waitGone, waitVisible } from "../helpers";
+import { archiveTask, clickByText, clickMenuItemUntil, clickWhenVisible, createWorktreeTask, dashboardBadge, dismissOverlays, ensureActiveTask, openTask, pointerDrag, requireTermicApi, keysIn, snap, waitForAgentReady, waitForAppShell, waitForText, waitForTextGone, waitGone, waitVisible } from "../helpers";
 
 // P1: adding/removing a project. Cases: a git repo can be added as a project
 // (shows in the store); removing it drops it. Uses a throwaway temp repo and
@@ -1508,6 +1508,365 @@ describe("dashboard", () => {
     await archiveTask(taskId);
     taskId = "";
     await waitGone(RECENTS);
+  });
+});
+
+// A task's phase (src/lib/taskPhase.ts) is DERIVED at render from the task
+// record plus the PR store, never stored, so every case here drives the real
+// inputs (create a task, open it, seed the store the poller writes into) and
+// reads the phase back off the row's own `data-task-phase`. Asserting
+// `taskPhase()` instead would keep passing after the row stopped rendering it,
+// which is the whole failure mode this block exists to catch.
+describe("dashboard phases", () => {
+  /** Every fixture task carries this prefix, so teardown can sweep by NAME:
+   *  a throw mid-case leaves a task on disk and returns no id at all. */
+  const PREFIX = "e2e-phase-";
+  const row = (id: string) => `[data-dashboard-task-id="${id}"]`;
+  const pill = (phase: string) => `[data-testid="dashboard-phase-filter"] [data-phase="${phase}"]`;
+  const age = (id: string) => `${row(id)} [data-testid="task-age"]`;
+  const EMPTY = '[data-testid="dashboard-phase-empty"]';
+
+  let backlogId = "";
+  let prId = "";
+  let ageId = "";
+
+  const showDashboard = async () => {
+    await browser.execute(() => window.__termic!.useApp.getState().setView("dashboard"));
+    // The phase-empty line is an accepted landing state: under a filter that
+    // matches nothing there is no project card left to wait for.
+    await waitVisible(`[data-dashboard-project-id], ${EMPTY}`);
+  };
+
+  /** The phase the row is RENDERING, or null when the row is not on the page. */
+  const rowPhase = (id: string) =>
+    browser.execute(
+      (sel) => (document.querySelector(sel) as HTMLElement | null)?.dataset.taskPhase ?? null,
+      row(id),
+    ) as Promise<string | null>;
+
+  const waitRowPhase = async (id: string, phase: string) => {
+    let seen: string | null = null;
+    await browser
+      .waitUntil(
+        async () => {
+          seen = await rowPhase(id);
+          return seen === phase;
+        },
+        { timeout: 15_000, interval: 100 },
+      )
+      .catch(() => {
+        throw new Error(`row ${id} never reached phase ${phase} (it reads ${seen})`);
+      });
+  };
+
+  /** A pill's count as a number, or null when the pill is not rendered at all
+   *  (which is how a zero Backlog presents). */
+  const pillCount = (phase: string) =>
+    browser.execute((sel) => {
+      const el = document.querySelector(sel) as HTMLElement | null;
+      return el ? Number(el.dataset.count) : null;
+    }, pill(phase)) as Promise<number | null>;
+
+  /** Which pills read as selected. "all" is one of them: clearing the filter
+   *  presses All rather than pressing nothing. */
+  const pressedPills = () =>
+    browser.execute(() =>
+      [...document.querySelectorAll('[data-testid="dashboard-phase-filter"] [data-phase]')]
+        .filter((el) => el.getAttribute("aria-pressed") === "true")
+        .map((el) => el.getAttribute("data-phase")),
+    ) as Promise<string[]>;
+
+  /** The number beside the Projects heading, read from the DOM rather than
+   *  `projects.length`: the claim is about what the header SHOWS. */
+  const projectsHeaderCount = () =>
+    browser.execute(() => {
+      const h = [...document.querySelectorAll("h2")].find((e) => e.textContent?.trim() === "Projects");
+      return h?.parentElement?.querySelector("span")?.textContent?.trim() ?? null;
+    }) as Promise<string | null>;
+
+  const textOf = (selector: string) =>
+    browser.execute(
+      (sel) => (document.querySelector(sel) as HTMLElement | null)?.textContent?.trim() ?? null,
+      selector,
+    ) as Promise<string | null>;
+
+  const countOf = (selector: string) =>
+    browser.execute((sel) => document.querySelectorAll(sel).length, selector) as Promise<number>;
+
+  /** `last_opened_at` as it stands ON DISK, straight from the records `tasks_list`
+   *  reads back, never from the store that is about to write it. */
+  const diskStamp = async (id: string): Promise<string | null> =>
+    (await browser.execute(async (taskId) => {
+      const list = (await window.__termic!.invoke("tasks_list")) as any[];
+      return list.find((w) => w.id === taskId)?.last_opened_at ?? null;
+    }, id)) as string | null;
+
+  /** One base PR, one field changed per step, so each case in the ladder below
+   *  differs only in the thing under test. Placeholder repo: never a real one. */
+  const BASE_PR = {
+    provider: "github",
+    number: 31,
+    url: "https://github.com/acme/repo/pull/31",
+    title: "Teach the dashboard about phases",
+    state: "open",
+    checks: "passing",
+    review: "none",
+    base: "main",
+    head: `${PREFIX}pr`,
+  };
+
+  /** Write the snapshot the poller would have written. Same shape as the
+   *  PR-chip case above, because it is the same store entry. */
+  const seedPr = (id: string, pr: Record<string, unknown>) =>
+    browser.execute(
+      (taskId, snapshot) => {
+        window.__termic!.usePr.setState({
+          byTask: {
+            [taskId]: { lookup: { status: "ok", pr: snapshot }, loading: false, fetchedAt: Date.now() },
+          },
+        });
+      },
+      id,
+      pr,
+    );
+
+  /** TerminalPane kicks an UNFORCED `usePr.refresh` when a worktree task
+   *  spawns its agent, and that lookup resolves against the fixture's local
+   *  origin some time later. Seeding before it lands would simply be
+   *  overwritten, so wait for the app's own entry to settle first. The entry
+   *  appears synchronously when `refresh` starts, so "no entry" is not
+   *  "settled": both halves are the condition. */
+  const waitForPrSettled = (id: string) =>
+    browser.waitUntil(
+      () =>
+        browser.execute((taskId) => {
+          const e = window.__termic!.usePr.getState().byTask[taskId];
+          return !!e && !e.loading;
+        }, id),
+      { timeout: 20_000, timeoutMsg: `the spawn never settled a PR lookup for ${id}` },
+    );
+
+  /** Archive every non-archived `e2e-phase-` task, whatever this run knows
+   *  about. The pill counts are over the WHOLE fleet, so one task left behind
+   *  by a run that died mid-case skews every number here. */
+  const sweepByName = () =>
+    browser.execute(async (prefix) => {
+      const t = window.__termic!;
+      const stale = t.useApp.getState().tasks.filter(
+        (w: any) => !w.archived && typeof w.name === "string" && w.name.startsWith(prefix),
+      );
+      for (const w of stale) {
+        try { await t.ipc.taskArchive(w.id); } catch { /* already gone */ }
+      }
+      await t.useApp.getState().loadAll();
+    }, PREFIX);
+
+  before(async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    await dismissOverlays();
+    await sweepByName();
+    await browser.execute(() => {
+      // A seeded PR or a selected phase from an earlier run would change every
+      // count and hide half the rows.
+      window.__termic!.usePr.setState({ byTask: {} });
+      window.__termic!.useUI.getState().setDashboardPhase(null);
+    });
+  });
+
+  after(async () => {
+    if (backlogId) await archiveTask(backlogId);
+    if (prId) await archiveTask(prId);
+    if (ageId) await archiveTask(ageId);
+    await sweepByName();
+    await browser.execute(async () => {
+      const t = window.__termic!;
+      t.usePr.setState({ byTask: {} });
+      t.useUI.getState().setDashboardPhase(null);
+      t.useApp.getState().setView("dashboard");
+      await t.useApp.getState().loadAll();
+    });
+  });
+
+  it("keeps a task nobody has opened in Backlog, and moves it to In progress on the first open", async () => {
+    // Created without activating, which is the only way to get a Backlog task:
+    // every GUI create path opens the new task, and opening it spawns.
+    backlogId = await openTask(`${PREFIX}backlog`, false);
+    await showDashboard();
+    await waitRowPhase(backlogId, "backlog");
+
+    // The Backlog pill only renders when it has members, so its presence is
+    // half the claim and its count is the other half.
+    const backlogBefore = await pillCount("backlog");
+    expect(backlogBefore).not.toBeNull();
+    expect(backlogBefore!).toBeGreaterThanOrEqual(1);
+
+    // A record nothing has ever opened carries no `last_opened_at`, so the row
+    // shows no age rather than a guessed one.
+    expect(await countOf(age(backlogId))).toEqual(0);
+    await snap("dashboard-phase-backlog.png");
+
+    // Opening it mounts its pane, the pane spawns fakeagent, and the spawn is
+    // folded back into `spawn_count`. One real open is the whole input.
+    await browser.execute((id) => window.__termic!.useApp.getState().setActiveTask(id), backlogId);
+    await waitForAgentReady(backlogId);
+    await showDashboard();
+    await waitRowPhase(backlogId, "in_progress");
+
+    // The pill follows the row it counts: one fewer, or gone when that was the
+    // last backlog task in the fleet.
+    const backlogAfter = await pillCount("backlog");
+    if (backlogBefore === 1) expect(backlogAfter).toBeNull();
+    else expect(backlogAfter).toEqual(backlogBefore! - 1);
+  });
+
+  it("follows the PR through the phase ladder", async () => {
+    // A worktree task, not a main checkout: `pollableTasks` skips main
+    // checkouts, so a PR seeded onto one would be testing a state that cannot
+    // happen in production.
+    prId = await createWorktreeTask(`${PREFIX}pr`, `${PREFIX}pr`, true);
+    await waitForAgentReady(prId);
+    await waitForPrSettled(prId);
+    await showDashboard();
+    // Spawned, nothing resolved: In progress on the agent signal alone.
+    await waitRowPhase(prId, "in_progress");
+
+    const ladder: Array<[Record<string, unknown>, string]> = [
+      // An open PR is the thing In review means.
+      [{ state: "open" }, "in_review"],
+      // A draft says outright that it is not ready to be looked at.
+      [{ state: "draft" }, "in_progress"],
+      // A review round does not bounce the phase back and forth: the PR chip
+      // already says changes were requested.
+      [{ state: "open", review: "changes_requested" }, "in_review"],
+      // Nor does CI. A failing check is a property of the work, not a stage.
+      [{ state: "open", checks: "failing" }, "in_review"],
+      // Closed and unmerged falls back to In progress, never Backlog: there
+      // is real work on the branch.
+      [{ state: "closed" }, "in_progress"],
+      [{ state: "merged" }, "done"],
+    ];
+    for (const [patch, phase] of ladder) {
+      await seedPr(prId, { ...BASE_PR, ...patch });
+      await waitRowPhase(prId, phase);
+    }
+
+    // Leave it Open: the filter case below needs exactly one In review row.
+    await seedPr(prId, { ...BASE_PR, state: "open" });
+    await waitRowPhase(prId, "in_review");
+  });
+
+  it("hides what the selected phase does not match, and clears itself", async () => {
+    // Re-seeded rather than inherited, so this case starts from its own
+    // premise whatever the one above left behind.
+    await seedPr(prId, { ...BASE_PR, state: "open" });
+    await showDashboard();
+    await waitRowPhase(prId, "in_review");
+    await waitRowPhase(backlogId, "in_progress");
+
+    const reviewCount = await pillCount("in_review");
+    const progressCount = await pillCount("in_progress");
+    const projectsCount = await projectsHeaderCount();
+
+    await clickWhenVisible(pill("in_review"));
+    await browser.waitUntil(
+      async () => (await pressedPills()).includes("in_review"),
+      { timeout: 8_000, timeoutMsg: "the In review pill never read as selected" },
+    );
+    await waitVisible(row(prId));
+    await waitGone(row(backlogId));
+
+    // The pills describe the fleet, not the view, so selecting one must not
+    // renumber them.
+    expect(await pillCount("in_review")).toEqual(reviewCount);
+    expect(await pillCount("in_progress")).toEqual(progressCount);
+    // And the Projects heading still counts PROJECTS. Only the cards below it
+    // thin out.
+    expect(await projectsHeaderCount()).toEqual(projectsCount);
+    await snap("dashboard-phase-filter.png");
+
+    // Pressing the selected pill again is the undo, and it hands the selection
+    // back to All rather than to nothing.
+    await clickWhenVisible(pill("in_review"));
+    await waitVisible(row(backlogId));
+    await waitVisible(row(prId));
+    expect(await pressedPills()).toEqual(["all"]);
+
+    // Nothing is Done (archived tasks are not listed, and the only seeded PR
+    // is open), so this is the empty state.
+    expect(await pillCount("done")).toEqual(0);
+    await clickWhenVisible(pill("done"));
+    await waitVisible(EMPTY);
+    expect(await textOf(EMPTY)).toEqual("Nothing done");
+    expect(await countOf("[data-dashboard-task-id]")).toEqual(0);
+    // The cards go with their rows: an empty filter leaves no card behind to
+    // look at, which a row-only check would not catch.
+    expect(await countOf("[data-dashboard-project-id]")).toEqual(0);
+    await snap("dashboard-phase-empty.png");
+
+    await clickWhenVisible(pill("all"));
+    await waitVisible(row(prId));
+    await waitVisible(row(backlogId));
+    await waitGone(EMPTY);
+  });
+
+  it("shows an age once a task is a day old, and clears it by opening the task", async () => {
+    // Two claims, two tasks. The LABEL is seeded in the store, because no
+    // fixture can be three days old; the PERSISTENCE is a task nothing has
+    // ever opened, so the stamp it is asked for has to travel null -> fresh
+    // and cannot be satisfied by a value that was already there.
+    //
+    // Created first on purpose: `openTask` reloads `tasks` from disk, which
+    // would drop the store-only stamp seeded below.
+    ageId = await openTask(`${PREFIX}age`, false);
+    expect(await diskStamp(ageId)).toBeNull();
+
+    // Three days and a bit, so the label cannot be read as a boundary case:
+    // `daysSince` floors whole 24h buckets.
+    const threeDaysAgo = new Date(Date.now() - (3 * 24 + 2) * 3_600_000).toISOString();
+    await browser.execute(
+      (id, iso) => {
+        window.__termic!.useApp.setState((s: any) => ({
+          tasks: s.tasks.map((w: any) => (w.id === id ? { ...w, last_opened_at: iso } : w)),
+        }));
+      },
+      prId,
+      threeDaysAgo,
+    );
+    await showDashboard();
+    await waitVisible(age(prId));
+    expect(await textOf(age(prId))).toEqual("3 days ago");
+    await snap("dashboard-task-age.png");
+
+    // Opening the task stamps it, so the label has nothing left to say.
+    await browser.execute((id) => window.__termic!.useApp.getState().setActiveTask(id), prId);
+    await showDashboard();
+    await waitGone(age(prId));
+
+    // The persistence half has no DOM at all, which is what makes reading the
+    // record the right assertion here and the wrong one everywhere above.
+    // It runs on the never-opened task, whose record was null a moment ago.
+    // Asserting it on the task activated above would prove less: that one was
+    // opened when it was created, and Rust holds a stamp younger than
+    // TOUCH_MIN_SECS rather than rewriting the file, so a passing check there
+    // could be reading the stamp that first activation left.
+    await browser.execute((id) => window.__termic!.useApp.getState().setActiveTask(id), ageId);
+    await waitForAgentReady(ageId);
+
+    // Polled, because `task_touch` is deliberately fire-and-forget.
+    let disk: string | null = null;
+    await browser
+      .waitUntil(
+        async () => {
+          disk = await diskStamp(ageId);
+          const elapsed = Date.now() - Date.parse(disk ?? "");
+          return elapsed < 120_000 && elapsed > -5_000;
+        },
+        { timeout: 10_000, interval: 200 },
+      )
+      .catch(() => {
+        throw new Error(`last_opened_at never went null -> fresh on disk (it holds ${disk})`);
+      });
   });
 });
 
