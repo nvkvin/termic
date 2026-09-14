@@ -800,3 +800,12 @@ that every other writer of that record also takes. The existing async writers
 background poll whose read-to-write window is a few microseconds, so nobody
 has seen them lose a write. Adding a frequent one is how the race stops being
 theoretical.
+
+`task_mark_started` follows the rule the hard way and the easy way at once: it
+fires on the user's FIRST prompt, which is exactly when the pane is spawning and
+`task_record_spawn` and `task_set_tabs` are firing for the same task, so it is
+sync like `task_touch`, and it is write-once, so there is only ever one write to
+lose. `task_git_phase_state` is the other half of the rule: it is IO-heavy
+enough to need `spawn_blocking`, so it is strictly READ-ONLY on the record and
+must never call `save_task`. If it ever needs to persist something, that write
+goes through a sync command, not through the async one that computed it.

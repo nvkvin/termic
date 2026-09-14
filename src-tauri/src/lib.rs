@@ -451,6 +451,43 @@ pub struct Task {
     /// not interchangeable.
     #[serde(default)]
     pub last_opened_at: Option<String>,
+    /// RFC3339 UTC stamp of the FIRST time the user submitted a prompt into
+    /// any terminal of this task (the frontend's `markStarted`, fired from the
+    /// same four input paths that arm the work-state detector). Written once by
+    /// the app, never typed by a person, and never cleared.
+    ///
+    /// It is what separates "created, agent idling at its prompt" (Todo) from
+    /// "someone gave it work" (In progress). Spawning alone deliberately does
+    /// not count, because every GUI create spawns, so `spawn_count` cannot draw
+    /// that line on its own.
+    ///
+    /// `None` on records written before the field existed AND never worked
+    /// since. Records that predate it are backfilled once at startup (see
+    /// `backfill_started_at`), so an existing fleet does not all read Todo on
+    /// upgrade.
+    #[serde(default)]
+    pub started_at: Option<String>,
+    /// The commit this task's branch was cut from, recorded at creation.
+    ///
+    /// Written ONLY where the base is actually known, which is every site that
+    /// cuts the task's own branch with `git branch --no-track <branch> <base>`
+    /// and rev-parses the resolved base immediately before doing so:
+    /// `task_create_sync`, `task_create_multi_sync`'s host repo, and
+    /// `restore_task_branch` when an archive-with-delete removed the branch and
+    /// restore has to cut a new one. That last case REWRITES the value, because
+    /// the new branch really does start somewhere else.
+    ///
+    /// `None` everywhere else, on purpose: reusing an existing branch,
+    /// `task_import_worktree` and `task_open_repo` all adopt a branch that
+    /// predates the task, and recording the base's CURRENT sha for one of those
+    /// would invent a creation point that never existed. A restore that finds
+    /// its branch intact leaves the stored value alone for the same reason.
+    ///
+    /// `task_git_phase_state` reads it as the "was this branch ever really
+    /// worked on" anchor and falls back to the branch reflog's creation entry
+    /// when it is `None`. See that command for what an expired reflog costs.
+    #[serde(default)]
+    pub base_sha: Option<String>,
     /// True when this task points at the project's main repo checkout
     /// (no git worktree created). Used by the "open repo directly" feature:
     /// archive skips `git worktree remove`, and the UI shows a distinct icon.
@@ -1679,6 +1716,35 @@ fn load_tasks_in(id: &ProfileId) -> Vec<Task> {
     out
 }
 
+/// ONE task by id, read straight out of whichever profile holds its file.
+///
+/// The sweep is a `stat` per profile, which is nothing next to what the
+/// alternative costs. [`load_tasks_all`] re-parses every record of every
+/// profile, which is fine a handful of times per session and wrong on any path
+/// the user walks repeatedly: `task_touch` fires on every activation,
+/// `task_mark_started` on the first prompt of a task, and
+/// `task_git_phase_state` runs once per visible task on every dashboard poll,
+/// where the whole-fleet load would be N record parses per task per pass to
+/// answer a question about one of them.
+///
+/// The `profile` re-tag is the load-bearing line, exactly as in
+/// [`load_tasks_in`]. `Task.profile` is `serde(skip)`, so a record parsed
+/// straight from a file carries the DEFAULT profile rather than the one it came
+/// from, and a `save_task` after that would write a second copy of a non-root
+/// profile's task into the root tree.
+fn load_task_by_id(id: &str) -> Option<Task> {
+    // Sweep the profiles for the one file, the way `delete_task_file` does:
+    // the caller has only an id.
+    for pid in profiles_registry().ids() {
+        let Ok(dir) = tasks_dir_in(&pid) else { continue };
+        let Ok(s) = fs::read_to_string(dir.join(format!("{id}.json"))) else { continue };
+        let Ok(mut w) = serde_json::from_str::<Task>(&s) else { continue };
+        w.profile = pid.clone();
+        return Some(w);
+    }
+    None
+}
+
 // ── Port blocks (GH #196) ──
 // Each live task owns a consecutive block starting at its base port:
 //   1 ($TERMIC_PORT) + composition members + extra named ports
@@ -2146,6 +2212,97 @@ fn migrate_cli_enabled_default() {
     }
 }
 
+/// Stamp the `data_migration_version` ladder at `v`, never downwards. Written
+/// LAST by each step, so an interrupted or partly-failed run leaves the guard
+/// down and simply retries next launch.
+fn stamp_data_migration_version(v: u32) {
+    let mut s = load_settings_inner();
+    if s.data_migration_version >= v {
+        return;
+    }
+    s.data_migration_version = v;
+    let _ = save_settings_inner(&s);
+}
+
+/// The backfill rule for one record, split out so "running it twice changes
+/// nothing" is a real assertion about the RULE rather than about the version
+/// guard trivially bailing. Returns whether `w` changed and so needs saving.
+///
+/// Every task on disk before `started_at` shipped predates the field, so
+/// without this the user's whole fleet reads Todo on upgrade. A task an agent
+/// has actually run in is not Todo, and the two persisted facts that say so
+/// are `spawn_count` and `has_resumable_history`.
+///
+/// The stamp is `last_opened_at`, falling back to `created`: neither is when
+/// work really started, and both are an upper bound that is right to within a
+/// session. `created` is the floor, and a task nobody ever opened has nothing
+/// better. A record carrying neither (a hand-written or truncated file) is left
+/// alone rather than stamped with an empty string, which nothing downstream
+/// could parse.
+fn backfill_started_at(w: &mut Task) -> bool {
+    if w.started_at.is_some() {
+        return false;
+    }
+    if w.spawn_count == 0 && !w.has_resumable_history {
+        return false;
+    }
+    let stamp = w
+        .last_opened_at
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| Some(w.created.clone()).filter(|s| !s.trim().is_empty()));
+    match stamp {
+        Some(s) => {
+            w.started_at = Some(s);
+            true
+        }
+        None => false,
+    }
+}
+
+/// One-time backfill of `Task.started_at` across EVERY profile's tasks dir.
+///
+/// Idempotent twice over: the rule itself is a no-op on a record that already
+/// carries a stamp, and the ladder guard skips the sweep entirely once it has
+/// committed. Best-effort like its siblings, and the version is stamped LAST
+/// and only when every write landed, so a profile whose disk was full retries
+/// on the next launch instead of being silently skipped forever.
+///
+/// Ordered AFTER `migrate_workspaces_to_tasks`, which is what puts the records
+/// in `tasks/` where `load_tasks_in` looks for them.
+fn migrate_started_at_backfill() {
+    if load_settings_inner().data_migration_version >= STARTED_AT_BACKFILL_VERSION {
+        return;
+    }
+    let mut all_saved = true;
+    let mut changed = 0usize;
+    for pid in profiles_registry().ids() {
+        // `load_tasks_in` re-tags each record with the profile it came from,
+        // so `save_task` writes it back where it started rather than into the
+        // root tree.
+        for mut w in load_tasks_in(&pid) {
+            if !backfill_started_at(&mut w) {
+                continue;
+            }
+            match save_task(&w) {
+                Ok(()) => changed += 1,
+                Err(e) => {
+                    log_migration(&format!("started_at backfill: task {} failed: {e}", w.id));
+                    all_saved = false;
+                }
+            }
+        }
+    }
+    if all_saved {
+        if changed > 0 {
+            log_migration(&format!("started_at backfill: stamped {changed} task(s)"));
+        }
+        stamp_data_migration_version(STARTED_AT_BACKFILL_VERSION);
+    } else {
+        log_migration("started_at backfill: at least one write failed; retrying next launch");
+    }
+}
+
 /// Pure half of the migration, so the rule can be tested without a settings
 /// file (`TERMIC_DATA_DIR` is process-global and would race parallel tests).
 /// Returns whether `s` changed and therefore needs writing.
@@ -2344,6 +2501,15 @@ fn migrate_workspaces_to_tasks() {
 /// Raw stdout, for callers that read blobs (`git show HEAD:some.png`) where
 /// a lossy UTF-8 decode would destroy the bytes.
 fn git_bytes(args: &[&str], cwd: &Path) -> Result<Vec<u8>> {
+    git_bytes_env(args, cwd, &[])
+}
+
+/// `git_bytes` plus extra environment for the child. Only one caller needs it
+/// (the squash probe in `git_phase_state`, which pins author/committer identity
+/// and dates so the object it writes is content-identical on every run), and it
+/// lives here rather than at that call site so the login-shell env below has
+/// exactly one implementation.
+fn git_bytes_env(args: &[&str], cwd: &Path, extra: &[(&str, &str)]) -> Result<Vec<u8>> {
     let mut cmd = Command::new("git");
     cmd.args(args).current_dir(cwd);
     // Run with the user's login-shell environment, same as the PTY (see
@@ -2355,6 +2521,11 @@ fn git_bytes(args: &[&str], cwd: &Path) -> Result<Vec<u8>> {
     let (path, inject) = shell_env::spawn_env();
     cmd.env("PATH", path);
     for (k, v) in inject {
+        cmd.env(k, v);
+    }
+    // After the login-shell env, so a pin always wins over whatever the user's
+    // rc exported.
+    for (k, v) in extra {
         cmd.env(k, v);
     }
     let out = cmd.output().with_context(|| format!("git {:?}", args))?;
@@ -5745,6 +5916,8 @@ fn task_open_repo(
         split_layout: None,
         archived_at: None,
         last_opened_at: None,
+        started_at: None,
+        base_sha: None,
         pr_url: None,
         pr_number: None,
         pr_provider: None,
@@ -6006,6 +6179,8 @@ fn task_import_worktree(
         split_layout: None,
         archived_at: None,
         last_opened_at: None,
+        started_at: None,
+        base_sha: None,
         pr_url: None,
         pr_number: None,
         pr_provider: None,
@@ -6159,6 +6334,11 @@ fn task_create_sync(app: AppHandle, args: CreateTaskArgs) -> Result<Task, String
         .unwrap_or(false);
 
     let branch_exists = git(&["rev-parse", "--verify", &branch], &repo).is_ok();
+    // The commit the branch is cut from, recorded only on the path that
+    // actually cuts it. Reusing an existing branch leaves this None rather
+    // than recording today's base: that branch predates the task, and its
+    // real creation point is not the base's current tip. See `Task.base_sha`.
+    let mut base_sha: Option<String> = None;
     let wt_arg = wt_path.to_str().unwrap();
     let add_args: Vec<&str> = if has_git_crypt {
         // Skip checkout; we'll run it manually after symlinking the
@@ -6204,6 +6384,12 @@ fn task_create_sync(app: AppHandle, args: CreateTaskArgs) -> Result<Task, String
             resolve_base_ref(&repo, &base_full)
         };
         emit_create_progress(&app, &task_id, format!("Branching '{branch}' from '{base_ref}'…"));
+        // Freeze the base's sha BEFORE cutting, while `base_ref` still names
+        // exactly what the branch is about to point at.
+        base_sha = git(&["rev-parse", &format!("{base_ref}^{{commit}}")], &repo)
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
         let branch_result = match git(&["branch", "--no-track", &branch, &base_ref], &repo) {
             Ok(_) => Ok(()),
             Err(e) => Err(e),
@@ -6406,6 +6592,8 @@ fn task_create_sync(app: AppHandle, args: CreateTaskArgs) -> Result<Task, String
         split_layout: None,
         archived_at: None,
         last_opened_at: None,
+        started_at: None,
+        base_sha,
         pr_url: None,
         pr_number: None,
         pr_provider: None,
@@ -6571,6 +6759,11 @@ fn task_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<Task,
     }
 
     let host_repo = PathBuf::from(&host.root_path);
+    // The commit the HOST branch is cut from. Stays None for a non-git host
+    // (there is no branch) and for the reuse-existing-branch path, same rule
+    // as the single-repo create. Composition members never contribute: this
+    // names the task's own branch. See `Task.base_sha`.
+    let mut base_sha: Option<String> = None;
     if host.non_git {
         // Non-git host (issue #4): there's no worktree to add. Make the
         // wrapper dir ourselves, then symlink the host's shared knowledge
@@ -6608,6 +6801,11 @@ fn task_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<Task,
             }
             let base_ref = resolve_base_ref(&host_repo, &base_branch);
             emit_create_progress(&app, &task_id, format!("Branching host '{branch}' from '{base_ref}'…"));
+            // Freeze the base's sha before cutting, as the single-repo create does.
+            base_sha = git(&["rev-parse", &format!("{base_ref}^{{commit}}")], &host_repo)
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
             match git(&["branch", "--no-track", &branch, &base_ref], &host_repo) {
                 Ok(_) => {
                     emit_create_progress(&app, &task_id, format!("Adding host worktree at {}…", wrapper.display()));
@@ -6899,6 +7097,8 @@ fn task_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<Task,
         split_layout: None,
         archived_at: None,
         last_opened_at: None,
+        started_at: None,
+        base_sha,
         pr_url: None,
         pr_number: None,
         pr_provider: None,
@@ -8776,10 +8976,10 @@ fn touch_task_record(w: &mut Task, now: chrono::DateTime<chrono::Utc>) -> bool {
 /// Fires on EVERY activation (every sidebar click, every Cmd-number switch),
 /// and two things follow from that.
 ///
-/// It reads exactly ONE record. The siblings above call `load_tasks_all()`,
-/// re-parsing every task file of every profile, which is fine a handful of
-/// times per session and wrong on a path the user walks dozens of times an
-/// hour.
+/// It reads exactly ONE record, via [`load_task_by_id`]. The siblings above
+/// call `load_tasks_all()`, re-parsing every task file of every profile, which
+/// is fine a handful of times per session and wrong on a path the user walks
+/// dozens of times an hour.
 ///
 /// It is SYNC on purpose, like those siblings. Every per-task setter in this
 /// file is an unlocked read-modify-write of the whole record, and they get
@@ -8800,25 +9000,44 @@ fn task_touch(id: String) -> Result<String, String> {
 }
 
 fn task_touch_sync(id: String) -> Result<String, String> {
-    // Sweep the profiles for the one file, the way `delete_task_file` does:
-    // the caller has only an id, and a `stat` per profile is nothing next to
-    // parsing every record in all of them.
-    for pid in profiles_registry().ids() {
-        let Ok(dir) = tasks_dir_in(&pid) else { continue };
-        let Ok(s) = fs::read_to_string(dir.join(format!("{id}.json"))) else { continue };
-        let Ok(mut w) = serde_json::from_str::<Task>(&s) else { continue };
-        // `profile` is `serde(skip)`, so a record parsed straight from a file
-        // carries the DEFAULT profile, not the one it came from. Without this
-        // line `save_task` would write a second copy of a non-root profile's
-        // task into the root tree.
-        w.profile = pid.clone();
-        if !touch_task_record(&mut w, chrono::Utc::now()) {
-            return Ok(w.last_opened_at.clone().unwrap_or_default());
-        }
-        save_task(&w).map_err(|e| e.to_string())?;
+    let mut w = load_task_by_id(&id).ok_or("no such task")?;
+    if !touch_task_record(&mut w, chrono::Utc::now()) {
         return Ok(w.last_opened_at.clone().unwrap_or_default());
     }
-    Err("no such task".into())
+    save_task(&w).map_err(|e| e.to_string())?;
+    Ok(w.last_opened_at.clone().unwrap_or_default())
+}
+
+/// Stamp `started_at` the first time work is submitted into this task, and
+/// return the stamp now on disk.
+///
+/// WRITE-ONCE. A task that already carries a stamp gets its existing one back
+/// untouched, with no file write at all: the field records when work STARTED,
+/// so a later prompt must not move it. The frontend bails on its own copy too,
+/// and the bail lives here as well because that copy is per-window state and a
+/// second window (or a relaunch) would otherwise re-submit.
+///
+/// Same shape as [`task_touch_sync`] and for the same reasons: it reads ONE
+/// record via [`load_task_by_id`] rather than `load_tasks_all()`, and
+/// it is SYNC, so it serializes on the main thread against every other
+/// unlocked read-modify-write of the same file. It fires on the user's first
+/// prompt, which is exactly when the pane is spawning and `task_record_spawn`
+/// and `task_set_tabs` are firing for the same task. See docs/gotchas.md,
+/// "Task record setters serialize on the main thread".
+#[tauri::command]
+fn task_mark_started(id: String) -> Result<String, String> {
+    task_mark_started_sync(id)
+}
+
+fn task_mark_started_sync(id: String) -> Result<String, String> {
+    let mut w = load_task_by_id(&id).ok_or("no such task")?;
+    if let Some(existing) = w.started_at {
+        return Ok(existing);
+    }
+    let stamp = chrono::Utc::now().to_rfc3339();
+    w.started_at = Some(stamp.clone());
+    save_task(&w).map_err(|e| e.to_string())?;
+    Ok(stamp)
 }
 
 /// Set the persisted `has_resumable_history` flag for a task.
@@ -9123,6 +9342,42 @@ async fn task_restore(app: AppHandle, id: String) -> Result<Task, String> {
         .map_err(|e| e.to_string())?
 }
 
+/// Make sure a restored task's own branch exists again, and report the commit
+/// it was cut from when it had to be re-created.
+///
+/// `Ok(None)` means LEAVE `Task.base_sha` alone: the branch survived archive
+/// (only `delete_branch` archives remove it), nothing was cut, and the stored
+/// creation point is still true of it.
+///
+/// `Ok(Some(sha))` means the branch was gone and has just been re-cut from
+/// `sha`, frozen before the cut the way the two create sites freeze theirs. The
+/// record has to move with it: the old `base_sha` names a commit this branch no
+/// longer has any relationship to, and `task_git_phase_state` would measure
+/// against a base that was never its own.
+///
+/// The base resolves through the tolerant `resolve_base_ref`, matching what
+/// restore has always done here: this is a STORED base, and a local-only repo
+/// pinned to `origin/main` must still restore.
+fn restore_task_branch(
+    repo: &Path,
+    branch: &str,
+    base_branch: &str,
+) -> std::result::Result<Option<String>, String> {
+    if git(&["rev-parse", "--verify", branch], repo).is_ok() {
+        return Ok(None);
+    }
+    // Branch was deleted at archive time: recreate from base (resolved to a ref
+    // that exists; local-only repos have no origin/main).
+    let base_ref = resolve_base_ref(repo, base_branch);
+    let sha = git(&["rev-parse", &format!("{base_ref}^{{commit}}")], repo)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    git(&["branch", "--no-track", branch, &base_ref], repo)
+        .map_err(|e| format!("recreate branch '{branch}' from '{base_ref}': {e}"))?;
+    Ok(sha)
+}
+
 fn task_restore_sync(app: AppHandle, id: String) -> Result<Task, String> {
     let mut list = load_tasks_all();
     let idx = list.iter().position(|w| w.id == id).ok_or("task not found")?;
@@ -9168,6 +9423,17 @@ fn task_restore_sync(app: AppHandle, id: String) -> Result<Task, String> {
 
     let wt_path = PathBuf::from(&list[idx].path);
     let repo = PathBuf::from(&proj.root_path);
+
+    // Set only when restore has to RE-CUT the task's own branch, because
+    // archive deleted it. That branch really is cut from the base's tip right
+    // now, so the recorded creation point has to move with it: the stored
+    // `base_sha` names a commit the branch no longer has any relationship to,
+    // and leaving it would make `task_git_phase_state` measure against a base
+    // that was never this branch's. Applied near the end rather than here,
+    // because the record is re-read off disk just before it is saved (see
+    // there). Restoring a task whose branch still exists leaves `base_sha`
+    // exactly as it was: nothing was cut, so nothing changed.
+    let mut recut_base_sha: Option<String> = None;
 
     if list[idx].composition.is_empty() {
         // ── Single-repo task ──────────────────────────────────────────
@@ -9224,18 +9490,8 @@ fn task_restore_sync(app: AppHandle, id: String) -> Result<Task, String> {
             add_args.push(wt_arg);
             add_args.push(&branch);
 
-            let branch_exists = git(&["rev-parse", "--verify", &branch], &repo).is_ok();
-            if branch_exists {
-                git(&add_args, &repo).map_err(|e| e.to_string())?;
-            } else {
-                // Branch was deleted at archive time — recreate from base
-                // (resolved to a ref that exists; local-only repos have no
-                // origin/main).
-                let base_ref = resolve_base_ref(&repo, &base_branch);
-                git(&["branch", "--no-track", &branch, &base_ref], &repo)
-                    .map_err(|e| format!("recreate branch '{branch}' from '{base_ref}': {e}"))?;
-                git(&add_args, &repo).map_err(|e| e.to_string())?;
-            }
+            recut_base_sha = restore_task_branch(&repo, &branch, &base_branch)?;
+            git(&add_args, &repo).map_err(|e| e.to_string())?;
 
             // git-crypt: bridge the key dir into the new worktree's gitdir.
             if has_git_crypt {
@@ -9288,17 +9544,12 @@ fn task_restore_sync(app: AppHandle, id: String) -> Result<Task, String> {
         } else {
             let host_branch = list[idx].branch.clone();
             let host_base   = list[idx].base_branch.clone();
-            let branch_exists = git(&["rev-parse", "--verify", &host_branch], &repo).is_ok();
-            if branch_exists {
-                git(&["worktree", "add", wt_path.to_str().unwrap(), &host_branch], &repo)
-                    .map_err(|e| format!("host worktree add: {e}"))?;
-            } else {
-                let host_base_ref = resolve_base_ref(&repo, &host_base);
-                git(&["branch", "--no-track", &host_branch, &host_base_ref], &repo)
-                    .map_err(|e| format!("recreate host branch: {e}"))?;
-                git(&["worktree", "add", wt_path.to_str().unwrap(), &host_branch], &repo)
-                    .map_err(|e| format!("host worktree add: {e}"))?;
-            }
+            // The host branch IS the task's branch, so the same re-cut rule
+            // applies. Members are composition and keep no `base_sha` of their
+            // own, so their own recreation below leaves the record alone.
+            recut_base_sha = restore_task_branch(&repo, &host_branch, &host_base)?;
+            git(&["worktree", "add", wt_path.to_str().unwrap(), &host_branch], &repo)
+                .map_err(|e| format!("host worktree add: {e}"))?;
         }
 
         // Copy the host project's files_to_copy globs back in, same as the
@@ -9367,6 +9618,12 @@ fn task_restore_sync(app: AppHandle, id: String) -> Result<Task, String> {
     }
     rehome_ports_if_stolen(&mut list[idx], &snapshot, current_port_range());
     list[idx].archived = false;
+    // AFTER the fresh-record adopt above, which would otherwise overwrite it
+    // with the stale value straight off disk. `None` means no branch was
+    // re-cut, and then the existing `base_sha` is still the right answer.
+    if let Some(sha) = recut_base_sha {
+        list[idx].base_sha = Some(sha);
+    }
     save_task(&list[idx]).map_err(|e| e.to_string())?;
     drop(port_guard);
     let task = list[idx].clone();
@@ -10098,6 +10355,350 @@ async fn task_git_status(id: String) -> Result<GitStatus, String> {
     .await
     .map_err(|e| e.to_string())?
 }
+/// Where a task's branch stands against the base it was cut from. Every field
+/// is derived from git on demand; none of it is persisted, so it cannot go
+/// stale or disagree with the repo.
+#[derive(Clone, Debug, Serialize, Default, PartialEq, Eq)]
+pub struct TaskGitState {
+    /// Commits on the branch side that the base cannot reach
+    /// (`rev-list --count B..T`). Deliberately 0 after a merge of any kind:
+    /// it feeds the "is there work to review" rule, never the Done rule.
+    pub own_commits: u32,
+    /// Anything staged, unstaged or untracked in the HOST worktree.
+    /// Composition members are OUT OF SCOPE: a multi-repo task's members are
+    /// separate repos under the wrapper and answering for them would mean one
+    /// `git status` per member per poll.
+    ///
+    /// Untracked counts as dirty on purpose. A new file nobody has added is
+    /// still local work that exists on this machine and nowhere else, which is
+    /// the question this field is asked. The cost is that a multi-repo task
+    /// with a GIT host reads dirty from creation: `ensure_multirepo_gitignore`
+    /// unconditionally writes termic's managed block for the member dirs into
+    /// the wrapper, which is that host's worktree, so the wrapper always has an
+    /// untracked or modified `.gitignore` in it.
+    pub dirty: bool,
+    /// Commits not on the remote branch. `None` when there is no remote branch
+    /// at all, which is NOT the same fact as zero: a branch that has never been
+    /// pushed has nothing to be ahead of. (See CLAUDE.md on collapsing `null`
+    /// and a real answer.)
+    pub ahead: Option<u32>,
+    /// Whether this branch's work is already in the base. BIASED TOWARD FALSE:
+    /// a missed Done costs the user nothing, a wrong Done tells them to archive
+    /// live work. See `git_phase_state` for the two tiers.
+    pub merged_into_base: bool,
+    /// Whether the creation commit S was recoverable (from `Task.base_sha`, or
+    /// from the branch reflog). False means the second merge tier can never
+    /// fire for this task.
+    pub base_known: bool,
+}
+
+/// Identity and timestamps pinned on the throwaway `commit-tree` object the
+/// squash check writes. Git hashes the commit's whole header, so an unpinned
+/// author date would make a NEW dangling object on every single poll and the
+/// user's repo would accumulate them until `gc`. Pinned, the object is
+/// content-identical every time and simply dedupes into the one that is
+/// already there.
+const PHASE_PROBE_ENV: [(&str, &str); 6] = [
+    ("GIT_AUTHOR_NAME", "termic"),
+    ("GIT_AUTHOR_EMAIL", "termic@localhost"),
+    ("GIT_AUTHOR_DATE", "@0 +0000"),
+    ("GIT_COMMITTER_NAME", "termic"),
+    ("GIT_COMMITTER_EMAIL", "termic@localhost"),
+    ("GIT_COMMITTER_DATE", "@0 +0000"),
+];
+
+/// `rev-list --count <range>`, 0 on any failure.
+fn rev_count(repo: &Path, range: &str) -> u32 {
+    git(&["rev-list", "--count", range], repo)
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0)
+}
+
+/// True iff every branch-side commit in `range` is patch-equivalent to
+/// something already on the base side, and there is at least one to judge.
+///
+/// `--no-merges` matters: agents routinely merge the base back INTO their
+/// branch, and a merge commit has no patch-id, so it can never be marked
+/// equivalent and would sink an otherwise merged branch. Dropping merges from
+/// the question is safe because their content arrives with the commits they
+/// merge.
+///
+/// An empty range answers FALSE, not true: "nothing to compare" is not
+/// evidence of a merge, and treating it as one is exactly the wrong-Done this
+/// whole function is biased against.
+fn all_patch_equivalent(repo: &Path, range: &str) -> bool {
+    let Ok(out) = git(
+        &["log", "--cherry-mark", "--right-only", "--no-merges", "--format=%m", range],
+        repo,
+    ) else {
+        return false;
+    };
+    let mut judged = 0usize;
+    for line in out.lines() {
+        let l = line.trim();
+        if l.is_empty() {
+            continue;
+        }
+        judged += 1;
+        // "=" is patch-equivalent; ">" is a branch-side commit with no twin.
+        if l != "=" {
+            return false;
+        }
+    }
+    judged > 0
+}
+
+/// The commit the branch was created at: `Task.base_sha` when the task
+/// recorded one, else the branch reflog's creation entry.
+///
+/// The LAST line of `git reflog show <branch>` is the oldest entry, which for a
+/// branch cut with `git branch --no-track <b> <base>` is
+/// `branch: Created from <base>` and whose commit IS the base. Once that reflog
+/// expires (git's default `gc.reflogExpire` is 90 days) there is nothing left
+/// to recover it from, and S is simply unknown from then on.
+///
+/// `refs/heads/<branch>` fully qualified, so a tag or a file of the same name
+/// cannot answer instead.
+fn branch_creation_sha(repo: &Path, branch: &str, base_sha: Option<&str>) -> Option<String> {
+    if let Some(s) = base_sha {
+        let s = s.trim();
+        if !s.is_empty() {
+            return Some(s.to_string());
+        }
+    }
+    let out = git(&["reflog", "show", "--format=%H", &format!("refs/heads/{branch}")], repo).ok()?;
+    out.lines()
+        .rev()
+        .map(|l| l.trim())
+        .find(|l| !l.is_empty())
+        .map(|s| s.to_string())
+}
+
+/// True iff somebody committed ON this branch AND that commit is now reachable
+/// from the base. Both halves are load-bearing, and this is the discriminator
+/// the DAG cannot supply.
+///
+/// The reflog half: a fresh branch an agent fast-forwarded or rebased onto a
+/// newer base has a tip that is an ancestor of the base and differs from where
+/// it started, which is structurally identical to a branch that was ff-merged
+/// INTO the base. The difference is only visible in how the ref got there.
+/// `pull:`, `merge <x>: Fast-forward` and `rebase (finish):` are not commits;
+/// `commit:`, `commit (amend):`, `commit (merge):` and `commit (initial):` are.
+///
+/// The reachability half is the one the brief for this feature did not ask for,
+/// and it is required. MEASURED (git 2.50.1): a branch that committed C1 and
+/// then ran `git reset --hard main` onto a base that had moved satisfies every
+/// other condition. Its tip is an ancestor of the base, it moved off S, and its
+/// reflog holds `commit: C1`. Reporting that merged would tell the user to
+/// archive a task whose work was thrown away and never reached the base, which
+/// is precisely the expensive failure this whole function is biased against.
+/// Asking whether the committed sha actually landed rules it out: `C1` is not
+/// an ancestor of the base, while an ff-merged branch's commit IS the base tip
+/// and a merge-committed branch's is an ancestor of the merge.
+///
+/// Newest-first with a small cap, because the newest `commit` entry decides
+/// every realistic shape and an unbounded scan would be one subprocess per
+/// commit on a long-lived branch. Scanning a few past it is still right: a
+/// branch that committed, landed, committed again and then reset back to the
+/// landed commit has its answer one entry down.
+fn branch_commit_landed_on(repo: &Path, branch: &str, base: &str) -> bool {
+    /// How many `commit` reflog entries to probe, newest first.
+    const MAX_PROBES: usize = 10;
+    let Ok(out) = git(
+        &["reflog", "show", "--format=%H %gs", &format!("refs/heads/{branch}")],
+        repo,
+    ) else {
+        return false;
+    };
+    let mut probed = 0usize;
+    for line in out.lines() {
+        let Some((sha, msg)) = line.trim().split_once(' ') else { continue };
+        if !msg.trim_start().starts_with("commit") {
+            continue;
+        }
+        let sha = sha.trim();
+        if sha.is_empty() {
+            continue;
+        }
+        if git(&["merge-base", "--is-ancestor", sha, base], repo).is_ok() {
+            return true;
+        }
+        probed += 1;
+        if probed >= MAX_PROBES {
+            break;
+        }
+    }
+    false
+}
+
+/// Derive [`TaskGitState`] for one branch in one worktree. Pure in the sense
+/// that matters: it takes the four inputs it needs and touches no task record,
+/// so every DAG case below is testable on a temp repo.
+///
+/// `B` is the base tip, `T` the BRANCH tip (`refs/heads/<branch>`, not HEAD,
+/// which can be detached), `S` the commit the branch was cut from.
+///
+/// B resolves through `try_resolve_base_ref`, NOT the tolerant
+/// `resolve_base_ref` its callers usually take. The tolerant one falls back to
+/// `HEAD`, and in a task worktree HEAD is the branch itself: `own_commits`
+/// would be 0 and `merge-base --is-ancestor T B` trivially true, so a base
+/// branch deleted after a merge would make every live task report merged. When
+/// the base does not resolve, the answer is "not merged" and the caller learns
+/// nothing it can act on, which is the right way round.
+///
+/// `merged_into_base` has two tiers, and both are biased toward false:
+///
+/// - Tier 1 (there IS own work): every branch-side commit is patch-equivalent
+///   on the base. Covers rebase-and-merge. The squash variant replays the
+///   branch's whole tree as one commit on the merge base and asks the same
+///   question of that, which is what a squash-merge produced.
+/// - Tier 2 (`own_commits == 0`, so a fast-forward or a merge commit swallowed
+///   it): the tip is an ancestor of the base AND S is known AND the tip moved
+///   off S AND the branch reflog proves work was committed here and that the
+///   commit LANDED (see `branch_commit_landed_on`, which is what keeps a
+///   `reset --hard` onto a moved base from reading as merged). Missing S or
+///   missing reflog evidence means not merged, full stop.
+fn git_phase_state(
+    repo: &Path,
+    branch: &str,
+    base_branch: &str,
+    base_sha: Option<&str>,
+) -> std::result::Result<TaskGitState, String> {
+    // T: the branch tip. `refs/heads/` qualified and `^{commit}` peeled, so a
+    // detached HEAD, a same-named tag and a non-commit ref are all ruled out.
+    let t = git(
+        &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}^{{commit}}")],
+        repo,
+    )
+    .map(|s| s.trim().to_string())
+    .map_err(|_| format!("branch '{branch}' does not resolve in {}", repo.display()))?;
+    if t.is_empty() {
+        return Err(format!("branch '{branch}' does not resolve in {}", repo.display()));
+    }
+
+    let dirty = git(&["status", "--porcelain", "--untracked-files=normal"], repo)
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+
+    let s = branch_creation_sha(repo, branch, base_sha);
+    let base_known = s.is_some();
+
+    let base = try_resolve_base_ref(repo, base_branch);
+    let own_commits = base
+        .as_deref()
+        .map(|b| rev_count(repo, &format!("{b}..{t}")))
+        .unwrap_or(0);
+
+    // ahead: the branch's own upstream first (which covers a remote that is not
+    // called origin), then the conventional origin/<branch>. Neither present
+    // means there is no remote branch to be ahead of, which is `None`.
+    let remote = git(
+        &["rev-parse", "--abbrev-ref", "--symbolic-full-name", &format!("{branch}@{{upstream}}")],
+        repo,
+    )
+    .ok()
+    .map(|s| s.trim().to_string())
+    .filter(|s| !s.is_empty())
+    .or_else(|| {
+        let candidate = format!("refs/remotes/origin/{branch}");
+        git(&["rev-parse", "--verify", "--quiet", &format!("{candidate}^{{commit}}")], repo)
+            .ok()
+            .map(|_| candidate)
+    });
+    let ahead = remote.map(|r| rev_count(repo, &format!("{r}..{t}")));
+
+    let merged_into_base = match base.as_deref() {
+        None => false,
+        Some(b) if own_commits >= 1 => {
+            all_patch_equivalent(repo, &format!("{b}...{t}"))
+                || squash_equivalent(repo, b, &t)
+        }
+        Some(b) => {
+            git(&["merge-base", "--is-ancestor", &t, b], repo).is_ok()
+                && s.as_deref().map(|s| s != t).unwrap_or(false)
+                && branch_commit_landed_on(repo, branch, b)
+        }
+    };
+
+    Ok(TaskGitState { own_commits, dirty, ahead, merged_into_base, base_known })
+}
+
+/// The squash half of tier 1: rebuild what a squash-merge of this branch would
+/// have produced (its whole tree as one commit on the merge base) and ask
+/// whether THAT is patch-equivalent to something already on the base.
+///
+/// Guarded on the squash being non-empty (`T^{tree}` differs from the merge
+/// base's tree). Without that guard a branch whose tree matches its merge base
+/// squashes to an empty patch, which is trivially "equivalent" to anything and
+/// would report every such branch merged.
+fn squash_equivalent(repo: &Path, base: &str, t: &str) -> bool {
+    let Ok(mb) = git(&["merge-base", base, t], repo) else { return false };
+    let mb = mb.trim().to_string();
+    if mb.is_empty() {
+        return false;
+    }
+    let tree_of = |rev: &str| {
+        git(&["rev-parse", &format!("{rev}^{{tree}}")], repo).ok().map(|s| s.trim().to_string())
+    };
+    let (Some(t_tree), Some(mb_tree)) = (tree_of(t), tree_of(&mb)) else { return false };
+    if t_tree.is_empty() || t_tree == mb_tree {
+        return false;
+    }
+    // Dangling object, pinned so it is byte-identical on every poll. See
+    // PHASE_PROBE_ENV.
+    let Ok(tmp) = git_bytes_env(
+        &["commit-tree", &t_tree, "-p", &mb, "-m", "termic squash probe"],
+        repo,
+        &PHASE_PROBE_ENV,
+    ) else {
+        return false;
+    };
+    let tmp = String::from_utf8_lossy(&tmp).trim().to_string();
+    if tmp.is_empty() {
+        return false;
+    }
+    all_patch_equivalent(repo, &format!("{base}...{tmp}"))
+}
+
+/// The record-level half of [`task_git_phase_state`]: the two refusals, then
+/// the git work. Split out so both are testable without a Tauri runtime.
+fn task_phase_state_for(w: &Task) -> std::result::Result<TaskGitState, String> {
+    if w.archived {
+        return Err("task is archived".to_string());
+    }
+    if w.is_main_checkout {
+        return Err("task runs in the main checkout and has no branch of its own".to_string());
+    }
+    git_phase_state(Path::new(&w.path), &w.branch, &w.base_branch, w.base_sha.as_deref())
+}
+
+/// Where a task's branch stands against its base: commits of its own, local
+/// dirt, unpushed commits, and whether the work already landed.
+///
+/// ASYNC + `spawn_blocking` because it is IO-heavy (several git invocations,
+/// one of which writes an object), and READ-ONLY on the task record for exactly
+/// that reason: an async command that wrote the record would race the sync
+/// setters firing for the same task, which is how `task_touch` lost a stamp.
+/// It must never call `save_task`. See docs/gotchas.md, "Task record setters
+/// serialize on the main thread".
+///
+/// Errors for an archived task (its worktree is gone) and for a main-checkout
+/// task (it runs on the project's live checkout and has no branch of its own,
+/// so every question here is about somebody else's work).
+#[tauri::command]
+async fn task_git_phase_state(id: String) -> std::result::Result<TaskGitState, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        // One record, not the whole fleet: this runs once per visible task on
+        // every dashboard poll, and `load_tasks_all()` here would be N record
+        // parses per task per pass. See `load_task_by_id`.
+        let w = load_task_by_id(&id).ok_or("no such task")?;
+        task_phase_state_for(&w)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Result of a branch switch: which branch we're on, whether local work was
 /// stashed to get there, and whether re-applying that stash hit conflicts
 /// (conflict markers are left in the tree and the stash is retained).
@@ -18682,6 +19283,21 @@ pub struct Settings {
     /// the workspaces->tasks migration has committed.
     #[serde(default)]
     pub schema_version: u32,
+    /// Ladder for one-time backfills of TASK RECORD FIELDS, counted
+    /// independently of `schema_version` above. 0 (default, absent in files
+    /// written before the first step) means no backfill has run; each step
+    /// gates on `< ITS_OWN_CONST` and stamps its own number last.
+    ///
+    /// A second counter rather than a bump of `schema_version`: that one gates
+    /// the workspaces->tasks migration on `>= TASKS_SCHEMA_VERSION`, so raising
+    /// it would re-run that whole migration (backup, stage, rename) on every
+    /// v1 profile on the next launch. Same reasoning as `cli_default_migrated`,
+    /// with a counter instead of a bool because backfills accumulate and a bool
+    /// per step does not tell you which ones a profile has seen.
+    ///
+    /// Steps so far: 1 = `STARTED_AT_BACKFILL_VERSION`.
+    #[serde(default)]
+    pub data_migration_version: u32,
     /// When on (the default), a best-effort `git fetch` of the base ref runs
     /// before a new task's branch is cut, so it starts from the latest remote
     /// commit instead of a stale local `origin/*` (GH #79). `None` (absent in
@@ -18838,6 +19454,13 @@ fn tray_enabled() -> bool {
 /// Current on-disk schema version. Bump when adding a migration and gate it
 /// on `settings.schema_version < NEW_VALUE`.
 const TASKS_SCHEMA_VERSION: u32 = 1;
+
+/// Step 1 of the `data_migration_version` ladder: backfill `Task.started_at`
+/// for records written before the field existed. See
+/// `migrate_started_at_backfill`. Do NOT fold this into
+/// `TASKS_SCHEMA_VERSION`: that constant gates the workspaces->tasks
+/// migration, which would re-run on every v1 profile if it moved.
+const STARTED_AT_BACKFILL_VERSION: u32 = 1;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Agent {
@@ -22142,6 +22765,12 @@ pub fn run() {
             // layout. Best-effort + gated by settings.schema_version, so it's a
             // cheap no-op on every launch after the first.
             migrate_workspaces_to_tasks();
+            // One-time backfill of Task.started_at for records written before
+            // the field existed. AFTER the rename migration, which is what puts
+            // those records in `tasks/` where this can find them, and before the
+            // window, so the first `tasks_list` already carries the stamps and
+            // no row flickers from Todo to In progress.
+            migrate_started_at_backfill();
             // One-time flip of cli_enabled for profiles that predate the CLI
             // graduating (0.26.0). Ordered after the task migration and before
             // the window so the control socket's first request already reads
@@ -22303,7 +22932,7 @@ pub fn run() {
             repo_config_load, repo_config_load_at, repo_config_save, repo_config_scaffold, repo_config_add_allowed_host, repo_config_add_allowed_path,
 
             task_reorder,
-            task_restore, task_delete, task_run_script, task_run_script_stream, task_ensure_extra_ports, task_stop_script, task_record_spawn, task_set_has_history, task_touch, task_set_agent_session_id,
+            task_restore, task_delete, task_run_script, task_run_script_stream, task_ensure_extra_ports, task_stop_script, task_record_spawn, task_set_has_history, task_touch, task_mark_started, task_git_phase_state, task_set_agent_session_id,
             task_set_tabs, task_set_tab_session_id,
             task_set_split_layout,
             task_set_right_tabs, task_set_right_tab_session_id,
@@ -29800,11 +30429,600 @@ filename f.rs
         });
     }
 
+    // The single-record read the three hot per-task commands share
+    // (`task_touch`, `task_mark_started`, `task_git_phase_state`), instead of
+    // `load_tasks_all()` re-parsing every record of every profile to answer a
+    // question about one of them.
+    //
+    // The re-tag is the whole reason it is a helper rather than a `read_to_string`
+    // at each site: `Task.profile` is `serde(skip)`, so a record parsed straight
+    // from a file reads as the DEFAULT profile, and the next `save_task` would
+    // drop a second copy of a non-root profile's task into the root tree. This
+    // asserts it on the READ side; the write-back is covered by the touch and
+    // mark-started profile tests.
+    #[test]
+    fn loading_one_task_by_id_tags_it_with_the_profile_it_came_from() {
+        with_scratch_data_dir(|data| {
+            crate::profiles::save_registry(data, &two_profile_registry()).unwrap();
+            crate::save_task(&a_task("t3", ProfileId::Slug("home".into()))).unwrap();
+
+            let w = crate::load_task_by_id("t3").expect("the task is there");
+            assert_eq!(w.id, "t3");
+            assert_eq!(
+                w.profile,
+                ProfileId::Slug("home".into()),
+                "an untagged read would be Root here, and the next save would \
+                 write a second copy of this task into the root tree",
+            );
+            // It finds a ROOT-profile record too, not just a named one.
+            crate::save_task(&a_task("t4", ProfileId::Root)).unwrap();
+            assert_eq!(crate::load_task_by_id("t4").unwrap().profile, ProfileId::Root);
+
+            assert!(crate::load_task_by_id("nope").is_none());
+        });
+    }
+
     #[test]
     fn touching_a_task_that_does_not_exist_is_an_error() {
         with_scratch_data_dir(|_data| {
             assert_eq!(crate::task_touch_sync("nope".into()), Err("no such task".into()));
         });
+    }
+
+    // ── started_at / task_mark_started ──────────────────────────────
+    //
+    // `started_at` is WRITE-ONCE: it records when work began, so a later
+    // prompt must not move it. The bail lives in the command as well as the
+    // frontend, because the frontend's copy is per-window state and a second
+    // window would otherwise re-submit.
+
+    // Both new fields have to survive a record written before either existed,
+    // and `None` has to survive the trip: for `started_at` it is what makes a
+    // task read Todo, and for `base_sha` it is what stops the merge check
+    // trusting a creation point nobody recorded.
+    #[test]
+    fn a_task_written_before_started_at_and_base_sha_existed_reads_as_none() {
+        let mut value = serde_json::to_value(Task::default()).unwrap();
+        assert!(value.get("started_at").is_some(), "started_at stopped serializing");
+        assert!(value.get("base_sha").is_some(), "base_sha stopped serializing");
+        let obj = value.as_object_mut().unwrap();
+        obj.remove("started_at");
+        obj.remove("base_sha");
+
+        let back: Task = serde_json::from_value(value).unwrap();
+        assert_eq!(back.started_at, None);
+        assert_eq!(back.base_sha, None);
+    }
+
+    #[test]
+    fn marking_started_stamps_once_and_never_moves_it() {
+        with_scratch_data_dir(|_data| {
+            crate::save_task(&a_task("t1", ProfileId::Root)).unwrap();
+
+            let first = crate::task_mark_started_sync("t1".into()).expect("the task is there");
+            assert!(
+                chrono::DateTime::parse_from_rfc3339(&first).is_ok(),
+                "not RFC3339: {first}"
+            );
+            assert_eq!(
+                crate::load_tasks_in(&ProfileId::Root)[0].started_at.as_deref(),
+                Some(first.as_str()),
+            );
+
+            // Second prompt, any time later: the SAME stamp comes back and the
+            // record is untouched. Compare the file's mtime as well as the
+            // value, because returning the right string while rewriting the
+            // file would still be a write on the user's first-prompt path.
+            let file = crate::tasks_dir_in(&ProfileId::Root).unwrap().join("t1.json");
+            let before = fs::metadata(&file).unwrap().modified().unwrap();
+            let bytes = fs::read_to_string(&file).unwrap();
+            assert_eq!(crate::task_mark_started_sync("t1".into()).unwrap(), first);
+            assert_eq!(fs::metadata(&file).unwrap().modified().unwrap(), before);
+            // Byte equality as well as mtime: mtime is sub-second on APFS but
+            // would false-pass on a filesystem with 1s granularity.
+            assert_eq!(fs::read_to_string(&file).unwrap(), bytes);
+            assert_eq!(
+                crate::load_tasks_in(&ProfileId::Root)[0].started_at.as_deref(),
+                Some(first.as_str()),
+            );
+        });
+    }
+
+    #[test]
+    fn marking_started_writes_back_to_the_profile_the_task_came_from() {
+        // Same trap as `task_touch`: the command reads ONE file, so the record
+        // it parses carries the DEFAULT profile (`profile` is `serde(skip)`).
+        // Forget the re-tag and the save lands in the root and the task exists
+        // twice.
+        with_scratch_data_dir(|data| {
+            crate::profiles::save_registry(data, &two_profile_registry()).unwrap();
+            crate::save_task(&a_task("t2", ProfileId::Slug("home".into()))).unwrap();
+
+            let stamp = crate::task_mark_started_sync("t2".into()).expect("the task is there");
+            assert!(!data.join("tasks/t2.json").exists(), "the mark moved t2 into the root");
+
+            let home = crate::load_tasks_in(&ProfileId::Slug("home".into()));
+            assert_eq!(home.len(), 1);
+            assert_eq!(home[0].started_at.as_deref(), Some(stamp.as_str()));
+        });
+    }
+
+    #[test]
+    fn marking_a_task_that_does_not_exist_is_an_error() {
+        with_scratch_data_dir(|_data| {
+            assert_eq!(crate::task_mark_started_sync("nope".into()), Err("no such task".into()));
+        });
+    }
+
+    // ── started_at backfill (data_migration_version 1) ──────────────
+    //
+    // Every record on disk predates the field, so without this the whole fleet
+    // reads Todo on upgrade. The rule is tested directly rather than through
+    // the version guard, or "running it twice changes nothing" would only
+    // prove that the guard bailed.
+
+    #[test]
+    fn the_backfill_stamps_a_task_an_agent_has_run_in() {
+        let mut w = Task {
+            spawn_count: 3,
+            last_opened_at: Some("2026-02-01T09:00:00Z".into()),
+            created: "2026-01-01T00:00:00Z".into(),
+            ..Default::default()
+        };
+        assert!(backfill_started_at(&mut w));
+        assert_eq!(w.started_at.as_deref(), Some("2026-02-01T09:00:00Z"));
+
+        // Idempotent: a second pass is a no-op and leaves the value alone.
+        assert!(!backfill_started_at(&mut w));
+        assert_eq!(w.started_at.as_deref(), Some("2026-02-01T09:00:00Z"));
+    }
+
+    #[test]
+    fn the_backfill_falls_back_to_created_when_the_task_was_never_opened() {
+        // `has_resumable_history` alone is enough: a session survived past the
+        // settle threshold, so somebody gave this task work.
+        let mut w = Task {
+            has_resumable_history: true,
+            created: "2026-01-01T00:00:00Z".into(),
+            ..Default::default()
+        };
+        assert!(backfill_started_at(&mut w));
+        assert_eq!(w.started_at.as_deref(), Some("2026-01-01T00:00:00Z"));
+    }
+
+    #[test]
+    fn the_backfill_leaves_a_task_nothing_ever_ran_in_alone() {
+        let mut w = Task { created: "2026-01-01T00:00:00Z".into(), ..Default::default() };
+        assert!(!backfill_started_at(&mut w));
+        assert_eq!(w.started_at, None);
+
+        // ...and it never overwrites a stamp that is already there, whatever
+        // the counters say.
+        let mut already = Task {
+            spawn_count: 9,
+            started_at: Some("2026-03-03T03:03:03Z".into()),
+            last_opened_at: Some("2026-05-05T05:05:05Z".into()),
+            created: "2026-01-01T00:00:00Z".into(),
+            ..Default::default()
+        };
+        assert!(!backfill_started_at(&mut already));
+        assert_eq!(already.started_at.as_deref(), Some("2026-03-03T03:03:03Z"));
+    }
+
+    #[test]
+    fn the_backfill_sweeps_every_profile_and_stamps_the_version_last() {
+        with_scratch_data_dir(|data| {
+            crate::profiles::save_registry(data, &two_profile_registry()).unwrap();
+
+            let mut worked = a_task("ran", ProfileId::Slug("home".into()));
+            worked.spawn_count = 1;
+            worked.last_opened_at = Some("2026-02-01T09:00:00Z".into());
+            crate::save_task(&worked).unwrap();
+            // Root profile, never run in: must stay None.
+            crate::save_task(&a_task("idle", ProfileId::Root)).unwrap();
+
+            crate::migrate_started_at_backfill();
+
+            let home = crate::load_tasks_in(&ProfileId::Slug("home".into()));
+            assert_eq!(home[0].started_at.as_deref(), Some("2026-02-01T09:00:00Z"));
+            let root = crate::load_tasks_in(&ProfileId::Root);
+            assert_eq!(root[0].started_at, None, "nothing ran here, so nothing to stamp");
+
+            // The version is the guard, and it is written LAST.
+            assert_eq!(
+                crate::load_settings_inner().data_migration_version,
+                crate::STARTED_AT_BACKFILL_VERSION,
+            );
+            // It is NOT the workspaces->tasks counter: bumping that one would
+            // re-run the rename migration on every v1 profile.
+            assert_eq!(crate::load_settings_inner().schema_version, 0);
+
+            // A second launch changes nothing, including for a record that has
+            // since become eligible (the guard is committed, and the rule is a
+            // no-op on anything already stamped).
+            let mut later = a_task("idle", ProfileId::Root);
+            later.spawn_count = 4;
+            crate::save_task(&later).unwrap();
+            crate::migrate_started_at_backfill();
+            assert_eq!(crate::load_tasks_in(&ProfileId::Root)[0].started_at, None);
+        });
+    }
+
+    // ── task_git_phase_state: the DAG ───────────────────────────────
+    //
+    // `merged_into_base` is biased toward FALSE on purpose: a missed Done
+    // costs the user nothing, a wrong Done tells them to archive live work.
+    // The discriminating case has its own test below, and the rest of this
+    // block exists so the bias cannot be quietly traded away for coverage.
+
+    /// A main checkout with `main` at one commit, plus a task worktree on
+    /// `branch` cut the way termic cuts one: `git branch --no-track <b> main`
+    /// and then `worktree add`. The two-step cut is what writes the
+    /// `branch: Created from main` reflog entry that `base_sha: None` falls
+    /// back to, so a fixture using `worktree add -b` would not be the same
+    /// shape. Returns (main tempdir, worktree tempdir, main path, worktree).
+    fn phase_fixture(branch: &str) -> (tempfile::TempDir, tempfile::TempDir, PathBuf, PathBuf) {
+        let main_dir = tempdir().unwrap();
+        let wt_dir = tempdir().unwrap();
+        let main = main_dir.path().to_path_buf();
+        git_init_with_commit(&main);
+        git_set_identity(&main);
+        git_run(&main, &["branch", "--no-track", branch, "main"]);
+        let wt = wt_dir.path().join("wt");
+        git_run(&main, &["worktree", "add", wt.to_str().unwrap(), branch]);
+        (main_dir, wt_dir, main, wt)
+    }
+
+    /// Replay `branch`'s own commits onto `main` and fast-forward `main` to
+    /// them, i.e. what a forge's "Rebase and merge" does. `branch` itself is
+    /// left exactly where it was, which is the state the app then has to read.
+    fn rebase_and_merge(main: &Path, branch: &str) {
+        git_run(main, &["checkout", "-q", "-b", "replay", branch]);
+        git_run(main, &["rebase", "-q", "main"]);
+        git_run(main, &["checkout", "-q", "main"]);
+        git_run(main, &["merge", "-q", "--ff-only", "replay"]);
+        git_run(main, &["branch", "-q", "-D", "replay"]);
+    }
+
+    /// What a forge's "Squash and merge" does: one commit on `main` carrying
+    /// the whole branch diff, with `branch` left untouched.
+    fn squash_and_merge(main: &Path, branch: &str) {
+        git_run(main, &["merge", "--squash", branch]);
+        git_run(main, &["commit", "-q", "-m", &format!("squash {branch}")]);
+    }
+
+    // Restore is the THIRD place a task's branch gets cut, after the two
+    // create sites. An archive with `delete_branch` removes the branch, so
+    // restore cuts a new one from wherever the base is NOW, and the recorded
+    // creation point has to move with it: the stored `base_sha` names a commit
+    // the new branch was never cut from, and `task_git_phase_state` would
+    // measure against a base that was never its own. An archive that kept the
+    // branch cuts nothing, and then the original value is still true.
+    #[test]
+    fn restore_re_records_the_base_only_when_it_re_cuts_the_branch() {
+        let (_m, _w, main, _wt) = phase_fixture("alice-restore");
+        let original = git_rev(&main, "main");
+
+        // The branch survived archive: nothing is cut, so nothing is recorded
+        // and the record keeps whatever it had.
+        assert_eq!(restore_task_branch(&main, "alice-restore", "main"), Ok(None));
+
+        // Now the archive-with-delete case. Drop the worktree and the branch,
+        // then move the base on, so a re-cut lands somewhere the original
+        // `base_sha` does not name.
+        git_run(&main, &["worktree", "remove", "--force", _wt.to_str().unwrap()]);
+        git_run(&main, &["branch", "-D", "alice-restore"]);
+        git_commit_file(&main, "m2.txt", "base moved\n", "M2");
+        let moved = git_rev(&main, "main");
+        assert_ne!(moved, original, "the base must have moved, or this proves nothing");
+
+        let recorded = restore_task_branch(&main, "alice-restore", "main")
+            .expect("the branch is gone, so it gets re-cut")
+            .expect("a re-cut must report the commit it cut from");
+        assert_eq!(recorded, moved, "it records where the branch ACTUALLY starts now");
+        assert_eq!(git_rev(&main, "refs/heads/alice-restore"), moved);
+
+        // ...and restoring again, with the branch now back, records nothing.
+        assert_eq!(restore_task_branch(&main, "alice-restore", "main"), Ok(None));
+    }
+
+    #[test]
+    fn a_fresh_branch_is_not_merged() {
+        let (_m, _w, _main, wt) = phase_fixture("alice-fresh");
+        let st = git_phase_state(&wt, "alice-fresh", "main", None).unwrap();
+        assert_eq!(st.own_commits, 0);
+        assert!(!st.merged_into_base, "nothing has happened here yet");
+        assert!(st.base_known, "the creation entry is right there in the reflog");
+        assert!(!st.dirty);
+        assert_eq!(st.ahead, None, "no remote branch is not the same fact as zero");
+    }
+
+    // THE DISCRIMINATOR. A fresh branch an agent fast-forwarded onto a base
+    // that moved is structurally identical to an ff-merged branch: its tip is
+    // an ancestor of the base and differs from where it started. The DAG
+    // cannot tell them apart at all, so the reflog has to: this one was never
+    // committed on.
+    #[test]
+    fn a_fresh_branch_pulled_up_to_a_moved_base_is_not_merged() {
+        let (_m, _w, main, wt) = phase_fixture("alice-pull");
+        git_commit_file(&main, "m2.txt", "base moved\n", "M2");
+        git_run(&wt, &["merge", "-q", "--ff-only", "main"]);
+
+        let st = git_phase_state(&wt, "alice-pull", "main", None).unwrap();
+        assert_eq!(st.own_commits, 0);
+        assert!(st.base_known);
+        assert!(
+            !st.merged_into_base,
+            "a branch that only ever pulled the base in has nothing to have merged"
+        );
+
+        // The same answer when the base sha came off the record rather than
+        // the reflog: it is the reflog SUBJECTS that rule this out, and a
+        // recorded base must not smuggle it past them.
+        let s = git_rev(&main, "main~1");
+        let with_record = git_phase_state(&wt, "alice-pull", "main", Some(&s)).unwrap();
+        assert!(!with_record.merged_into_base);
+    }
+
+    // The OTHER wrong-Done, and the one the two-tier rule as originally
+    // specified walked straight into. An agent that committed and then threw
+    // the work away with `reset --hard` onto a base that had moved satisfies
+    // every DAG condition of tier 2: tip an ancestor of the base, moved off S,
+    // and a `commit:` line in its reflog. MEASURED on this fixture before the
+    // fix, every one of those was true and the answer came back merged, which
+    // would have told the user to archive a task whose work never landed.
+    // Asking whether the committed sha is REACHABLE from the base is what
+    // separates them: here it is not.
+    #[test]
+    fn a_branch_that_reset_its_work_away_is_not_merged() {
+        let (_m, _w, main, wt) = phase_fixture("alice-reset");
+        git_commit_file(&wt, "c1.txt", "one\n", "C1");
+        let discarded = git_rev(&wt, "HEAD");
+        git_commit_file(&main, "m2.txt", "base moved\n", "M2");
+        git_run(&wt, &["reset", "-q", "--hard", "main"]);
+
+        // The preconditions really are all met, or this proves nothing.
+        let st = git_phase_state(&wt, "alice-reset", "main", None).unwrap();
+        assert_eq!(st.own_commits, 0);
+        assert!(st.base_known);
+        assert!(git(&["merge-base", "--is-ancestor", "refs/heads/alice-reset", "main"], &wt).is_ok());
+        assert!(
+            git(&["merge-base", "--is-ancestor", &discarded, "main"], &wt).is_err(),
+            "the committed work must be absent from the base, or this is not the case",
+        );
+
+        assert!(!st.merged_into_base, "work that was reset away never reached the base");
+    }
+
+    #[test]
+    fn one_commit_fast_forwarded_into_the_base_is_merged() {
+        let (_m, _w, main, wt) = phase_fixture("alice-ff");
+        git_commit_file(&wt, "c1.txt", "one\n", "C1");
+        git_run(&main, &["merge", "-q", "--ff-only", "alice-ff"]);
+
+        let st = git_phase_state(&wt, "alice-ff", "main", None).unwrap();
+        assert_eq!(st.own_commits, 0, "a fast-forward leaves nothing on the branch side");
+        assert!(st.base_known);
+        assert!(st.merged_into_base, "tier 2: ancestor, moved off S, and committed on");
+    }
+
+    #[test]
+    fn a_merge_commit_into_the_base_is_merged() {
+        let (_m, _w, main, wt) = phase_fixture("alice-merge");
+        git_commit_file(&wt, "c1.txt", "one\n", "C1");
+        // The base moves, so the merge cannot fast-forward.
+        git_commit_file(&main, "m2.txt", "base moved\n", "M2");
+        git_run(&main, &["merge", "-q", "--no-ff", "-m", "merge alice-merge", "alice-merge"]);
+
+        let st = git_phase_state(&wt, "alice-merge", "main", None).unwrap();
+        assert_eq!(st.own_commits, 0);
+        assert!(st.merged_into_base);
+    }
+
+    #[test]
+    fn rebase_and_merge_is_merged() {
+        let (_m, _w, main, wt) = phase_fixture("alice-rebase");
+        git_commit_file(&wt, "c1.txt", "one\n", "C1");
+        git_commit_file(&wt, "c2.txt", "two\n", "C2");
+        git_commit_file(&main, "m2.txt", "base moved\n", "M2");
+        rebase_and_merge(&main, "alice-rebase");
+
+        let st = git_phase_state(&wt, "alice-rebase", "main", None).unwrap();
+        assert_eq!(st.own_commits, 2, "the originals are still only on the branch side");
+        assert!(st.merged_into_base, "tier 1: every branch-side commit has a twin on base");
+    }
+
+    #[test]
+    fn a_squash_merge_of_two_commits_is_merged() {
+        let (_m, _w, main, wt) = phase_fixture("alice-squash");
+        git_commit_file(&wt, "c1.txt", "one\n", "C1");
+        git_commit_file(&wt, "c2.txt", "two\n", "C2");
+        squash_and_merge(&main, "alice-squash");
+
+        let st = git_phase_state(&wt, "alice-squash", "main", None).unwrap();
+        assert_eq!(st.own_commits, 2);
+        assert!(
+            st.merged_into_base,
+            "no individual commit has a twin, so only the squash tier can see this"
+        );
+    }
+
+    #[test]
+    fn a_branch_that_merged_the_base_in_and_was_then_squash_merged_is_merged() {
+        let (_m, _w, main, wt) = phase_fixture("alice-back");
+        git_commit_file(&wt, "c1.txt", "one\n", "C1");
+        git_commit_file(&main, "m2.txt", "base moved\n", "M2");
+        // Agents do this constantly: pull the base back into the branch.
+        git_run(&wt, &["merge", "-q", "--no-ff", "-m", "merge main into alice-back", "main"]);
+        git_commit_file(&wt, "c2.txt", "two\n", "C2");
+        squash_and_merge(&main, "alice-back");
+
+        let st = git_phase_state(&wt, "alice-back", "main", None).unwrap();
+        assert!(st.own_commits >= 1);
+        assert!(st.merged_into_base);
+    }
+
+    // The case `--no-merges` exists for, isolated. CONTROL RUN (git 2.50.1,
+    // this exact graph): with `--no-merges` the cherry-mark output is the one
+    // line `= C1`; drop the flag and it becomes `> merge main into alice-both`
+    // plus `= C1`, so tier 1 sees a non-equivalent commit and reports NOT
+    // merged. A merge commit has no patch-id, so it can never be marked
+    // equivalent, and dropping merges from the question is safe because their
+    // content arrives with the commits they merge.
+    #[test]
+    fn a_branch_that_merged_the_base_in_and_was_then_rebase_merged_is_merged() {
+        let (_m, _w, main, wt) = phase_fixture("alice-both");
+        git_commit_file(&wt, "c1.txt", "one\n", "C1");
+        git_commit_file(&main, "m2.txt", "base moved\n", "M2");
+        git_run(&wt, &["merge", "-q", "--no-ff", "-m", "merge main into alice-both", "main"]);
+        rebase_and_merge(&main, "alice-both");
+
+        let st = git_phase_state(&wt, "alice-both", "main", None).unwrap();
+        assert_eq!(st.own_commits, 2, "the branch's own commit plus the merge commit");
+        assert!(st.merged_into_base, "the merge commit must not sink tier 1");
+    }
+
+    // Losing the reflog costs tier 2 outright, and a recorded `base_sha` does
+    // not buy it back: S is only one of the three things tier 2 needs, and the
+    // proof that anything was committed here is the other one.
+    #[test]
+    fn an_expired_reflog_costs_the_fast_forward_tier_even_with_a_recorded_base() {
+        let (_m, _w, main, wt) = phase_fixture("alice-noreflog");
+        let s = git_rev(&main, "main");
+        git_commit_file(&wt, "c1.txt", "one\n", "C1");
+        git_run(&main, &["merge", "-q", "--ff-only", "alice-noreflog"]);
+        // What `gc` does once gc.reflogExpire (90 days by default) passes.
+        // Branch reflogs live in the COMMON git dir, shared by every worktree.
+        fs::remove_file(main.join(".git/logs/refs/heads/alice-noreflog")).unwrap();
+
+        let gone = git_phase_state(&wt, "alice-noreflog", "main", None).unwrap();
+        assert!(!gone.base_known, "nothing is left to recover S from");
+        assert!(!gone.merged_into_base);
+
+        let recorded = git_phase_state(&wt, "alice-noreflog", "main", Some(&s)).unwrap();
+        assert!(recorded.base_known, "the record still knows where the branch was cut");
+        assert!(
+            !recorded.merged_into_base,
+            "S alone is not evidence that work was committed on this branch"
+        );
+    }
+
+    #[test]
+    fn an_untracked_file_counts_as_dirty() {
+        let (_m, _w, _main, wt) = phase_fixture("alice-dirty");
+        assert!(!git_phase_state(&wt, "alice-dirty", "main", None).unwrap().dirty);
+
+        // Untracked on purpose: it is local work that exists on this machine
+        // and nowhere else, which is exactly what the field is asked.
+        fs::write(wt.join("scratch.txt"), "not added\n").unwrap();
+        assert!(git_phase_state(&wt, "alice-dirty", "main", None).unwrap().dirty);
+
+        // ...and so is a tracked file edited but not staged.
+        fs::remove_file(wt.join("scratch.txt")).unwrap();
+        fs::write(wt.join("base.txt"), "edited\n").unwrap();
+        assert!(git_phase_state(&wt, "alice-dirty", "main", None).unwrap().dirty);
+    }
+
+    #[test]
+    fn ahead_counts_unpushed_commits_and_is_none_without_a_remote_branch() {
+        let origin_dir = tempdir().unwrap();
+        git_run(origin_dir.path(), &["init", "-q", "--bare", "-b", "main"]);
+        let (_m, _w, main, wt) = phase_fixture("alice-ahead");
+        git_run(&main, &["remote", "add", "origin", origin_dir.path().to_str().unwrap()]);
+        git_run(&main, &["push", "-q", "origin", "main"]);
+
+        // A remote exists, but this branch has never been pushed: there is
+        // nothing to be ahead OF, which is None rather than a count.
+        assert_eq!(git_phase_state(&wt, "alice-ahead", "main", None).unwrap().ahead, None);
+
+        git_run(&wt, &["push", "-q", "-u", "origin", "alice-ahead"]);
+        assert_eq!(git_phase_state(&wt, "alice-ahead", "main", None).unwrap().ahead, Some(0));
+
+        git_commit_file(&wt, "c1.txt", "one\n", "C1");
+        assert_eq!(git_phase_state(&wt, "alice-ahead", "main", None).unwrap().ahead, Some(1));
+
+        git_run(&wt, &["push", "-q"]);
+        assert_eq!(git_phase_state(&wt, "alice-ahead", "main", None).unwrap().ahead, Some(0));
+    }
+
+    // A base that resolves to nothing must not fall through to HEAD. In a task
+    // worktree HEAD *is* the branch, so `own_commits` would be 0 and
+    // `is-ancestor T B` trivially true, and a base branch deleted after a
+    // merge would report every live task merged.
+    #[test]
+    fn an_unresolvable_base_reports_not_merged_rather_than_measuring_against_head() {
+        let (_m, _w, _main, wt) = phase_fixture("alice-nobase");
+        git_commit_file(&wt, "c1.txt", "one\n", "C1");
+
+        let st = git_phase_state(&wt, "alice-nobase", "gone/deleted-base", None).unwrap();
+        assert_eq!(st.own_commits, 0);
+        assert!(!st.merged_into_base);
+    }
+
+    // The squash tier writes a commit object into the USER'S repo on every
+    // single poll, so it had better be the same object every time. Git hashes
+    // the whole commit header, so an unpinned author/committer date makes a new
+    // dangling object per second and the repo accumulates them until `gc`.
+    //
+    // CONTROL RUN (git 2.50.1): two pinned `commit-tree` calls on one tree
+    // returned the same sha, an unpinned call on the same tree returned a
+    // different one, and `git fsck --dangling` counted 2 objects after three
+    // calls rather than 3.
+    #[test]
+    fn the_squash_probe_writes_the_same_object_every_time() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path();
+        git_init_with_commit(repo);
+        git_set_identity(repo);
+
+        let probe = |env: &[(&str, &str)]| {
+            String::from_utf8_lossy(
+                &git_bytes_env(&["commit-tree", "HEAD^{tree}", "-m", "probe"], repo, env).unwrap(),
+            )
+            .trim()
+            .to_string()
+        };
+        let first = probe(&PHASE_PROBE_ENV);
+        let second = probe(&PHASE_PROBE_ENV);
+        assert_eq!(first, second, "the pinned probe must dedupe, not accumulate");
+        assert_ne!(
+            first,
+            probe(&[]),
+            "the control: without the pins the object is a different one, which \
+             is what would pile up in the user's repo"
+        );
+    }
+
+    #[test]
+    fn a_branch_that_does_not_exist_is_an_error() {
+        let (_m, _w, _main, wt) = phase_fixture("alice-exists");
+        assert!(git_phase_state(&wt, "alice-nope", "main", None).is_err());
+    }
+
+    #[test]
+    fn phase_state_refuses_an_archived_or_main_checkout_task() {
+        let (_m, _w, main, wt) = phase_fixture("alice-guard");
+        let base = Task {
+            branch: "alice-guard".into(),
+            base_branch: "main".into(),
+            path: wt.to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+        // The control: this shape answers fine before either flag is set.
+        assert!(task_phase_state_for(&base).is_ok());
+
+        let archived = Task { archived: true, ..base.clone() };
+        assert!(task_phase_state_for(&archived).is_err());
+
+        // A main-checkout task runs on the project's live checkout, so every
+        // question here would be about somebody else's work.
+        let live = Task {
+            is_main_checkout: true,
+            path: main.to_string_lossy().into_owned(),
+            branch: "main".into(),
+            ..base.clone()
+        };
+        assert!(task_phase_state_for(&live).is_err());
     }
 
     // ── Extra named ports (GH #196) ─────────────────────────────────
