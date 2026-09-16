@@ -12,6 +12,7 @@ import { logLine } from "@/lib/ipc";
 import { initTerminalDropHandler } from "@/lib/terminalDrop";
 import { initWindowlessMode } from "@/lib/windowlessMode";
 import { initModKeyClass } from "@/lib/modKeyClass";
+import { installRecentPlacesTracker } from "@/lib/recentPlacesTracker";
 import { initUserPresence } from "@/lib/userPresence";
 import { initWindowFocus } from "@/lib/windowFocus";
 
@@ -167,6 +168,11 @@ if (import.meta.env.DEV || import.meta.env.VITE_E2E) {
 initModKeyClass();
 initUserPresence();
 initWindowFocus();
+
+// Record what is on screen, so ⌃⇥ can step back through it. A subscription
+// rather than a hook into the setters, so every way of selecting a task or tab
+// feeds it: the sidebar, the CLI, deep links, the palette, LSP navigation.
+installRecentPlacesTracker();
 
 // Mirror uncaught errors + unhandled promise rejections to the Rust-side
 // debug log so they show up in the dev terminal (`/var/folders/.../T/

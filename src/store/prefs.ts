@@ -17,12 +17,13 @@ import {
   type Binding,
   type BindingMap,
   type DoubleShiftMode,
+  type CtrlTabMode,
   type ShortcutId,
 } from "@/lib/shortcuts";
 
 // Re-exported so a component reading the pref can take its type from the same
 // import, rather than knowing which of the two modules declared it.
-export type { DoubleShiftMode };
+export type { DoubleShiftMode, CtrlTabMode };
 import {
   DEFAULT_COMPLETION_SOUND_ID,
   LS_COMPLETION_SOUND,
@@ -71,6 +72,7 @@ const LS_TASK_EXPAND_MODE = scoped("taskExpandMode");
 const LS_HIDE_INACTIVE_PROJECTS = scoped("hideInactiveProjects");
 const LS_BRANCH_AS_TASK_NAME = "useBranchAsTaskName";
 const LS_DOUBLE_SHIFT_MODE = "doubleShiftMode";
+const LS_CTRL_TAB_MODE = "ctrlTabMode";
 const LS_MD_VIEW       = "markdownDefaultView";
 const LS_SVG_VIEW      = "svgDefaultView";
 const LS_LOAD_REMOTE_IMAGES = "loadRemoteImages";
@@ -733,6 +735,13 @@ interface PrefsState {
    *  Lives with the shortcuts rather than with code navigation, because the
    *  dialog searches FILES first and symbols only where a checkout is armed. */
   doubleShiftMode: DoubleShiftMode;
+  /** Whether ⌃⇥ / ⌃⇧⇥ walk the recently-used tabs (see CTRL_TAB_MODES).
+   *
+   *  It earns a switch because it is the one Ctrl chord termic keeps for
+   *  itself: everything else with only Ctrl on it goes to the focused terminal
+   *  (GH #10). Nothing observable is lost (xterm sends ⌃⇥ as a plain tab), but
+   *  somebody who wants that rule to have no exceptions can have it. */
+  ctrlTabMode: CtrlTabMode;
   /** Last-used view for markdown edit tabs (source / preview / split).
    *  New markdown tabs open in this mode, and toggling a tab's view
    *  updates it — so the app remembers however you last looked at a doc. */
@@ -828,6 +837,7 @@ interface PrefsState {
   setHideInactiveProjects: (v: boolean) => void;
   setUseBranchAsTaskName: (v: boolean) => void;
   setDoubleShiftMode: (v: DoubleShiftMode) => void;
+  setCtrlTabMode: (v: CtrlTabMode) => void;
   setMarkdownDefaultView: (v: MarkdownView) => void;
   setSvgDefaultView: (v: MarkdownView) => void;
   setBranchPrefix: (v: string) => void;
@@ -1012,6 +1022,8 @@ const initialDoubleShiftMode: DoubleShiftMode = (() => {
   const raw = lsGet(LS_DOUBLE_SHIFT_MODE, "left");
   return raw === "off" || raw === "any" || raw === "outside-terminal" ? raw : "left";
 })();
+// Absent means never set, and the gesture ships on.
+const initialCtrlTabMode: CtrlTabMode = lsGet(LS_CTRL_TAB_MODE, "on") === "off" ? "off" : "on";
 const initialMarkdownView: MarkdownView = (() => {
   const raw = lsGet(LS_MD_VIEW, "source");
   return raw === "preview" || raw === "split" ? raw : "source";
@@ -1075,6 +1087,7 @@ export const usePrefs = create<PrefsState>(set => ({
   hideInactiveProjects: initialHideInactiveProjects,
   useBranchAsTaskName: initialUseBranchAsTaskName,
   doubleShiftMode: initialDoubleShiftMode,
+  ctrlTabMode: initialCtrlTabMode,
   markdownDefaultView: initialMarkdownView,
   svgDefaultView: initialSvgView,
   branchPrefix: initialBranchPrefix,
@@ -1351,6 +1364,10 @@ export const usePrefs = create<PrefsState>(set => ({
   setDoubleShiftMode: (v) => {
     try { localStorage.setItem(LS_DOUBLE_SHIFT_MODE, v); } catch {}
     set({ doubleShiftMode: v });
+  },
+  setCtrlTabMode: (v) => {
+    try { localStorage.setItem(LS_CTRL_TAB_MODE, v); } catch {}
+    set({ ctrlTabMode: v });
   },
   setMarkdownDefaultView: (v) => {
     try { localStorage.setItem(LS_MD_VIEW, v); } catch {}

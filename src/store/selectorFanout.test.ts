@@ -262,4 +262,65 @@ describe("selector fan-out budget (bear trap 5)", () => {
       useApp.getState().setSidebarWidth(200 + (i % 60)));
     expect(r.invalidations).toBe(0);
   });
+
+  it("a ⌃⇥ walk step invalidates no tab-strip selector", () => {
+    // The walk is live: every tap of Tab swaps what is on screen, so its cost
+    // is paid while the user is holding a key down. `previewPlace` writes only
+    // the pointers that decide what is visible, which is why it exists —
+    // `setActiveTabId` rebuilds `tabs[taskId]` through .map() on every call and
+    // hands back a fresh array even when no flag changed, so every mounted tab
+    // bar in the window would re-render on each step.
+    const seeded = Array.from({ length: SUBSCRIBERS }, (_, i) => `task-${i}`);
+    useApp.setState({
+      tabs: Object.fromEntries(seeded.map(id => [id, [tab(`${id}-a`), tab(`${id}-b`)]])),
+      activeTab: Object.fromEntries(seeded.map(id => [id, `${id}-a`])),
+    });
+    const subs = seeded.map(id => selectTaskTabs(id));
+
+    const r = measureFanout(subs, WRITES, i => {
+      const id = seeded[i % SUBSCRIBERS];
+      useApp.getState().previewPlace(id, `${id}-${i % 2 ? "a" : "b"}`);
+    });
+
+    expect(r.invalidations).toBe(0);
+    expect(r.selectorRuns).toBe(SUBSCRIBERS * WRITES);
+    expect(r.msPerWrite).toBeLessThan(MAX_MS_PER_WRITE);
+  });
+
+  it("the real setter DOES invalidate them (control for the step above)", () => {
+    // Without this, the assertion above could pass because the walk never
+    // wrote anything at all. This is the cost `previewPlace` avoids, measured
+    // on the very same subscribers.
+    const seeded = Array.from({ length: SUBSCRIBERS }, (_, i) => `task-${i}`);
+    useApp.setState({
+      tabs: Object.fromEntries(seeded.map(id => [id, [tab(`${id}-a`), tab(`${id}-b`)]])),
+      activeTab: Object.fromEntries(seeded.map(id => [id, `${id}-a`])),
+    });
+    const subs = seeded.map(id => selectTaskTabs(id));
+
+    const r = measureFanout(subs, 10, i => {
+      const id = seeded[i % SUBSCRIBERS];
+      useApp.getState().setActiveTabId(id, `${id}-${i % 2 ? "a" : "b"}`);
+    });
+
+    expect(r.invalidations).toBe(10);
+  });
+
+  it("one walk step is one notification", () => {
+    // `setActiveTask` alone does three writes in a row (the departing tab's
+    // timestamps, the main set, then the unread-clearing set). A walk that
+    // went through it would pay all three per tap, and this count is what
+    // fails if someone later folds previewPlace back into it.
+    useApp.setState({
+      tabs: { a: [tab("a1")], b: [tab("b1")] },
+      activeTab: { a: "a1", b: "b1" },
+      activeTaskId: "a",
+    });
+    let notifications = 0;
+    const unsub = useApp.subscribe(() => { notifications++; });
+    useApp.getState().previewPlace("b", "b1");
+    useApp.getState().previewPlace("a", "a1");
+    unsub();
+    expect(notifications).toBe(2);
+  });
 });

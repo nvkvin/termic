@@ -221,6 +221,26 @@ The same applies to product code that leans on rAF: it is invisible in a spec.
 for the user-facing half of this (a palette command fired minutes late, over
 whatever the user was doing by then, once the window came back).
 
+## The driver cannot hold Control
+
+Measured, not assumed, while writing the ⌃⇥ cases in `tabs-layout.e2e.ts`.
+`browser.action("key").down(Key.Control)...` delivers a `Control` keydown and
+keyup to the page, but every key pressed while it is notionally held still
+arrives with **`ctrlKey: false`**. Meta behaves correctly by comparison: the
+same sequence with `Key.Ctrl` (which WebdriverIO maps to Cmd on macOS, itself
+a trap worth knowing) does set `metaKey: true` on the keys in between.
+
+So a held-Control gesture cannot be driven from the suite at all, and a spec
+that tries reports "the key never arrived" whether or not the feature works.
+Drive such gestures with synthetic `KeyboardEvent`s instead — dispatched at the
+element that would really receive them, never at `window`, or the spec proves
+nothing about whether xterm eats the key first.
+
+What that leaves uncovered is narrow but real: whether macOS and WKWebView hand
+the chord to the page at all. Nothing in the app intercepts it natively (there
+are no Tauri accelerators or `global_shortcut` registrations), but only a human
+at the keyboard can confirm it.
+
 ## The one maturity caveat
 
 `@wdio/tauri-service` + `tauri-plugin-wdio` are young (1.x, late-2025 / 2026).

@@ -14,6 +14,7 @@ import {
   GROUP_ORDER,
   bindingGlyphs,
   doubleShiftLabel,
+  ctrlTabLabel,
   IS_MAC,
   type ShortcutGroup,
   type ShortcutId,
@@ -48,6 +49,7 @@ export function ShortcutsHelpDialog() {
   const shortcuts = usePrefs(s => s.shortcuts);
   const typeChecking = usePrefs(s => s.codeIntelDiagnostics);
   const doubleShiftMode = usePrefs(s => s.doubleShiftMode);
+  const ctrlTabMode = usePrefs(s => s.ctrlTabMode);
   const [query, setQuery] = useState("");
 
   // Reset the filter each time the sheet opens so it never reopens
@@ -79,7 +81,8 @@ export function ShortcutsHelpDialog() {
         // the way back on both live.
         ...FIXED_SHORTCUTS
           .filter(f => f.group === group && matches(f.label, f.hint))
-          .filter(f => f.id !== "search-everywhere" || doubleShiftMode !== "off")
+          .filter(f => (f.control === "double-shift" ? doubleShiftMode !== "off" : true))
+          .filter(f => (f.control === "ctrl-tab" ? ctrlTabMode !== "off" : true))
           // The row says WHICH double tap, because the answer is a setting:
           // printing "Double tap, left" to somebody who chose either Shift
           // describes a restriction they turned off.
@@ -90,15 +93,15 @@ export function ShortcutsHelpDialog() {
             // The chosen mode's own label, which is the same string the
             // Shortcuts page offers: this sheet cannot be rebound from, so it
             // prints what the gesture currently IS.
-            fixed: f.id === "search-everywhere"
-              ? doubleShiftLabel(doubleShiftMode)
+            fixed: f.control === "double-shift" ? doubleShiftLabel(doubleShiftMode)
+              : f.control === "ctrl-tab" ? ctrlTabLabel(ctrlTabMode)
               : f.fixedReason,
           })),
       ];
       if (rows.length) out.push({ group, rows });
     }
     return out;
-  }, [query, shortcuts, doubleShiftMode]);
+  }, [query, shortcuts, doubleShiftMode, ctrlTabMode]);
 
   function edit() {
     close();

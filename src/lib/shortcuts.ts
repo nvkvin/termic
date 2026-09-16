@@ -270,6 +270,11 @@ export interface FixedShortcut {
   glyphs: string[];
   /** Why it cannot be changed, shown where the recorder would be. */
   fixedReason: string;
+  /** Which mode select this row carries in Settings, if any. The rendering was
+   *  `f.id === "search-everywhere"` in five places across two files while there
+   *  was only one such row; a second one made that a copy-paste bug waiting to
+   *  happen. */
+  control?: "double-shift" | "ctrl-tab";
 }
 
 export const FIXED_SHORTCUTS: FixedShortcut[] = [
@@ -282,6 +287,16 @@ export const FIXED_SHORTCUTS: FixedShortcut[] = [
     hint: "Files always; classes and functions too, once a checkout has code navigation on.",
     glyphs: ["⇧", "⇧"],
     fixedReason: "Double tap",
+    control: "double-shift",
+  },
+  {
+    id: "recent-tabs",
+    group: "Navigation",
+    label: "Recently used tabs",
+    hint: "Hold Ctrl and tap Tab to step back through what you were looking at; add Shift to go the other way.",
+    glyphs: ["⌃", "⇥"],
+    fixedReason: "Hold and tap",
+    control: "ctrl-tab",
   },
 ];
 
@@ -319,6 +334,31 @@ export const DOUBLE_SHIFT_MODES: { id: DoubleShiftMode; label: string }[] = [
 /** The label for one mode, for a surface that has only the value. */
 export function doubleShiftLabel(mode: DoubleShiftMode): string {
   return DOUBLE_SHIFT_MODES.find(m => m.id === mode)?.label ?? mode;
+}
+
+/** Whether ⌃⇥ walks the recently-used tabs.
+ *
+ *  Declared here, next to DOUBLE_SHIFT_MODES and for the same reason: prefs
+ *  already imports this module for the bindings, so the other direction would
+ *  be a cycle.
+ *
+ *  On/off rather than the four modes double-Shift needs, because the awkward
+ *  question that one answers ("should this fire while I am typing?") has no
+ *  equivalent here: Tab with Ctrl held types nothing, and a terminal cannot
+ *  tell ⌃⇥ from ⇥ anyway (see the note on the gesture in useShortcuts). */
+export type CtrlTabMode = "off" | "on";
+
+/** Each label names the WHOLE gesture, the same rule DOUBLE_SHIFT_MODES follows:
+ *  the row prints nothing else beside the select, so "On" alone would leave the
+ *  reader to guess what it is on for. */
+export const CTRL_TAB_MODES: { id: CtrlTabMode; label: string }[] = [
+  { id: "off", label: "Off" },
+  { id: "on",  label: "Hold Ctrl, tap Tab" },
+];
+
+/** The label for one mode, for a surface that has only the value. */
+export function ctrlTabLabel(mode: CtrlTabMode): string {
+  return CTRL_TAB_MODES.find(m => m.id === mode)?.label ?? mode;
 }
 
 /** Groups of rebindable commands that intentionally share a binding and can
@@ -376,9 +416,23 @@ export function bindingFromEvent(e: KeyboardEvent, digitMode = false): Binding |
   return { cmd: e.metaKey || e.ctrlKey, shift: e.shiftKey, alt: e.altKey, key };
 }
 
+/**
+ * Keys the registry refuses outright, whatever modifiers are on them.
+ *
+ * Tab, because ⌃⇥ is the recently-used-tabs gesture and a `Binding` cannot
+ * tell it apart: `bindingMatches` folds Cmd and Ctrl into one flag, so a
+ * recorded ⌃⇥ is stored as `{cmd:true, key:"Tab"}` and then fires on every
+ * press of the gesture, forever, on top of it. (The ⌘⇥ reading it renders as
+ * is dead anyway — macOS owns that one and the webview never sees it.)
+ */
+export function isReservedKey(key: string): boolean {
+  return key === "Tab";
+}
+
 /** At least one of Cmd/Ctrl, Option, or Shift+non-alphanumeric must be present.
  *  Pure Shift+letter = capitals (normal typing) — always rejected. */
 export function isValidBinding(b: Binding): boolean {
+  if (isReservedKey(b.key)) return false;
   if (b.cmd || b.alt) return true;
   // A function key types nothing, so it needs no modifier to be safe: F12 on
   // its own is go-to-definition in every IDE this app's users come from.
@@ -426,6 +480,7 @@ export function glyphLabel(glyph: string): string {
     case "⌘": return CMD_LABEL;
     case "⌥": return ALT_LABEL;
     case "⌃": return "Ctrl";
+    case "⇥": return "Tab";
     case "⇧": return "Shift";
     case "↑": return "Up";
     case "↓": return "Down";

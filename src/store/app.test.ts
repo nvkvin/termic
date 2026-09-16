@@ -1483,3 +1483,101 @@ describe("recentTasks", () => {
     expect(useApp.getState().recentTasks).toBe(before);
   });
 });
+
+// ── previewPlace (the ⌃⇥ walk) ────────────────────────────────────────
+
+describe("previewPlace", () => {
+  // A ⌃⇥ walk passes THROUGH places on its way somewhere, in well under a
+  // second each. Every assertion here is a shipped bug if it regresses: the
+  // normal setters treat being selected as "the user has seen this", which for
+  // a place that was on screen for 80ms is a lie that destroys state.
+  const seed = (taskId: string, tabId: string, tab: Partial<TerminalTab> = {}) => {
+    useApp.setState(s => ({ tasks: [...s.tasks, makeTask({ id: taskId })] }));
+    addTab(taskId, makeTermTab({ id: tabId, ...tab }));
+  };
+
+  it("shows the place", () => {
+    seed("A", "a1");
+    useApp.getState().previewPlace("A", "a1");
+    expect(useApp.getState().activeTaskId).toBe("A");
+    expect(getActiveTabId("A")).toBe("a1");
+  });
+
+  it("does NOT clear a done badge it passes over", () => {
+    // setActiveTask demotes done → idle and clears unread on every tab of the
+    // task. Walking past an agent that had just finished would silently throw
+    // away the one signal saying so, and nothing puts it back.
+    seed("A", "a1", { workState: "done", unread: { reason: "done" } });
+    useApp.getState().previewPlace("A", "a1");
+    expect(getTabWorkState("A", "a1")).toBe("done");
+    expect(getTabUnread("A", "a1")).toEqual({ reason: "done" });
+
+    // Control: the real setter DOES clear both. That is correct for a click
+    // and wrong for a place you flashed past, which is the whole distinction.
+    useApp.getState().setActiveTask("A");
+    expect(getTabWorkState("A", "a1")).toBe("idle");
+    expect(getTabUnread("A", "a1")).toBeNull();
+  });
+
+  it("does NOT expand the project it passes through", () => {
+    // setActiveTask force-expands the parent project and its sidebar group,
+    // and persists both. A walk through collapsed projects would leave them
+    // all open, permanently.
+    seed("A", "a1");
+    useApp.setState({ collapsedProjects: { p1: true } });
+    useApp.getState().previewPlace("A", "a1");
+    expect(useApp.getState().collapsedProjects.p1).toBe(true);
+  });
+
+  it("does NOT close the Settings overlay", () => {
+    // setActiveTask replaces `view` wholesale rather than spreading it, so
+    // selecting a task drops settingsOpen.
+    seed("A", "a1");
+    useApp.getState().openSettings("shortcuts");
+    useApp.getState().previewPlace("A", "a1");
+    expect(useApp.getState().view.settingsOpen).toBe(true);
+    expect(useApp.getState().view.settingsTab).toBe("shortcuts");
+  });
+
+  it("leaves the tab list alone, so no tab-strip selector re-renders", () => {
+    // setActiveTabId rebuilds tabs[taskId] through .map() unconditionally.
+    seed("A", "a1");
+    const before = getTabsRef("A");
+    useApp.getState().previewPlace("A", "a1");
+    expect(getTabsRef("A")).toBe(before);
+  });
+
+  it("writes nothing at all when it would change nothing", () => {
+    seed("A", "a1");
+    useApp.getState().previewPlace("A", "a1");
+    let notifications = 0;
+    const unsub = useApp.subscribe(() => { notifications++; });
+    useApp.getState().previewPlace("A", "a1");
+    unsub();
+    expect(notifications).toBe(0);
+  });
+
+  it("costs ONE notification per step, where the real setters cost more", () => {
+    // The count is what pins this down on a 3-core CI runner, and what fails
+    // if someone later folds previewPlace back into setActiveTask (which does
+    // three writes of its own: patchTab on the departing tab, the main set,
+    // and the unread-clearing set).
+    seed("A", "a1");
+    seed("B", "b1");
+    useApp.getState().previewPlace("A", "a1");
+
+    let preview = 0;
+    let unsub = useApp.subscribe(() => { preview++; });
+    useApp.getState().previewPlace("B", "b1");
+    useApp.getState().previewPlace("A", "a1");
+    useApp.getState().previewPlace("B", "b1");
+    unsub();
+    expect(preview).toBe(3);
+
+    let real = 0;
+    unsub = useApp.subscribe(() => { real++; });
+    useApp.getState().setActiveTask("A");
+    unsub();
+    expect(real).toBeGreaterThan(1);
+  });
+});

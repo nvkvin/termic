@@ -47,11 +47,18 @@ half of what they do.
 ## Shortcuts that cannot be rebound
 
 `FIXED_SHORTCUTS` is a small separate list for gestures that are not a chord.
-Double-Shift (Search everywhere) is the only entry today; it is handled in
-`useShortcuts` through `lib/doubleTap.ts`.
+Two entries: Double-Shift (Search everywhere) via `lib/doubleTap.ts`, and ⌃⇥
+(Recently used tabs) via `lib/ctrlTab.ts`. Both are handled in `useShortcuts`,
+and both carry a mode select in Settings where the recorder would be.
 
-**It cannot be rebound, so what Settings offers instead is WHEN it applies**
-(`prefs.doubleShiftMode`, a select on that same read-only row):
+A row that carries such a select says so with `control`
+(`"double-shift" | "ctrl-tab"`). The Shortcuts page and the ⌘/ sheet both
+branch on it. They used to branch on `f.id === "search-everywhere"`, in five
+places across the two files, which was fine while there was one such row and a
+copy-paste bug waiting to happen as soon as there were two.
+
+**Double-Shift cannot be rebound, so what Settings offers instead is WHEN it
+applies** (`prefs.doubleShiftMode`, a select on that same read-only row):
 
 | mode | label the reader sees | |
 | --- | --- | --- |
@@ -89,6 +96,71 @@ Both surfaces render them read-only, with their keys spelled out literally and
 a word where the recorder would be ("Double tap"). Shown rather than hidden,
 because a reader looking for "how do I open Search everywhere" reads its
 absence as the app not having it.
+
+## Recently used tabs (⌃⇥ / ⌃⇧⇥)
+
+Hold Ctrl, tap Tab to step back through the places you were actually looking
+at, Shift to step the other way, release to land. A "place" is a
+`(taskId, tabId)` pair, so it crosses tasks: used inside one task it degrades
+into cycling that task's tabs.
+
+It exists because every other navigation key here is POSITIONAL (⌥↑/↓, ⌥⌘↑/↓,
+⌥⌘←/→, ⇧⌘[/], ⌘1..9), and none of them answers "take me back to the thing I
+was just looking at". With eight agents open that is the question you ask most,
+and the tab two slots to the left is not the tab you were in.
+
+**Why it is not a `SHORTCUT_DEFS` entry.** A `Binding` cannot express it:
+`bindingMatches` folds Cmd and Ctrl into one flag, so the nearest thing the
+table could hold is `{cmd:true, key:"Tab"}`, which renders as ⌘⇥ and is dead on
+macOS. It is also hold-and-tap rather than one chord, and it needs `keyup`,
+which nothing else in the app does. `isValidBinding` therefore refuses Tab
+outright (`isReservedKey`) — without that, recording ⌃⇥ in Settings would store
+that half-dead binding and fire it on every press of the gesture, forever, on
+top of the gesture itself.
+
+**Why it may take a Ctrl chord at all**, when GH #10 deliberately gave Ctrl to
+the terminal: nothing observable is lost. xterm's `evaluateKeyboardEvent` reads
+only `shiftKey` for Tab, so ⌃⇥ reaches the PTY as a plain `\t` and ⌃⇧⇥ as a
+plain `ESC[Z` — byte-identical to ⇥ and ⇧⇥, which are untouched. No program on
+the far end could tell the difference, so there was no binding there to take.
+It is still switchable off in Settings for anyone who wants that rule to have
+no exceptions.
+
+**Three listeners, not the usual one.** A window **capture**-phase `keydown`,
+because xterm listens on its own textarea and its `cancel()` calls
+`stopPropagation` — anything on the bubble phase never sees the key. Plus
+`keyup` (the walk lands when Control comes up, detected as `!e.ctrlKey` rather
+than `key === "Control"`, as `modKeyClass` does) and `blur`. The blur listener
+is **non-capture**, and that is load-bearing: `blur` does not bubble but it
+does capture, and the walk itself causes element blurs by hiding the pane it is
+leaving, so a capture listener would abort on the first tap.
+
+**A step is a PREVIEW, not a visit** — `previewPlace` in the app store, not
+`setActiveTask`/`setActiveTabId`. Selecting something is how this app decides
+you have SEEN it: `setActiveTask` clears `unread` on every tab of the task and
+demotes the active tab's done state, resets the departing tab's timestamps,
+force-expands the project and its group (two localStorage writes), reorders
+`recentTasks`, and replaces `view` wholesale, which closes Settings. Flashing
+past a finished agent on the way somewhere else would destroy the one signal
+saying it had finished. The real setters run once, on landing.
+
+**The ring is a snapshot** taken on the first tap, and recording is suspended
+for the duration. Each step changes what is on screen, which is what feeds the
+recency list; walking the live list would reorder it under the next keypress.
+
+**It only offers places it can reach for free.** `livePlaces` filters on
+`mountedTasks`, not on "does this tab still exist". `stopTask` keeps a task and
+its tabs but evicts it from `mountedTasks` and kills its PTYs, so the weaker
+check would let ⌃⇥ resurrect a task the user explicitly stopped. Navigation
+must never start a process — which is also why the ring is session-only and is
+not seeded from the persisted `recentTasks` at startup.
+
+The list itself is `store/recentPlaces.ts`, fed by a subscription in
+`lib/recentPlacesTracker.ts` rather than from inside the setters, so all thirty
+call sites of those two setters record for free (deep links, the CLI, the
+palette, LSP navigation, the sidebar). The push is coalesced into a microtask
+because picking a task and a tab is one act that three call sites perform as
+two calls.
 
 ## Back and Forward (⌘[ / ⌘])
 

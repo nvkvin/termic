@@ -1,4 +1,4 @@
-import { archiveTask, clickByText, clickMenuItem, dismissOverlays, ensureActiveTask, mouseDrag, openTask, pointerDrag, requireTermicApi, snap, waitForAppShell, waitVisible } from "../helpers";
+import { archiveTask, clickByText, clickMenuItem, dismissOverlays, ensureActiveTask, mouseDrag, openTask, pointerDrag, requireTermicApi, sidebarBadge, snap, waitForAppShell, waitGone, waitVisible } from "../helpers";
 
 // Tabs are how a task holds multiple terminals/agents/editors. Guards adding a
 // tab through the "+" menu and switching the active tab by clicking it.
@@ -1389,5 +1389,182 @@ describe("pinned tabs do not scroll away", () => {
     expect(after.visible).toBe(true);
     expect(after.pillLeft).toBe(before.pillLeft);
     await snap("tab-pinned-stays-visible.png");
+  });
+});
+
+// ⌃⇥ walks the places you actually looked at, newest first, instead of the
+// positional order every other navigation key in the app uses. It is a
+// GESTURE, not a binding: the ring is snapshotted on the first tap, each tap
+// switches live, and releasing Control lands.
+//
+// The keys are dispatched at the terminal's own textarea rather than at
+// `window`, because "does xterm eat this?" is the entire risk. xterm listens
+// there in the capture phase and its `cancel()` calls stopPropagation, so a
+// spec that dispatched at `window` would pass while the feature was dead in
+// every real terminal.
+//
+// They are SYNTHETIC, and cannot be otherwise: the driver cannot hold Control.
+// `browser.action("key").down(Key.Control)` does deliver a Control keydown and
+// keyup, but every key pressed in between still arrives with `ctrlKey: false`
+// — Meta propagates, Control does not. So these cases prove the handler, the
+// ordering against xterm, and every rule of the walk; whether macOS hands ⌃⇥
+// to the webview at all is the one part only a human at the keyboard can
+// confirm. See docs/e2e-tests.md.
+describe("recently-used tab navigation", () => {
+  let a!: string, b!: string, c!: string;
+
+  after(async () => {
+    for (const id of [a, b, c]) if (id) await archiveTask(id);
+  });
+
+  /** The task the user can actually see. Hidden ones stay mounted (PTYs), so
+   *  this reads the rendered geometry rather than the store. */
+  const visibleTask = () =>
+    browser.execute(() =>
+      [...document.querySelectorAll("[data-task-id]")]
+        .find(el => el.getBoundingClientRect().width > 0)
+        ?.getAttribute("data-task-id") ?? null);
+
+  /** Hold Control, tap Tab once per entry (true = with Shift), release. */
+  const walk = (taskId: string, taps: boolean[]) =>
+    browser.execute((id, presses: boolean[]) => {
+      const host = document.querySelector(`[data-task-id="${id}"]`);
+      if (!host) throw new Error(`task ${id} is not mounted`);
+      const ta = [...host.querySelectorAll<HTMLTextAreaElement>(".xterm-helper-textarea")]
+        .find(el => {
+          const r = (el.closest(".xterm") ?? el).getBoundingClientRect();
+          return r.width > 0 && r.height > 0;
+        });
+      if (!ta) throw new Error(`no visible terminal in ${id}`);
+      ta.focus();
+      const ctrl = { key: "Control", code: "ControlLeft", keyCode: 17, which: 17 };
+      const base = { bubbles: true, cancelable: true };
+      ta.dispatchEvent(new KeyboardEvent("keydown", { ...base, ...ctrl, ctrlKey: true }));
+      for (const shift of presses) {
+        // keyCode 9, not just key:"Tab" — xterm's evaluateKeyboardEvent
+        // switches on keyCode, so an event without it would never have
+        // reached the PTY and proves nothing about what we took from it.
+        const k = { ...base, key: "Tab", code: "Tab", keyCode: 9, which: 9, ctrlKey: true, shiftKey: shift };
+        ta.dispatchEvent(new KeyboardEvent("keydown", k));
+        ta.dispatchEvent(new KeyboardEvent("keyup", k));
+      }
+      ta.dispatchEvent(new KeyboardEvent("keyup", { ...base, ...ctrl, ctrlKey: false }));
+    }, taskId, taps);
+
+  /** Select a task and wait for it, so the recency order is deterministic.
+   *  One round trip per visit: the tracker coalesces within a microtask, which
+   *  is what stops a task+tab pair recording twice. */
+  const visit = async (id: string) => {
+    await ensureActiveTask(id);
+    await browser.waitUntil(async () => (await visibleTask()) === id,
+      { timeout: 10_000, timeoutMsg: `task ${id} never became visible` });
+  };
+
+  const waitVisibleTask = (id: string, why: string) =>
+    browser.waitUntil(async () => (await visibleTask()) === id,
+      { timeout: 10_000, timeoutMsg: why });
+
+  it("steps back to where you just were, and lands there on release", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    a = await openTask("e2e-ctrltab-a");
+    b = await openTask("e2e-ctrltab-b");
+    c = await openTask("e2e-ctrltab-c");
+    for (const id of [a, b, c]) {
+      await browser.waitUntil(
+        () => browser.execute(
+          (i) => (window.__termic!.useApp.getState().tabs[i] ?? []).length > 0, id),
+        { timeout: 20_000, timeoutMsg: `task ${id} never got its agent tab` });
+    }
+
+    await visit(a); await visit(b); await visit(c);
+    await walk(c, [false]);
+    await waitVisibleTask(b, "one tap did not go back to the previous task");
+    await snap("ctrl-tab-one-step");
+  });
+
+  it("goes further back the more you tap, inside one hold", async () => {
+    await visit(a); await visit(b); await visit(c);
+    await walk(c, [false, false]);
+    await waitVisibleTask(a, "two taps did not reach two places back");
+  });
+
+  it("reverses under Shift without ending the walk", async () => {
+    // The Shift keydown arrives BEFORE the Tab it modifies. Treating any
+    // non-Tab key as the end of the gesture would make this impossible.
+    await visit(a); await visit(b); await visit(c);
+    await walk(c, [false, false, true]);
+    await waitVisibleTask(b, "Shift did not step back towards the start");
+  });
+
+  it("landing reorders the list, so the next tap returns", async () => {
+    // This is what makes it a recency ring rather than a cursor: after
+    // stopping on B, the place you came FROM is now the most recent one.
+    await visit(a); await visit(b); await visit(c);
+    await walk(c, [false]);
+    await waitVisibleTask(b, "first walk did not land on B");
+    await walk(b, [false]);
+    await waitVisibleTask(c, "the return tap did not go back to C");
+  });
+
+  it("does not disturb a badge it passes over", async () => {
+    // Selecting a task normally means "I have seen this" and clears its
+    // badges. A place that was on screen for 80ms on the way somewhere else
+    // has not been seen, and nothing would put the badge back.
+    await visit(a); await visit(b); await visit(c);
+    const bTab = await browser.execute(
+      (id) => window.__termic!.useApp.getState().activeTab[id], b);
+    await browser.execute((id, tab) => {
+      window.__termic!.useApp.getState().setWorkState(id, tab, "done");
+    }, b, bTab);
+    await browser.waitUntil(async () => (await sidebarBadge(b)) === "done",
+      { timeout: 10_000, timeoutMsg: "task B never showed a done badge" });
+
+    // Walk C → B → A: B is passed THROUGH, and must keep its badge.
+    await walk(c, [false, false]);
+    await waitVisibleTask(a, "the walk did not pass through B to A");
+    expect(await sidebarBadge(b)).toBe("done");
+
+    // Control: landing on it DOES clear it, which is the whole distinction.
+    await visit(b);
+    await browser.waitUntil(async () => (await sidebarBadge(b)) === null,
+      { timeout: 10_000, timeoutMsg: "landing on B did not clear its done badge" });
+  });
+
+  it("leaves a plain Tab to the agent", async () => {
+    // The gesture takes ⌃⇥ from the terminal, which costs it nothing (xterm
+    // sends ⌃⇥ as a plain tab anyway). Unmodified Tab must be untouched.
+    await visit(a); await visit(b); await visit(c);
+    await browser.execute((id) => {
+      const host = document.querySelector(`[data-task-id="${id}"]`)!;
+      const ta = [...host.querySelectorAll<HTMLTextAreaElement>(".xterm-helper-textarea")]
+        .find(el => {
+          const r = (el.closest(".xterm") ?? el).getBoundingClientRect();
+          return r.width > 0 && r.height > 0;
+        })!;
+      ta.focus();
+      const k = { bubbles: true, cancelable: true, key: "Tab", code: "Tab", keyCode: 9, which: 9 };
+      ta.dispatchEvent(new KeyboardEvent("keydown", k));
+      ta.dispatchEvent(new KeyboardEvent("keyup", k));
+    }, c);
+    // Asserting after a settle, not immediately: an instant check would pass
+    // against the broken behaviour too, since the switch is not synchronous.
+    await browser.pause(500);
+    expect(await visibleTask()).toBe(c);
+  });
+
+  it("stands down while Settings is open", async () => {
+    // Selecting a task replaces `view` wholesale, so a walk under the overlay
+    // would close Settings out from under the user.
+    await visit(a); await visit(b); await visit(c);
+    await browser.execute(() => window.__termic!.useApp.getState().openSettings("shortcuts"));
+    await waitVisible("[data-testid='ctrl-tab-mode']");
+    await walk(c, [false]);
+    await browser.pause(500);
+    expect(await visibleTask()).toBe(c);
+    expect(await browser.execute(
+      () => window.__termic!.useApp.getState().view.settingsOpen)).toBe(true);
+    await browser.execute(() => window.__termic!.useApp.getState().closeSettings());
+    await waitGone("[data-testid='ctrl-tab-mode']");
   });
 });

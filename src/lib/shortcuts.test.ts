@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_BINDINGS, FIXED_SHORTCUTS, GROUP_ORDER, NON_CONFLICTING_GROUPS, SHORTCUT_DEFS,
-  bindingSignature, bindingToCmKey, bindingsEqual, isValidBinding,
+  bindingSignature, bindingToCmKey, bindingsEqual, isValidBinding, isReservedKey,
 } from "./shortcuts";
 
 // `SHORTCUT_DEFS` is the single source of truth for every bindable key, and it
@@ -148,6 +148,49 @@ describe("shortcuts that cannot be rebound", () => {
     const se = FIXED_SHORTCUTS.find(f => f.id === "search-everywhere");
     expect(se?.glyphs).toEqual(["⇧", "⇧"]);
     expect(se?.group).toBe("Code navigation");
+  });
+
+  it("lists ⌃⇥, which a Binding cannot express at all", () => {
+    // `bindingMatches` folds Cmd and Ctrl into one flag, so the nearest thing
+    // the table could hold is {cmd:true, key:"Tab"} — which renders as ⌘⇥ and
+    // is dead on macOS. It is also a hold-and-tap gesture rather than a chord,
+    // so there is nothing for a recorder to record.
+    const rt = FIXED_SHORTCUTS.find(f => f.id === "recent-tabs");
+    expect(rt?.glyphs).toEqual(["⌃", "⇥"]);
+    expect(rt?.group).toBe("Navigation");
+  });
+
+  it("gives every row that carries a mode select a control, and no other row one", () => {
+    // The two surfaces that render these rows switch on `control`. They used
+    // to switch on `f.id === "search-everywhere"` in five places across two
+    // files, which a second such row would have quietly broken.
+    const withControl = FIXED_SHORTCUTS.filter(f => f.control).map(f => f.id).sort();
+    expect(withControl).toEqual(["recent-tabs", "search-everywhere"]);
+  });
+});
+
+describe("Tab is not bindable", () => {
+  it("is refused by the recorder whatever modifiers are on it", () => {
+    // Recording ⌃⇥ would store {cmd:true, key:"Tab"} and, because of the
+    // Cmd/Ctrl fold, that command would then fire on every press of the
+    // recently-used-tabs gesture, forever, on top of it.
+    expect(isReservedKey("Tab")).toBe(true);
+    for (const b of [
+      { cmd: true, shift: false, alt: false, key: "Tab" },
+      { cmd: true, shift: true, alt: false, key: "Tab" },
+      { cmd: false, shift: false, alt: true, key: "Tab" },
+    ]) {
+      expect(isValidBinding(b), JSON.stringify(b)).toBe(false);
+    }
+  });
+
+  it("does not reserve anything else", () => {
+    expect(isReservedKey("t")).toBe(false);
+    expect(isValidBinding({ cmd: true, shift: false, alt: false, key: "t" })).toBe(true);
+  });
+
+  it("is claimed by no default binding", () => {
+    for (const d of SHORTCUT_DEFS) expect(d.defaultBinding.key, d.id).not.toBe("Tab");
   });
 });
 

@@ -386,6 +386,9 @@ export function TabPill({ task, tab, active, paneFocused, compact, onSelect, onC
     <div
       ref={pillRef}
       data-tab-id={tab.id}
+      // The selected state as a DOM fact, so a spec can assert what the user
+      // sees (which pill is lit) rather than the store field behind it.
+      data-active={active ? "" : undefined}
       {...(tab.pinned ? { "data-pinned": "" } : null)}
       // Start a pointer-drag for reordering, except while renaming (so the
       // inline input handles text selection / caret normally).

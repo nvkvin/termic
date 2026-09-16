@@ -17,6 +17,7 @@ import { useRace } from "@/store/race";
 import { useFileViewed } from "@/store/fileViewed";
 import { useCodeIntel } from "@/store/codeIntel";
 import { useNavHistory } from "@/store/navHistory";
+import { useRecentPlaces } from "@/store/recentPlaces";
 import { takeUnattendedSpawn } from "@/lib/unattendedSpawns";
 import { failCliQueuedPromptsInTabs } from "@/lib/cliPromptReports";
 import { focusTerminalTab, focusMainTab, focusPaneTab } from "@/lib/tabFocus";
@@ -358,6 +359,8 @@ export interface AppState {
    *  conversation. Removes the entry from `closedTabs` once reopened. */
   resumeClosedTab: (taskId: string, entryId: string) => void;
   setActiveTabId: (taskId: string, tabId: string) => void;
+  /** Show a place WITHOUT treating it as a visit — see the implementation. */
+  previewPlace: (taskId: string, tabId: string) => void;
   persistTab: (taskId: string, tabId: string) => void;
   openPreviewTab: (taskId: string, data: { type: "edit" | "diff" | "dir" | "external"; path: string; title: string; scope?: DiffTab["scope"]; revealAt?: { line: number; col?: number }; revealHeading?: string }) => void;
   /** Clear an edit tab's `revealAt` after EditorPane has consumed it,
@@ -743,6 +746,11 @@ export const useApp = create<AppState>((set, get) => ({
     // The jump trail goes the same way: a Back that lands in an archived
     // task's file would fail silently, since the tab cannot be reopened.
     useNavHistory.getState().pruneTo([...liveTaskIds]);
+    // And the ⌃⇥ ring, for the same reason: a place in an archived task is a
+    // step that goes nowhere. The gesture filters again at read time (only
+    // MOUNTED tasks are reachable), so this is hygiene rather than the
+    // correctness check.
+    useRecentPlaces.getState().pruneTo([...liveTaskIds]);
     // A project with a standing "always" instruction gets its servers started
     // by the TASK existing, not by an editor being opened on the right kind of
     // file, and stopped when the last covered task goes. Dynamic because the
@@ -2249,6 +2257,53 @@ export const useApp = create<AppState>((set, get) => ({
       activeTab: { ...s.activeTab, [taskId]: tabId },
       tabs: { ...s.tabs, [taskId]: next },
     };
+  }),
+
+  /**
+   * Show a place, without any of the bookkeeping that means "the user is now
+   * dealing with this". For the ⌃⇥ walk, whose steps are a PREVIEW: you pass
+   * through places on your way somewhere, in well under a second each.
+   *
+   * `setActiveTask` / `setActiveTabId` cannot be used for that, because being
+   * selected is how this app decides you have SEEN something:
+   *
+   *   - setActiveTask clears `unread` on every terminal tab of the task and
+   *     demotes the active tab's done/working state to idle ("Clicking the
+   *     task = I've seen this"). Flashing past an agent that had just finished
+   *     would destroy its done badge, and nothing puts it back.
+   *   - It also resets the departing tab's activity timestamps, force-expands
+   *     the parent project AND its sidebar group (two localStorage writes),
+   *     reorders `recentTasks` (a third), and replaces `view` wholesale, which
+   *     drops `settingsOpen`.
+   *   - setActiveTabId clears the target tab's flags the same way, and rebuilds
+   *     `tabs[taskId]` unconditionally, so every `selectTaskTabs` subscriber
+   *     re-renders even when no flag changed.
+   *
+   * So this writes only what decides what is ON SCREEN, in ONE set(), each
+   * field guarded on actually differing. `activePaneId` is folded in rather
+   * than left to `setActivePaneId`, which would be a second write per step and
+   * would also push onto `paneHistory`; without it the main pane stays dimmed
+   * and `inMainPane()`-derived logic like ⌘W breaks.
+   *
+   * Safe because every place the ring offers is already mounted (see
+   * `livePlaces`), so this can never wake a task or spawn a PTY. Landing goes
+   * through the real setters, so the bookkeeping happens exactly once, for the
+   * place the user actually stopped on.
+   */
+  previewPlace: (taskId, tabId) => set(s => {
+    const patch: Partial<AppState> = {};
+    if (s.activeTaskId !== taskId) patch.activeTaskId = taskId;
+    if (s.activeTab[taskId] !== tabId) patch.activeTab = { ...s.activeTab, [taskId]: tabId };
+    // Spread, unlike setActiveTask: replacing `view` would close Settings.
+    if (s.view.page !== "dashboard") patch.view = { ...s.view, page: "dashboard" };
+    const tree = s.splitTree[taskId];
+    const mainLeafId = tree ? getAllLeaves(tree).find(l => l.isMain)?.id : undefined;
+    if (mainLeafId && s.activePaneId[taskId] !== mainLeafId) {
+      patch.activePaneId = { ...s.activePaneId, [taskId]: mainLeafId };
+    }
+    // An unchanged write still copies ~233 keys and re-runs every mounted
+    // task's selectors (docs/performance.md bear trap 8).
+    return Object.keys(patch).length ? patch : s;
   }),
 
   patchTab: (taskId, tabId, patch) => set(s => {

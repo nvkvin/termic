@@ -24,11 +24,13 @@ import {
   bindingsEqual,
   glyphLabel,
   isValidBinding,
+  isReservedKey,
+  CTRL_TAB_MODES,
   IS_MAC,
   type ShortcutId,
 } from "@/lib/shortcuts";
 import { groupLabel } from "@/components/dialogs/ShortcutsHelpDialog";
-import type { DoubleShiftMode } from "@/store/prefs";
+import type { CtrlTabMode, DoubleShiftMode } from "@/store/prefs";
 
 // Terminal copy/paste are native (⌘C / ⌘V) on macOS and only wired/rebindable
 // on Linux/Windows, so hide their rows from the macOS shortcuts list.
@@ -46,6 +48,8 @@ export function ShortcutsSection() {
   const resetAllShortcuts = usePrefs(s => s.resetAllShortcuts);
   const doubleShiftMode = usePrefs(s => s.doubleShiftMode);
   const setDoubleShiftMode = usePrefs(s => s.setDoubleShiftMode);
+  const ctrlTabMode = usePrefs(s => s.ctrlTabMode);
+  const setCtrlTabMode = usePrefs(s => s.setCtrlTabMode);
 
   const [recordingId, setRecordingId] = useState<ShortcutId | null>(null);
   const [recordError, setRecordError] = useState<string | null>(null);
@@ -82,6 +86,12 @@ export function ShortcutsSection() {
       const digitMode = recordingId === "jump-to-tab";
       const b = bindingFromEvent(e, digitMode);
       if (!b) return; // bare modifier press — keep waiting for the real key
+      // Named before the generic check, which would otherwise tell someone who
+      // pressed ⌃⇥ to add Ctrl to a combo that already has it.
+      if (isReservedKey(b.key)) {
+        setRecordError("Tab belongs to the recently-used-tabs gesture.");
+        return;
+      }
       if (!isValidBinding(b)) {
         setRecordError(`Add ${CMD_LABEL} or ${ALT_LABEL} to the combo.`);
         return;
@@ -206,7 +216,7 @@ export function ShortcutsSection() {
                         the gesture in full, and printing "Double tap" beside
                         "Double left Shift" said the same thing twice, in two
                         different vocabularies. */}
-                    {f.id !== "search-everywhere" && (
+                    {!f.control && (
                       <span className="text-[11.5px] text-[var(--color-fg-faint)]">{f.fixedReason}</span>
                     )}
                     <div className={cn(
@@ -214,7 +224,8 @@ export function ShortcutsSection() {
                       // Keys still shown while off, greyed: the row is also
                       // the answer to "what was that gesture", and hiding them
                       // would make turning it back on a guess.
-                      f.id === "search-everywhere" && doubleShiftMode === "off" && "opacity-40",
+                      f.control === "double-shift" && doubleShiftMode === "off" && "opacity-40",
+                      f.control === "ctrl-tab" && ctrlTabMode === "off" && "opacity-40",
                     )}>
                       {f.glyphs.map((g, idx) => <Key key={idx} glyph={g} />)}
                     </div>
@@ -223,7 +234,7 @@ export function ShortcutsSection() {
                         sits on. It sits where the recorder does on every other
                         row, and a select rather than a switch because "off" is
                         only one of the four answers people want. */}
-                    {f.id === "search-everywhere" && (
+                    {f.control === "double-shift" && (
                       <select
                         data-testid="double-shift-mode"
                         aria-label="When double-Shift opens Search everywhere"
@@ -232,6 +243,25 @@ export function ShortcutsSection() {
                         className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg-2)] px-2 py-1 text-[12.5px] text-[var(--color-fg)]"
                       >
                         {DOUBLE_SHIFT_MODES.map(o => (
+                          <option key={o.id} value={o.id}>{o.label}</option>
+                        ))}
+                      </select>
+                    )}
+                    {/* On/off, where double-Shift needs four: the awkward
+                        question that one answers ("should it fire while I am
+                        typing?") has no equivalent here, since Tab with Ctrl
+                        held types nothing. Still a select rather than a
+                        switch, so the row reads the same as its neighbour and
+                        the option can name the whole gesture. */}
+                    {f.control === "ctrl-tab" && (
+                      <select
+                        data-testid="ctrl-tab-mode"
+                        aria-label="Whether Ctrl+Tab walks the recently used tabs"
+                        value={ctrlTabMode}
+                        onChange={(e) => setCtrlTabMode(e.target.value as CtrlTabMode)}
+                        className="rounded-md border border-[var(--color-border)] bg-[var(--color-bg-2)] px-2 py-1 text-[12.5px] text-[var(--color-fg)]"
+                      >
+                        {CTRL_TAB_MODES.map(o => (
                           <option key={o.id} value={o.id}>{o.label}</option>
                         ))}
                       </select>
