@@ -760,46 +760,113 @@ resolved and never starts a lookup, so listing every task costs nothing.
 ### Phase and age are derived, never stored
 
 A task's phase comes from `taskPhase()` (`src/lib/taskPhase.ts`): the task
-record plus the live PR snapshot in `usePr`, and nothing a person types. There
-is no status field to set and none to go stale. Four values, first match wins:
-**Done** when the task is archived or its PR is merged, **In review** when the
-PR is open, **In progress** when the PR is draft or closed-unmerged or the task
-has ever spawned (`spawn_count > 0`) or has resumable history, **Backlog**
-otherwise.
+record, plus the live PR snapshot in `usePr`, plus the live git state in
+`useTaskGit`, and nothing a person types. There is no status field to set and
+none to go stale. Four values, first match wins:
+
+| Phase | When |
+|---|---|
+| **Done** | `archived`, or the PR is merged, or `merged_into_base` |
+| **In review** | the PR is open, or (no PR at all AND own commits AND clean AND nothing ahead) |
+| **In progress** | the PR is draft or closed, or `started_at` is set |
+| **Todo** | none of the above |
+
+**Todo is where every new task starts, and that is the normal case, not a
+rarity.** Creating a task spawns its agent, so a spawn is not evidence that
+anybody has given it work: the agent is sitting at its prompt waiting for one.
+**In progress** begins at `started_at`, the first prompt a human submits into
+any terminal of the task, stamped write-once by `markStarted` in `useApp` at
+each place user text reaches a terminal (the GUI's Enter, a queued prompt, the
+New Task dialog's seed, a library prompt, sent review comments, and the CLI's
+`termic send`). Enter in a plain shell tab counts too: someone running the
+task's tests has started working on it in every sense this screen cares about.
+
+**The git rule** is the second half of In review, and it is what a task that
+was worked on and handed off looks like when there is no PR: `own_commits >= 1`
+(the branch has commits the base cannot reach), `dirty === false` (nothing
+staged, unstaged **or untracked** in the worktree) and `ahead === 0` (the
+remote branch exists and has everything). `ahead === null` means there is no
+remote branch at all, which is not the same as nothing left to push, so it does
+not qualify. `base_known` is deliberately not a condition: the commit count is
+taken against the base branch, not the creation commit, so an imported
+worktree or a reused branch (whose `base_sha` is None by design) qualifies like
+any other. Only `merged_into_base` needs the creation commit, and Rust folds
+that in on its own. A **draft or closed PR outranks this rule entirely**: both
+are an explicit statement by a person about how ready the work is, and a clean
+pushed branch underneath does not overrule it, which is why the rule requires
+`pr` to be absent rather than merely not-open.
+
+**Stop is deliberately not an input.** "The user stopped the task" is the
+obvious signal for handing off, and it is unusable: it is not persisted
+anywhere, so it is every task's state after a relaunch, and a phase that read
+it would move the whole fleet to In review on every launch. The git rule
+answers the same question from facts that survive a restart.
 
 The decisions that table encodes, all of them argued in that file's header:
 archived beats merged (a shelved task is finished whatever its PR did); a draft
 PR is In progress, because a draft says outright that it is not ready to look
-at; a closed unmerged PR falls back to In progress, not Backlog, because the
+at; a closed unmerged PR falls back to In progress, not Todo, because the
 branch has real work on it; `changes_requested` stays In review, so the phase
 does not oscillate with every review round; a failing check does not move the
 phase at all (CI is a property of the work, not a stage of it, and the PR chip
-already turns red); a failed lookup has `pr === null` like "no PR" does and
-therefore falls through to the record, so a machine with no `gh`/`glab` still
-phases correctly; a shell spawn counts as progress, because `task_record_spawn`
-fires for every spawn; and a main-checkout task is never polled at all
-(`pollableTasks` skips `is_main_checkout`), so it only leaves In progress by
-being archived. Backlog is rare in practice: every GUI create path activates
-the new task and activation spawns its default tab, so a task is In progress
-within a second of existing.
+already turns red); a failed PR lookup has `pr === null` like "no PR" does and
+therefore falls through, so a machine with no `gh`/`glab` still phases
+correctly; an unknown git state does the same (`undefined` for a task nothing
+has polled, `null` for one whose lookup failed, both "we do not know"); and a
+main-checkout task never enters the git rules at all, because `pollableTasks`
+skips `is_main_checkout`.
+
+**The phase moves In progress <-> In review with each work cycle**, and that is
+truthful rather than noisy: edit something and the tree is dirty, so it drops
+back; commit and push and it returns. It is a different thing from the
+review-round oscillation the design avoids, where `changes_requested`
+deliberately does not move the phase because a reviewer's opinion is not a
+change in where the work stands. One consequence on purpose: a stray untracked
+file pins a task at In progress. Unfinished work in the worktree is unfinished
+work, whatever the commits say.
+
+**On upgrade**, existing tasks are backfilled: one that had ever spawned an
+agent reads In progress, so nothing that was underway reappears as Todo, while
+tasks created from here start in Todo and earn In progress at their first
+prompt.
+
+**The git pass is scoped to this page.** `useTaskGit`
+(`src/store/taskGit.ts`) is shaped like the PR store, with one deliberate
+difference: `startDashboardGitPolling()` / `stopDashboardGitPolling()` are
+mounted by the Dashboard's effect and nothing else ticks it. That effect is
+gated on there being tasks, the same gate `initPrStatusPoller` has: on launch
+the page mounts before `loadAll` resolves, and starting there would spend the
+immediate pass on an empty store and leave every git-derived phase reading In
+progress until the next tick. The phase is drawn
+only here, the Dashboard is mounted only while no task is open, and
+`task_git_phase_state` shells out to git, so nothing runs while the user is
+driving an agent. Inside a pass: sequential, at most 6 tasks, stalest first, a
+30s floor per task, skipping archived, main-checkout, and any task whose PR is
+open or merged (those decide the phase on their own). Draft and closed PRs are
+still polled, because `merged_into_base` has to be able to beat them: a
+squash-merged branch whose PR was closed rather than merged would otherwise
+never reach Done. See [performance.md](performance.md).
 
 **The filter row** (`data-testid="dashboard-phase-filter"`) sits between Recent
 and the Projects header and renders only when at least one non-archived task
 exists, so a fresh install sees the page it always saw, or while a filter is
 selected, so archiving the last task cannot strand the empty line with no pill
-to clear it. Pills are All then
-`PHASE_ORDER`, each a `<button>` carrying `data-phase`, `data-count` and
-`aria-pressed`. All, In progress, In review and Done are always on screen so
-the vocabulary stays stable between visits; Backlog appears only when its count
-is above zero or it is the current filter, since a permanent "Backlog 0" is a
-word the user learns to ignore. Clicking the selected pill clears the filter.
+to clear it. Pills are All then `PHASE_ORDER`, each a `<button>` carrying
+`data-phase`, `data-count` and `aria-pressed`. **All five are always on
+screen**, in lifecycle order (All, Todo, In progress, In review, Done), so the
+vocabulary stays stable between visits and the row reads left to right as a
+task's life. Todo used to be conditional, on the theory that a permanent
+"Backlog 0" was a word the user learns to ignore; that premise went with
+`spawn_count`, since a task is now Todo until somebody prompts it and a pill
+that comes and goes is worse than a zero. Clicking the selected pill clears the
+filter.
 Counts are over every non-archived task and do not change when a pill is
 picked. Selecting a phase drops non-matching rows, then drops a card with no
 rows left, then drops a group whose members all went; the Projects header count
 stays the number of projects, because a task filter does not change how many
 projects exist. When nothing matches, one line replaces the cards
 (`data-testid="dashboard-phase-empty"`): "Nothing in progress" / "Nothing in
-review" / "Nothing done" / "Nothing in the backlog", an explicit map
+review" / "Nothing done" / "Nothing to do", an explicit map
 (`PHASE_EMPTY_LABEL`) rather than a sentence assembled from a label. Recent is
 not filtered: those eight are where you just were, which is a different
 question. The filter lives in `useUI` and is session-only on purpose, since the

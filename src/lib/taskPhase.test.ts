@@ -1,12 +1,15 @@
-// The precedence table from docs/ideas/task-status.md, "The design", plus
-// the decisions called out in this file's header comment.
+// The precedence table from src/lib/taskPhase.ts's header, rule by rule, plus
+// the decisions argued there. Four inputs decide a phase now (the record, the
+// PR snapshot, the git state, and whether each of the last two is KNOWN), so
+// most of what is worth pinning is the interaction between them rather than
+// any single rule on its own.
 
 import { describe, it, expect } from "vitest";
 import {
   taskPhase, phaseCounts, taskAgeLabel, PHASE_ORDER, PHASE_LABEL, PHASE_EMPTY_LABEL,
 } from "@/lib/taskPhase";
 import { relativeDayLabel } from "@/lib/relativeDay";
-import type { PrStatus, Task } from "@/lib/types";
+import type { PrStatus, Task, TaskGitState } from "@/lib/types";
 
 function makeTask(overrides: Partial<Task> = {}): Task {
   return {
@@ -39,114 +42,246 @@ function makePr(overrides: Partial<PrStatus> = {}): PrStatus {
   };
 }
 
-describe("taskPhase", () => {
-  it("backlog: no PR, never spawned, no history", () => {
-    expect(taskPhase(makeTask(), null)).toBe("backlog");
+/** Defaults to a branch that has done nothing: base known, no commits, clean,
+ *  nothing to push. Each case overrides only the field it is about. */
+function makeGit(overrides: Partial<TaskGitState> = {}): TaskGitState {
+  return {
+    own_commits: 0,
+    dirty: false,
+    ahead: 0,
+    merged_into_base: false,
+    base_known: true,
+    ...overrides,
+  };
+}
+
+/** The three conditions of the git-derived In review rule, all satisfied. */
+const HANDED_OFF = makeGit({ own_commits: 2, dirty: false, ahead: 0 });
+
+const STARTED = "2026-02-01T09:00:00.000Z";
+
+describe("taskPhase: todo", () => {
+  it("a brand new task is todo: created, agent spawned, nobody has prompted it", () => {
+    expect(taskPhase(makeTask(), null, null)).toBe("todo");
   });
 
-  it("in_progress: no PR, spawn_count > 0", () => {
-    const task = makeTask({ spawn_count: 1 });
-    expect(taskPhase(task, null)).toBe("in_progress");
+  it("stays todo with a polled git state that says the branch has done nothing", () => {
+    expect(taskPhase(makeTask(), null, makeGit())).toBe("todo");
   });
 
-  it("in_progress: no PR, has_resumable_history true, spawn_count 0", () => {
-    const task = makeTask({ spawn_count: 0, has_resumable_history: true });
-    expect(taskPhase(task, null)).toBe("in_progress");
+  it("spawn_count and has_resumable_history no longer move it", () => {
+    // Both left the table: an agent running is not somebody having asked it
+    // for something, and creation spawns one.
+    const task = makeTask({ spawn_count: 4, has_resumable_history: true });
+    expect(taskPhase(task, null, null)).toBe("todo");
+  });
+});
+
+describe("taskPhase: in_progress", () => {
+  it("started_at set is in_progress", () => {
+    expect(taskPhase(makeTask({ started_at: STARTED }), null, null)).toBe("in_progress");
   });
 
-  it("in_review: PR open", () => {
-    const task = makeTask({ spawn_count: 1 });
-    expect(taskPhase(task, makePr({ state: "open" }))).toBe("in_review");
+  it("a draft PR is in_progress, not in_review", () => {
+    expect(taskPhase(makeTask(), makePr({ state: "draft" }), null)).toBe("in_progress");
   });
 
-  it("done: PR merged", () => {
-    const task = makeTask({ spawn_count: 1 });
-    expect(taskPhase(task, makePr({ state: "merged" }))).toBe("done");
+  it("a closed PR is in_progress even on a task nobody ever prompted", () => {
+    const task = makeTask({ started_at: null });
+    expect(taskPhase(task, makePr({ state: "closed" }), null)).toBe("in_progress");
   });
 
-  it("done: archived, regardless of PR state", () => {
-    const task = makeTask({ archived: true, spawn_count: 1 });
-    expect(taskPhase(task, makePr({ state: "open" }))).toBe("done");
+  it("a dirty worktree drops a committed, pushed branch back to in_progress", () => {
+    // The work cycle: this is the oscillation the design accepts on purpose.
+    const task = makeTask({ started_at: STARTED });
+    expect(taskPhase(task, null, { ...HANDED_OFF, dirty: true })).toBe("in_progress");
   });
 
-  it("archived beats merged too (same outcome, both routes to done)", () => {
-    const task = makeTask({ archived: true });
-    expect(taskPhase(task, makePr({ state: "merged" }))).toBe("done");
+  it("unknown git with started_at is in_progress", () => {
+    const task = makeTask({ started_at: STARTED });
+    expect(taskPhase(task, null, undefined)).toBe("in_progress");
+    expect(taskPhase(task, null, null)).toBe("in_progress");
   });
 
-  it("archived wins even when there is no PR at all", () => {
-    const task = makeTask({ archived: true });
-    expect(taskPhase(task, null)).toBe("done");
-  });
-
-  it("draft PR is in_progress, not in_review", () => {
+  it("unknown git WITHOUT started_at is todo, not in_progress", () => {
     const task = makeTask();
-    expect(taskPhase(task, makePr({ state: "draft" }))).toBe("in_progress");
+    expect(taskPhase(task, null, undefined)).toBe("todo");
+    expect(taskPhase(task, null, null)).toBe("todo");
+  });
+});
+
+describe("taskPhase: in_review", () => {
+  it("an open PR is in_review", () => {
+    const task = makeTask({ started_at: STARTED });
+    expect(taskPhase(task, makePr({ state: "open" }), null)).toBe("in_review");
   });
 
-  it("closed PR is in_progress even with spawn_count 0 and no history", () => {
-    const task = makeTask({ spawn_count: 0, has_resumable_history: false });
-    expect(taskPhase(task, makePr({ state: "closed" }))).toBe("in_progress");
-  });
-
-  it("changes_requested review on an open PR stays in_review", () => {
-    const task = makeTask();
+  it("changes_requested on an open PR stays in_review", () => {
     const pr = makePr({ state: "open", review: "changes_requested" });
-    expect(taskPhase(task, pr)).toBe("in_review");
+    expect(taskPhase(makeTask(), pr, null)).toBe("in_review");
   });
 
   it("failing checks on an open PR stay in_review", () => {
-    const task = makeTask();
     const pr = makePr({ state: "open", checks: "failing" });
-    expect(taskPhase(task, pr)).toBe("in_review");
+    expect(taskPhase(makeTask(), pr, null)).toBe("in_review");
   });
 
-  it("pr === null with spawn_count 0 and no history is backlog", () => {
-    const task = makeTask({ spawn_count: 0, has_resumable_history: false });
-    expect(taskPhase(task, null)).toBe("backlog");
+  it("an open PR wins even when the worktree is filthy", () => {
+    // The PR is an explicit statement; local scratch work does not retract it.
+    const task = makeTask({ started_at: STARTED });
+    const git = makeGit({ own_commits: 3, dirty: true, ahead: 2 });
+    expect(taskPhase(task, makePr({ state: "open" }), git)).toBe("in_review");
   });
 
-  it("pr === null with has_resumable_history is in_progress", () => {
-    const task = makeTask({ spawn_count: 0, has_resumable_history: true });
-    expect(taskPhase(task, null)).toBe("in_progress");
+  it("no PR plus own commits, clean tree and nothing ahead is in_review", () => {
+    const task = makeTask({ started_at: STARTED });
+    expect(taskPhase(task, null, HANDED_OFF)).toBe("in_review");
   });
 
-  it("pr === undefined behaves exactly like pr === null", () => {
-    // A failed PrLookup (cli-missing, no-remote, error, ...) also resolves
-    // to a null/undefined pr, and both must fall through to the agent
-    // signals rather than forcing backlog.
-    const task = makeTask({ spawn_count: 1 });
-    expect(taskPhase(task, undefined)).toBe(taskPhase(task, null));
-    expect(taskPhase(task, undefined)).toBe("in_progress");
+  it("the git rule needs all three conditions: each one missing flips it", () => {
+    const task = makeTask({ started_at: STARTED });
+    // The control: all three present.
+    expect(taskPhase(task, null, HANDED_OFF)).toBe("in_review");
+    // No commits of its own, so there is nothing to hand off.
+    expect(taskPhase(task, null, { ...HANDED_OFF, own_commits: 0 })).toBe("in_progress");
+    // Uncommitted (or untracked) work still in the worktree.
+    expect(taskPhase(task, null, { ...HANDED_OFF, dirty: true })).toBe("in_progress");
+    // Committed locally but never pushed.
+    expect(taskPhase(task, null, { ...HANDED_OFF, ahead: 3 })).toBe("in_progress");
+  });
+
+  it("ahead === null is not in_review: no remote branch is not nothing to push", () => {
+    const task = makeTask({ started_at: STARTED });
+    expect(taskPhase(task, null, { ...HANDED_OFF, ahead: null })).toBe("in_progress");
+  });
+
+  it("base_known false still reads in_review: own commits are counted against the base branch", () => {
+    // An imported worktree or a reused branch has no `base_sha` and often no
+    // reflog, so `base_known` is false for the whole life of the task. Its
+    // commits beyond the base branch, a clean tree and a pushed remote are
+    // exactly as real as anyone else's, and the creation commit is only ever
+    // needed for `merged_into_base`, which Rust folds in on its own.
+    const task = makeTask({ started_at: STARTED });
+    const git = { ...HANDED_OFF, base_known: false };
+    expect(taskPhase(task, null, git)).toBe("in_review");
+  });
+
+  it("a draft PR never becomes in_review, however clean the git state", () => {
+    const task = makeTask({ started_at: STARTED });
+    expect(taskPhase(task, makePr({ state: "draft" }), HANDED_OFF)).toBe("in_progress");
+  });
+
+  it("a closed PR never becomes in_review, however clean the git state", () => {
+    const task = makeTask({ started_at: STARTED });
+    expect(taskPhase(task, makePr({ state: "closed" }), HANDED_OFF)).toBe("in_progress");
+  });
+
+  it("the git rule does not fire for a task that was never started either", () => {
+    // Not a special case in the code, just the consequence worth pinning:
+    // rule 2 does not consult `started_at` at all, so a branch that arrived
+    // committed and pushed reads In review without anybody prompting it.
+    expect(taskPhase(makeTask(), null, HANDED_OFF)).toBe("in_review");
+  });
+});
+
+describe("taskPhase: done", () => {
+  it("a merged PR is done", () => {
+    const task = makeTask({ started_at: STARTED });
+    expect(taskPhase(task, makePr({ state: "merged" }), null)).toBe("done");
+  });
+
+  it("archived is done, regardless of PR state", () => {
+    const task = makeTask({ archived: true, started_at: STARTED });
+    expect(taskPhase(task, makePr({ state: "open" }), null)).toBe("done");
+  });
+
+  it("archived wins even when there is no PR and no git state at all", () => {
+    expect(taskPhase(makeTask({ archived: true }), null, null)).toBe("done");
+  });
+
+  it("merged_into_base is done with no PR involved: ff, rebase and squash all land here", () => {
+    const task = makeTask({ started_at: STARTED });
+    expect(taskPhase(task, null, makeGit({ merged_into_base: true }))).toBe("done");
+  });
+
+  it("merged_into_base beats an open PR", () => {
+    // The branch is in the base branch. Whatever the PR still says, the work
+    // has landed, and this is the case the poller keeps polling draft and
+    // closed PRs for.
+    const task = makeTask({ started_at: STARTED });
+    const git = makeGit({ merged_into_base: true });
+    expect(taskPhase(task, makePr({ state: "open" }), git)).toBe("done");
+  });
+
+  it("merged_into_base beats a started task", () => {
+    const task = makeTask({ started_at: STARTED });
+    expect(taskPhase(task, null, makeGit({ merged_into_base: true, dirty: true }))).toBe("done");
+  });
+});
+
+describe("taskPhase: unknown inputs fall through rather than forcing a phase", () => {
+  it("pr undefined behaves exactly like pr null", () => {
+    // A failed PrLookup (cli-missing, no-remote, error, ...) resolves to a
+    // null/undefined pr, and both must fall through.
+    const task = makeTask({ started_at: STARTED });
+    expect(taskPhase(task, undefined, null)).toBe(taskPhase(task, null, null));
+    expect(taskPhase(task, undefined, null)).toBe("in_progress");
+  });
+
+  it("git undefined behaves exactly like git null", () => {
+    // undefined = nothing polled it yet; null = the lookup rejected and the
+    // store recorded the failure. Neither is information about the branch.
+    const task = makeTask({ started_at: STARTED });
+    expect(taskPhase(task, null, undefined)).toBe(taskPhase(task, null, null));
   });
 });
 
 describe("phaseCounts", () => {
-  it("tallies a mixed list, including a task whose prOf returns null", () => {
+  it("tallies a mixed list across all four phases", () => {
     const tasks: Task[] = [
       makeTask({ id: "a", archived: true }),
-      makeTask({ id: "b", spawn_count: 1 }),
+      makeTask({ id: "b", started_at: STARTED }),
       makeTask({ id: "c" }),
-      makeTask({ id: "d", spawn_count: 2 }),
+      makeTask({ id: "d", started_at: STARTED }),
+      makeTask({ id: "e", started_at: STARTED }),
     ];
     const prById: Record<string, PrStatus | null> = {
       a: null,
       b: makePr({ state: "open" }),
       c: null,
       d: makePr({ state: "merged" }),
+      e: null,
     };
-    const counts = phaseCounts(tasks, id => prById[id] ?? null);
+    const gitById: Record<string, TaskGitState | null> = {
+      a: null,
+      b: null,
+      c: null,
+      d: null,
+      // No PR, but committed, clean and pushed: the git-derived In review.
+      e: HANDED_OFF,
+    };
+    const counts = phaseCounts(tasks, id => prById[id] ?? null, id => gitById[id] ?? null);
     expect(counts).toEqual({
-      backlog: 1,
+      todo: 1,
       in_progress: 0,
-      in_review: 1,
+      in_review: 2,
       done: 2,
     });
   });
 
+  it("counts a task whose git lookup never ran the same as one whose failed", () => {
+    const tasks: Task[] = [makeTask({ id: "a" }), makeTask({ id: "b" })];
+    const counts = phaseCounts(
+      tasks,
+      () => null,
+      id => (id === "a" ? undefined : null),
+    );
+    expect(counts.todo).toBe(2);
+  });
+
   it("returns every phase key at zero on an empty list", () => {
-    expect(phaseCounts([], () => null)).toEqual({
-      backlog: 0, in_progress: 0, in_review: 0, done: 0,
+    expect(phaseCounts([], () => null, () => null)).toEqual({
+      todo: 0, in_progress: 0, in_review: 0, done: 0,
     });
   });
 });
@@ -158,6 +293,10 @@ describe("PHASE_ORDER / PHASE_LABEL", () => {
       expect(PHASE_LABEL[phase]).toBeTruthy();
     }
   });
+
+  it("reads in lifecycle order, which is how the filter row renders", () => {
+    expect([...PHASE_ORDER]).toEqual(["todo", "in_progress", "in_review", "done"]);
+  });
 });
 
 describe("PHASE_EMPTY_LABEL", () => {
@@ -167,10 +306,11 @@ describe("PHASE_EMPTY_LABEL", () => {
     }
   });
 
-  it("reads as a sentence for backlog, which is why the map is explicit", () => {
+  it("reads as a sentence for todo, which is why the map is explicit", () => {
     // The one entry that is NOT `"Nothing " + label.toLowerCase()`. If this
-    // ever gets refactored into a template, this is the case that breaks.
-    expect(PHASE_EMPTY_LABEL.backlog).toBe("Nothing in the backlog");
+    // ever gets refactored into a template, this is the case that breaks
+    // (it would produce "Nothing todo").
+    expect(PHASE_EMPTY_LABEL.todo).toBe("Nothing to do");
     expect(PHASE_EMPTY_LABEL.in_progress).toBe("Nothing in progress");
     expect(PHASE_EMPTY_LABEL.in_review).toBe("Nothing in review");
     expect(PHASE_EMPTY_LABEL.done).toBe("Nothing done");

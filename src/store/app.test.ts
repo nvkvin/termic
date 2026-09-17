@@ -7,6 +7,8 @@ vi.mock("@/lib/ipc", () => ({
   // missing them throws on property access, not on call.
   taskTouch: vi.fn().mockResolvedValue("2026-01-01T00:00:00Z"),
   taskRecordSpawn: vi.fn().mockResolvedValue(1),
+  taskMarkStarted: vi.fn().mockResolvedValue("2026-01-01T00:00:00Z"),
+  taskGitPhaseState: vi.fn().mockRejectedValue(new Error("not mocked")),
   ptyWrite: vi.fn(),
   ptyKill: vi.fn().mockResolvedValue(undefined),
   projectsList: vi.fn().mockResolvedValue([]),
@@ -1742,7 +1744,8 @@ describe("setActiveTask last_opened_at", () => {
 //
 // `task_record_spawn` always WROTE the count; nothing read the answer back,
 // so a task created this session stayed at spawn_count 0 in the store until
-// the next `loadAll`. The dashboard's derived phase reads that field.
+// the next `loadAll`. (The derived phase no longer reads it: see the
+// `markStarted` block below for what replaced it and why.)
 describe("recordSpawn", () => {
   const count = (id: string) => useApp.getState().tasks.find(w => w.id === id)?.spawn_count;
 
@@ -1789,5 +1792,106 @@ describe("recordSpawn", () => {
     expect(() => useApp.getState().recordSpawn("ws1")).not.toThrow();
     await vi.waitFor(() => expect(ipc.taskRecordSpawn).toHaveBeenCalled());
     expect(count("ws1")).toBe(0);
+  });
+});
+
+// ── markStarted ───────────────────────────────────────────────────────
+//
+// Write-once, and it rides the same "a human submitted something" gate as
+// `lastInputAt`: every prompt submit in every terminal calls it, so the
+// second call onwards must cost NOTHING (docs/performance.md bear trap 8).
+// Same shape as the `setActiveTask last_opened_at` block above, for the same
+// reason: what is worth asserting is the bail, not the stamp.
+describe("markStarted", () => {
+  const startedAt = (id: string) => useApp.getState().tasks.find(w => w.id === id)?.started_at;
+
+  beforeEach(() => {
+    useApp.setState({ tasks: [makeTask({ id: "ws1" }), makeTask({ id: "ws2" })] });
+  });
+
+  it("stamps the task and persists it exactly once", () => {
+    const before = Date.now();
+    useApp.getState().markStarted("ws1");
+
+    const at = startedAt("ws1");
+    expect(at).toBeTruthy();
+    expect(Date.parse(at!)).toBeGreaterThanOrEqual(before);
+    expect(ipc.taskMarkStarted).toHaveBeenCalledTimes(1);
+    expect(ipc.taskMarkStarted).toHaveBeenCalledWith("ws1");
+    // Per task, not per app: the sibling is untouched.
+    expect(startedAt("ws2")).toBeUndefined();
+  });
+
+  it("costs nothing on every submit after the first", () => {
+    useApp.getState().markStarted("ws1");
+    const first = startedAt("ws1");
+    vi.mocked(ipc.taskMarkStarted).mockClear();
+
+    const before = useApp.getState();
+    useApp.getState().markStarted("ws1");
+    useApp.getState().markStarted("ws1");
+    useApp.getState().markStarted("ws1");
+    const after = useApp.getState();
+
+    // Same ARRAY, not merely equal: a fresh `tasks` is what invalidates every
+    // selector in every mounted task.
+    expect(after.tasks).toBe(before.tasks);
+    expect(startedAt("ws1")).toBe(first);
+    expect(ipc.taskMarkStarted).not.toHaveBeenCalled();
+  });
+
+  it("never re-stamps a task that arrived from disk already started", () => {
+    // The common case after a relaunch: the record carries the stamp, and the
+    // first Enter of the new session must not move it.
+    const old = "2026-01-02T03:04:05.000Z";
+    useApp.setState({ tasks: [makeTask({ id: "ws1", started_at: old })] });
+
+    useApp.getState().markStarted("ws1");
+
+    expect(startedAt("ws1")).toBe(old);
+    expect(ipc.taskMarkStarted).not.toHaveBeenCalled();
+  });
+
+  it("treats a null stamp as not started, the way serde writes an empty one", () => {
+    useApp.setState({ tasks: [makeTask({ id: "ws1", started_at: null })] });
+
+    useApp.getState().markStarted("ws1");
+
+    expect(startedAt("ws1")).toBeTruthy();
+    expect(ipc.taskMarkStarted).toHaveBeenCalledTimes(1);
+  });
+
+  it("is a no-op for an id that resolves to no task", () => {
+    const before = useApp.getState();
+    let notifications = 0;
+    const unsub = useApp.subscribe(() => { notifications++; });
+
+    useApp.getState().markStarted("nope");
+
+    unsub();
+    expect(notifications).toBe(0);
+    expect(useApp.getState().tasks).toBe(before.tasks);
+    expect(ipc.taskMarkStarted).not.toHaveBeenCalled();
+  });
+
+  it("notifies subscribers ONCE on the first call and never again", () => {
+    const notificationsFor = (id: string) => {
+      let n = 0;
+      const unsub = useApp.subscribe(() => { n++; });
+      useApp.getState().markStarted(id);
+      unsub();
+      return n;
+    };
+
+    expect(notificationsFor("ws1")).toBe(1);
+    expect(notificationsFor("ws1")).toBe(0);
+    expect(notificationsFor("ws1")).toBe(0);
+  });
+
+  it("survives a rejected write without throwing, keeping the in-memory stamp", () => {
+    vi.mocked(ipc.taskMarkStarted).mockRejectedValueOnce(new Error("disk full"));
+
+    expect(() => useApp.getState().markStarted("ws1")).not.toThrow();
+    expect(startedAt("ws1")).toBeTruthy();
   });
 });

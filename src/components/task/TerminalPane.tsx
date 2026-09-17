@@ -642,6 +642,11 @@ const captureArmedRef = useRef(false);
     }
     lastQueueSendAtRef.current = Date.now();
     patchTab(task.id, tab.id, { lastInputAt: Date.now() });
+    // A queued prompt is user text reaching the agent, so it starts the task
+    // exactly like an Enter does (src/lib/taskPhase.ts). Through `getState()`
+    // rather than a subscription: the action is stable, and pulling it in as
+    // a hook value would add it to this callback's deps.
+    useApp.getState().markStarted(task.id);
     const remaining = head.remaining - 1;
     const nextQueue = remaining <= 0
       ? q.slice(1)
@@ -2615,6 +2620,11 @@ const captureArmedRef = useRef(false);
               useApp.getState().clearAttention(task.id, tab.id);
             }
             patchTab(task.id, tab.id, { lastInputAt: Date.now() });
+            // The gate this rides is "a human submitted something", which is
+            // the same question the Todo -> In progress edge asks. Write-once
+            // and bails on an already started task, so this costs one lookup
+            // per Enter thereafter (src/store/app.ts).
+            useApp.getState().markStarted(task.id);
             submittedSinceSpawnRef.current = true;
             persistMintedSession();
             noteSubmit(tab.cli);

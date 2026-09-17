@@ -226,12 +226,26 @@ export interface AppState {
    *  `task_record_spawn` has always written the number to disk, but nothing
    *  read the answer: the store's `spawn_count` was only ever refreshed by
    *  `loadAll`, so a task created this session read as never-spawned until
-   *  the next reload. The dashboard's derived phase (a follow-up commit) reads
-   *  that field, and "created it, launched an agent, still says never
-   *  spawned" is the bug that would follow.
+   *  the next reload, which no surface reading the live record could trust.
+   *  (The derived phase no longer consults it: creating a task spawns its
+   *  agent, so a spawn never meant anybody had given the task work. See
+   *  `markStarted` below and src/lib/taskPhase.ts.)
    *
    *  Bails when the count is unchanged, leaving state identity intact. */
   recordSpawn: (taskId: string) => void;
+  /** Stamp `started_at` the first time a human submits a prompt into this
+   *  task, in the store and on disk. Write-once on both sides: an already
+   *  stamped task (or an unknown id) bails before any `set` and before the
+   *  IPC, so the hot paths that call this on every submit cost one array
+   *  lookup once the task has started.
+   *
+   *  JUDGEMENT CALL: Enter in a plain SHELL tab counts as starting too. The
+   *  call sites are the places user text reaches a terminal, not the places
+   *  it reaches an agent specifically, and that is deliberate: a user running
+   *  `npm test` in the task's shell has started working on it in every sense
+   *  the dashboard cares about, and a phase that called that Todo would be
+   *  wrong in the direction that matters (claiming nothing has happened). */
+  markStarted: (taskId: string) => void;
   setView: (page: View["page"]) => void;
   openSettings: (tab?: View["settingsTab"], repoId?: string, highlight?: string) => void;
   closeSettings: () => void;
@@ -1014,6 +1028,29 @@ export const useApp = create<AppState>((set, get) => ({
         return { tasks: s.tasks.map(w => (w.id === taskId ? { ...w, spawn_count: count } : w)) };
       });
     }).catch(() => {});
+  },
+
+  markStarted: (taskId) => {
+    // Bail BEFORE the set() and before the IPC. This runs on every prompt
+    // submit in every terminal, which is exactly the kind of PTY-driven path
+    // where an unchanged write costs a whole ~233-key state copy and re-runs
+    // every mounted task's selectors (docs/performance.md bear trap 8). After
+    // the first prompt it is one `find` and a truthiness check.
+    //
+    // `started_at` is null on a record that has one and absent on a record
+    // written before the field existed; both mean "not started", so the
+    // truthy check covers them (same reasoning as `last_opened_at`).
+    const task = get().tasks.find(w => w.id === taskId);
+    if (!task || task.started_at) return;
+    const stamp = new Date().toISOString();
+    set(s => ({ tasks: s.tasks.map(w => (w.id === taskId ? { ...w, started_at: stamp } : w)) }));
+    // Fire-and-forget, and the reply is dropped exactly like `taskTouch`'s:
+    // the two stamps differ only by the IPC round trip, nothing renders
+    // milliseconds, and writing the reply back would copy the whole state a
+    // second time. The Rust side is write-once, so a racing second call (two
+    // terminals submitting at the same moment) keeps the first stamp and this
+    // side has already bailed on its own copy anyway.
+    ipc.taskMarkStarted(taskId).catch(() => {});
   },
 
   setView: (page) => set({ view: { page }, activeTaskId: null }),

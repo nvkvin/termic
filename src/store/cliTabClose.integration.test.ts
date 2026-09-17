@@ -19,6 +19,8 @@ vi.mock("@/lib/ipc", () => ({
   // missing them throws on property access, not on call.
   taskTouch: vi.fn().mockResolvedValue("2026-01-01T00:00:00Z"),
   taskRecordSpawn: vi.fn().mockResolvedValue(1),
+  taskMarkStarted: vi.fn().mockResolvedValue("2026-01-01T00:00:00Z"),
+  taskGitPhaseState: vi.fn().mockRejectedValue(new Error("not mocked")),
   ptyKill: vi.fn().mockResolvedValue(undefined),
   taskSetTabs: vi.fn().mockResolvedValue(undefined),
   taskSetTabSessionId: vi.fn().mockResolvedValue(undefined),

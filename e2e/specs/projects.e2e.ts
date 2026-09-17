@@ -2,7 +2,7 @@ import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { archiveTask, clickByText, clickMenuItemUntil, clickWhenVisible, createWorktreeTask, dashboardBadge, dismissOverlays, ensureActiveTask, openTask, pointerDrag, requireTermicApi, keysIn, snap, waitForAgentReady, waitForAppShell, waitForText, waitForTextGone, waitGone, waitVisible } from "../helpers";
+import { archiveTask, clickByText, clickMenuItemUntil, clickWhenVisible, createWorktreeTask, dashboardBadge, dismissOverlays, ensureActiveTask, openTask, pointerDrag, requireTermicApi, keysIn, snap, submitToAgent, waitForAgentReady, waitForAppShell, waitForText, waitForTextGone, waitGone, waitVisible } from "../helpers";
 
 // P1: adding/removing a project. Cases: a git repo can be added as a project
 // (shows in the store); removing it drops it. Uses a throwaway temp repo and
@@ -1512,29 +1512,73 @@ describe("dashboard", () => {
 });
 
 // A task's phase (src/lib/taskPhase.ts) is DERIVED at render from the task
-// record plus the PR store, never stored, so every case here drives the real
-// inputs (create a task, open it, seed the store the poller writes into) and
-// reads the phase back off the row's own `data-task-phase`. Asserting
-// `taskPhase()` instead would keep passing after the row stopped rendering it,
-// which is the whole failure mode this block exists to catch.
+// record plus the PR store plus the git store, never stored, so every case
+// here drives the real inputs (create a task, prompt it through xterm, seed
+// the snapshot the PR poller writes, move real refs with real git) and reads
+// the phase back off the row's own `data-task-phase`. Asserting `taskPhase()`
+// instead would keep passing after the row stopped rendering it, which is the
+// whole failure mode this block exists to catch.
 describe("dashboard phases", () => {
   /** Every fixture task carries this prefix, so teardown can sweep by NAME:
-   *  a throw mid-case leaves a task on disk and returns no id at all. */
+   *  a throw mid-case leaves a task on disk and returns no id at all. It is
+   *  also the branch glob the fixture and its origin are swept with below. */
   const PREFIX = "e2e-phase-";
+  /** The one branch this block creates in the shared fixture repo. */
+  const BRANCH = `${PREFIX}pr`;
   const row = (id: string) => `[data-dashboard-task-id="${id}"]`;
   const pill = (phase: string) => `[data-testid="dashboard-phase-filter"] [data-phase="${phase}"]`;
   const age = (id: string) => `${row(id)} [data-testid="task-age"]`;
   const EMPTY = '[data-testid="dashboard-phase-empty"]';
 
-  let backlogId = "";
+  let todoId = "";
   let prId = "";
   let ageId = "";
+
+  /** The fixture's `main`, the bare origin's `refs/heads/main`, and which
+   *  branch the fixture checkout had out, all as they stood BEFORE this block
+   *  ran. The merged-into-base case moves the first two and touches the third,
+   *  and teardown restores them from THESE rather than from anything a case
+   *  returned: a throw half way through that case returns nothing at all. */
+  let mainSha = "";
+  let originMainSha = "";
+  let fixtureHead = "";
+
+  /** Run git and hand back stdout. stderr is captured into the throw instead
+   *  of printed, so a step that fails names itself in the test output rather
+   *  than leaving a bare "Command failed" beside unrelated console noise. */
+  const git = (args: string, cwd: string): string => {
+    try {
+      return execSync(`git -C "${cwd}" ${args}`, {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      }).trim();
+    } catch (e) {
+      const err = e as { stderr?: string; message?: string };
+      throw new Error(`git ${args} failed in ${cwd}: ${String(err.stderr ?? err.message ?? e).trim()}`);
+    }
+  };
+
+  /** The same, for teardown steps that may legitimately have nothing to do
+   *  (no remote branch to delete, no local branch left, no worktree to prune).
+   *  Each one is separate so a failure in one does not skip the rest. */
+  const gitTry = (args: string, cwd: string) => {
+    try { git(args, cwd); } catch { /* nothing to undo */ }
+  };
 
   const showDashboard = async () => {
     await browser.execute(() => window.__termic!.useApp.getState().setView("dashboard"));
     // The phase-empty line is an accepted landing state: under a filter that
     // matches nothing there is no project card left to wait for.
     await waitVisible(`[data-dashboard-project-id], ${EMPTY}`);
+  };
+
+  /** `ensureActiveTask` waits on the STORE; `submitToAgent` needs a terminal
+   *  with geometry. After a dashboard round trip those are not the same
+   *  moment (`setView` nulls `activeTaskId` and the pane goes display:none),
+   *  and the gap is how a submit gets dispatched at a hidden pane. */
+  const focusTaskTerminal = async (id: string) => {
+    await ensureActiveTask(id);
+    await waitVisible(`[data-task-id="${id}"] .xterm`);
   };
 
   /** The phase the row is RENDERING, or null when the row is not on the page. */
@@ -1559,8 +1603,8 @@ describe("dashboard phases", () => {
       });
   };
 
-  /** A pill's count as a number, or null when the pill is not rendered at all
-   *  (which is how a zero Backlog presents). */
+  /** A pill's count as a number. All four pills are always rendered now, so a
+   *  null here means the filter row itself is missing, not an empty phase. */
   const pillCount = (phase: string) =>
     browser.execute((sel) => {
       const el = document.querySelector(sel) as HTMLElement | null;
@@ -1574,6 +1618,14 @@ describe("dashboard phases", () => {
       [...document.querySelectorAll('[data-testid="dashboard-phase-filter"] [data-phase]')]
         .filter((el) => el.getAttribute("aria-pressed") === "true")
         .map((el) => el.getAttribute("data-phase")),
+    ) as Promise<string[]>;
+
+  /** Every phase the filter row offers, in the order it offers them. */
+  const pillOrder = () =>
+    browser.execute(() =>
+      [...document.querySelectorAll('[data-testid="dashboard-phase-filter"] [data-phase]')].map((el) =>
+        el.getAttribute("data-phase"),
+      ),
     ) as Promise<string[]>;
 
   /** The number beside the Projects heading, read from the DOM rather than
@@ -1593,13 +1645,82 @@ describe("dashboard phases", () => {
   const countOf = (selector: string) =>
     browser.execute((sel) => document.querySelectorAll(sel).length, selector) as Promise<number>;
 
-  /** `last_opened_at` as it stands ON DISK, straight from the records `tasks_list`
-   *  reads back, never from the store that is about to write it. */
-  const diskStamp = async (id: string): Promise<string | null> =>
-    (await browser.execute(async (taskId) => {
-      const list = (await window.__termic!.invoke("tasks_list")) as any[];
-      return list.find((w) => w.id === taskId)?.last_opened_at ?? null;
-    }, id)) as string | null;
+  /** One field of the record as it stands ON DISK, straight from what
+   *  `tasks_list` reads back, never from the store that is about to write it. */
+  const diskField = (id: string, field: string) =>
+    browser.execute(
+      async (taskId, key) => {
+        const list = (await window.__termic!.invoke("tasks_list")) as any[];
+        const w = list.find((x) => x.id === taskId);
+        return w ? (w[key] ?? null) : null;
+      },
+      id,
+      field,
+    ) as Promise<unknown>;
+
+  const diskStamp = (id: string) => diskField(id, "last_opened_at") as Promise<string | null>;
+  const diskStarted = (id: string) => diskField(id, "started_at") as Promise<string | null>;
+  const diskSpawns = (id: string) => diskField(id, "spawn_count") as Promise<number | null>;
+
+  /** Poll one disk stamp until it is present and minutes old rather than
+   *  seconds in the future. Both writes behind these (`task_touch`,
+   *  `task_mark_started`) are deliberately fire-and-forget. */
+  const waitFreshStamp = async (id: string, field: "last_opened_at" | "started_at") => {
+    let disk: string | null = null;
+    await browser
+      .waitUntil(
+        async () => {
+          disk = (await diskField(id, field)) as string | null;
+          const elapsed = Date.now() - Date.parse(disk ?? "");
+          return elapsed < 120_000 && elapsed > -5_000;
+        },
+        { timeout: 10_000, interval: 200 },
+      )
+      .catch(() => {
+        throw new Error(`${field} never went null -> fresh on disk for ${id} (it holds ${disk})`);
+      });
+  };
+
+  /** One task's git entry, as the store holds it. */
+  const gitEntry = (id: string) =>
+    browser.execute(
+      (taskId) => window.__termic!.useTaskGit.getState().byTask[taskId] ?? null,
+      id,
+    ) as Promise<{ state: Record<string, unknown> | null; loading: boolean; fetchedAt: number } | null>;
+
+  /**
+   * Re-read one task's git state NOW.
+   *
+   * `taskGitPassNow()` is the wrong tool between two steps seconds apart: it
+   * honours the 30s per-task floor, so the second call is a no-op and the row
+   * keeps rendering the previous answer. `refresh(id, true)` skips the floor,
+   * but it still returns silently while a lookup is in flight (the dashboard's
+   * own pass can be mid-walk over the same task), so the condition is
+   * `fetchedAt` ADVANCING, not the call returning.
+   */
+  const forceGit = async (id: string) => {
+    const before = (await gitEntry(id))?.fetchedAt ?? 0;
+    await browser.waitUntil(
+      async () => {
+        await browser.execute(async (taskId) => {
+          await window.__termic!.useTaskGit.getState().refresh(taskId, true);
+        }, id);
+        return ((await gitEntry(id))?.fetchedAt ?? 0) > before;
+      },
+      { timeout: 20_000, interval: 200, timeoutMsg: `the git lookup for ${id} never completed` },
+    );
+  };
+
+  /** `waitRowPhase`, with the git state folded into the failure. "it reads
+   *  in_progress" says nothing when the fact that decides the case is
+   *  `ahead: null` rather than `dirty: true`. */
+  const waitGitPhase = async (id: string, phase: string) => {
+    try {
+      await waitRowPhase(id, phase);
+    } catch (e) {
+      throw new Error(`${(e as Error).message} - git state ${JSON.stringify(await gitEntry(id))}`);
+    }
+  };
 
   /** One base PR, one field changed per step, so each case in the ladder below
    *  differs only in the thing under test. Placeholder repo: never a real one. */
@@ -1612,7 +1733,7 @@ describe("dashboard phases", () => {
     checks: "passing",
     review: "none",
     base: "main",
-    head: `${PREFIX}pr`,
+    head: BRANCH,
   };
 
   /** Write the snapshot the poller would have written. Same shape as the
@@ -1666,69 +1787,177 @@ describe("dashboard phases", () => {
     await requireTermicApi();
     await dismissOverlays();
     await sweepByName();
+    const dbg = await browser.execute(async () => {
+      const el = document.querySelector('script[type="module"]') as HTMLScriptElement | null;
+      const src = el?.src ?? "none";
+      const t: any = window.__termic;
+      const hit = JSON.stringify({
+        names: Object.getOwnPropertyNames(t),
+        typeGit: typeof t.useTaskGit,
+        inOp: "useTaskGit" in t,
+        desc: String(Object.getOwnPropertyDescriptor(t, "useTaskGit")),
+      });
+      return { src, hit, href: location.href };
+    });
+    throw new Error("TERMIC PROBE: " + JSON.stringify(dbg));
     await browser.execute(() => {
-      // A seeded PR or a selected phase from an earlier run would change every
-      // count and hide half the rows.
+      // A seeded PR, a stale git entry or a selected phase from an earlier run
+      // would change every count and hide half the rows.
       window.__termic!.usePr.setState({ byTask: {} });
+      window.__termic!.useTaskGit.setState({ byTask: {} });
       window.__termic!.useUI.getState().setDashboardPhase(null);
     });
+    // The same sweep teardown does, run FORWARDS: a branch left in the fixture
+    // by a run that died mid-case makes `task_create` refuse the branch name
+    // outright, and the failure would read as a broken create rather than as
+    // last time's dirt. Tasks are archived first (above), which is what frees
+    // the worktree holding the branch.
+    gitTry("worktree prune", fixture);
+    for (const b of git(`branch --list '${PREFIX}*' --format=%(refname:short)`, fixture)
+      .split("\n").map((s) => s.trim()).filter(Boolean)) {
+      gitTry(`branch -D ${b}`, fixture);
+    }
+    for (const line of git("ls-remote --heads origin", fixture).split("\n")) {
+      const ref = line.split(/\s+/)[1] ?? "";
+      const name = ref.replace("refs/heads/", "");
+      if (name.startsWith(PREFIX)) gitTry(`push -q origin --delete ${name}`, fixture);
+    }
+
+    fixtureHead = git("rev-parse --abbrev-ref HEAD", fixture);
+    mainSha = git("rev-parse main", fixture);
+    // The BARE repo's own truth, not `rev-parse origin/main`, which is only
+    // ever as fresh as the last fetch this checkout happened to run.
+    originMainSha = git("ls-remote origin refs/heads/main", fixture).split(/\s+/)[0] ?? "";
   });
 
   after(async () => {
-    if (backlogId) await archiveTask(backlogId);
-    if (prId) await archiveTask(prId);
-    if (ageId) await archiveTask(ageId);
-    await sweepByName();
-    await browser.execute(async () => {
-      const t = window.__termic!;
-      t.usePr.setState({ byTask: {} });
-      t.useUI.getState().setDashboardPhase(null);
-      t.useApp.getState().setView("dashboard");
-      await t.useApp.getState().loadAll();
-    });
+    // Tasks first: archiving removes the worktree, and git refuses to delete a
+    // branch that a worktree still has checked out. `task_archive` defaults
+    // `delete_branch` to false and only ever runs `worktree remove --force`,
+    // so the branch is always ours to clean up.
+    for (const id of [todoId, prId, ageId]) {
+      if (!id) continue;
+      try { await archiveTask(id); } catch { /* already gone */ }
+    }
+    try { await sweepByName(); } catch { /* the window may be gone */ }
+    try {
+      await browser.execute(async () => {
+        const t = window.__termic!;
+        t.usePr.setState({ byTask: {} });
+        t.useTaskGit.setState({ byTask: {} });
+        t.useUI.getState().setDashboardPhase(null);
+        t.useApp.getState().setView("dashboard");
+        await t.useApp.getState().loadAll();
+      });
+    } catch { /* the window may be gone */ }
+
+    // Then the fixture's REFS, which the merged-into-base case moves on both
+    // sides. Every step is its own try, because what is left behind is not
+    // this run's problem: `git.e2e.ts` branches from this same `main`, and a
+    // half-restored fixture fails there instead, a much longer walk back.
+    if (mainSha) {
+      if (git("rev-parse --abbrev-ref HEAD", fixture) !== "main") gitTry("checkout -q main", fixture);
+      gitTry(`reset --hard -q ${mainSha}`, fixture);
+    }
+    if (originMainSha) gitTry(`push -q --force origin ${originMainSha}:refs/heads/main`, fixture);
+    gitTry(`push -q origin --delete ${BRANCH}`, fixture);
+    gitTry("worktree prune", fixture);
+    gitTry(`branch -D ${BRANCH}`, fixture);
+    gitTry("fetch -q --prune origin", fixture);
+    if (fixtureHead && fixtureHead !== "HEAD" && fixtureHead !== "main") {
+      gitTry(`checkout -q ${fixtureHead}`, fixture);
+    }
+
+    // Assert the sweep actually swept, HERE, one screen away from the cause.
+    // A branch or a remote head left behind never fails the run that created
+    // it; it fails a later spec file on a base that moved.
+    //
+    // Scoped to what THIS block moves, deliberately. A blanket `status
+    // --porcelain` check reads better but fails on any untracked file an
+    // earlier spec left in the shared fixture, and then blames this block for
+    // it: `reset --hard` does not remove untracked files, so the debris would
+    // survive the restore above. The `repo config` block's `git clean -fd`
+    // swallows its own errors, and a dev whose fixture is already dirty from
+    // an interrupted run would fail here for a reason that is not ours.
+    if (mainSha) expect(git("rev-parse main", fixture)).toEqual(mainSha);
+    expect(git(`branch --list '${PREFIX}*'`, fixture)).toEqual("");
+    expect(git("ls-remote origin", fixture)).not.toContain(PREFIX);
   });
 
-  it("keeps a task nobody has opened in Backlog, and moves it to In progress on the first open", async () => {
-    // Created without activating, which is the only way to get a Backlog task:
-    // every GUI create path opens the new task, and opening it spawns.
-    backlogId = await openTask(`${PREFIX}backlog`, false);
+  it("keeps a task Todo until the first prompt, even after its agent has spawned", async () => {
+    // Created without activating, so the two halves of the claim stay apart:
+    // nothing has spawned here, and it is still Todo after a spawn below.
+    todoId = await openTask(`${PREFIX}todo`, false);
     await showDashboard();
-    await waitRowPhase(backlogId, "backlog");
+    await waitRowPhase(todoId, "todo");
 
-    // The Backlog pill only renders when it has members, so its presence is
-    // half the claim and its count is the other half.
-    const backlogBefore = await pillCount("backlog");
-    expect(backlogBefore).not.toBeNull();
-    expect(backlogBefore!).toBeGreaterThanOrEqual(1);
+    // All four pills are always rendered now, in lifecycle order, so a pill's
+    // presence is no longer the claim: its count is.
+    expect(await pillOrder()).toEqual(["all", "todo", "in_progress", "in_review", "done"]);
+    const todoBefore = await pillCount("todo");
+    expect(todoBefore).not.toBeNull();
+    expect(todoBefore!).toBeGreaterThanOrEqual(1);
 
     // A record nothing has ever opened carries no `last_opened_at`, so the row
-    // shows no age rather than a guessed one.
-    expect(await countOf(age(backlogId))).toEqual(0);
-    await snap("dashboard-phase-backlog.png");
+    // shows no age rather than a guessed one, and nobody has prompted it, so
+    // there is no `started_at` on it either.
+    expect(await countOf(age(todoId))).toEqual(0);
+    expect(await diskStarted(todoId)).toBeNull();
 
-    // Opening it mounts its pane, the pane spawns fakeagent, and the spawn is
-    // folded back into `spawn_count`. One real open is the whole input.
-    await browser.execute((id) => window.__termic!.useApp.getState().setActiveTask(id), backlogId);
-    await waitForAgentReady(backlogId);
+    // SPAWNING IS NOT STARTING, which is the whole point of the change.
+    // Opening the task mounts its pane and spawns fakeagent; the phase must
+    // not move, because an agent sitting at its prompt is not work anyone
+    // asked for.
+    await ensureActiveTask(todoId);
+    await waitForAgentReady(todoId);
     await showDashboard();
-    await waitRowPhase(backlogId, "in_progress");
+    await waitVisible(row(todoId));
+    // Proved against a record the spawn REWROTE, not against a read that
+    // merely happened early: `task_record_spawn` folds `spawn_count` back into
+    // the file, so waiting for it to reach 1 and reading `started_at` off that
+    // same listing is "the record moved and the stamp was not in it" rather
+    // than "we looked and nothing had happened yet".
+    await browser.waitUntil(async () => ((await diskSpawns(todoId)) ?? 0) >= 1, {
+      timeout: 15_000,
+      interval: 200,
+      timeoutMsg: `the spawn in ${todoId} was never recorded on disk`,
+    });
+    expect(await diskStarted(todoId)).toBeNull();
+    expect(await rowPhase(todoId)).toEqual("todo");
+    expect(await pillCount("todo")).toEqual(todoBefore);
+    await snap("dashboard-phase-todo.png");
 
-    // The pill follows the row it counts: one fewer, or gone when that was the
-    // last backlog task in the fleet.
-    const backlogAfter = await pillCount("backlog");
-    if (backlogBefore === 1) expect(backlogAfter).toBeNull();
-    else expect(backlogAfter).toEqual(backlogBefore! - 1);
+    // The first prompt a human submits is what starts it, and it goes in
+    // through xterm's own input path (onData -> markStarted), never by
+    // patching the record.
+    await focusTaskTerminal(todoId);
+    await submitToAgent(todoId, "hello");
+    await showDashboard();
+    await waitRowPhase(todoId, "in_progress");
+    expect(await pillCount("todo")).toEqual(todoBefore! - 1);
+
+    // And it persists, which has no DOM to read instead: null a moment ago,
+    // now a stamp minutes old.
+    await waitFreshStamp(todoId, "started_at");
   });
 
   it("follows the PR through the phase ladder", async () => {
     // A worktree task, not a main checkout: `pollableTasks` skips main
     // checkouts, so a PR seeded onto one would be testing a state that cannot
-    // happen in production.
-    prId = await createWorktreeTask(`${PREFIX}pr`, `${PREFIX}pr`, true);
+    // happen in production. It is also the branch the git case below drives.
+    prId = await createWorktreeTask(`${PREFIX}pr`, BRANCH, true);
     await waitForAgentReady(prId);
     await waitForPrSettled(prId);
     await showDashboard();
-    // Spawned, nothing resolved: In progress on the agent signal alone.
+    // Spawned and nothing else, exactly like the repo-root task above: a
+    // worktree with a branch of its own is still not work in progress.
+    await waitRowPhase(prId, "todo");
+
+    // One prompt, so the ladder starts from a task somebody has actually asked
+    // for something.
+    await focusTaskTerminal(prId);
+    await submitToAgent(prId, "hello");
+    await showDashboard();
     await waitRowPhase(prId, "in_progress");
 
     const ladder: Array<[Record<string, unknown>, string]> = [
@@ -1741,8 +1970,8 @@ describe("dashboard phases", () => {
       [{ state: "open", review: "changes_requested" }, "in_review"],
       // Nor does CI. A failing check is a property of the work, not a stage.
       [{ state: "open", checks: "failing" }, "in_review"],
-      // Closed and unmerged falls back to In progress, never Backlog: there
-      // is real work on the branch.
+      // Closed and unmerged falls back to In progress, never Todo: there is
+      // real work on the branch.
       [{ state: "closed" }, "in_progress"],
       [{ state: "merged" }, "done"],
     ];
@@ -1757,12 +1986,16 @@ describe("dashboard phases", () => {
   });
 
   it("hides what the selected phase does not match, and clears itself", async () => {
-    // Re-seeded rather than inherited, so this case starts from its own
-    // premise whatever the one above left behind.
+    // Both premises are re-seeded rather than inherited, so this case starts
+    // from its own state whatever the ones above left behind: an open PR for
+    // the worktree task, and a started stamp for the repo-root one.
+    // `markStarted` is write-once, so re-running it on a started task is a
+    // no-op rather than a second stamp.
     await seedPr(prId, { ...BASE_PR, state: "open" });
+    await browser.execute((id) => window.__termic!.useApp.getState().markStarted(id), todoId);
     await showDashboard();
     await waitRowPhase(prId, "in_review");
-    await waitRowPhase(backlogId, "in_progress");
+    await waitRowPhase(todoId, "in_progress");
 
     const reviewCount = await pillCount("in_review");
     const progressCount = await pillCount("in_progress");
@@ -1774,7 +2007,7 @@ describe("dashboard phases", () => {
       { timeout: 8_000, timeoutMsg: "the In review pill never read as selected" },
     );
     await waitVisible(row(prId));
-    await waitGone(row(backlogId));
+    await waitGone(row(todoId));
 
     // The pills describe the fleet, not the view, so selecting one must not
     // renumber them.
@@ -1788,12 +2021,13 @@ describe("dashboard phases", () => {
     // Pressing the selected pill again is the undo, and it hands the selection
     // back to All rather than to nothing.
     await clickWhenVisible(pill("in_review"));
-    await waitVisible(row(backlogId));
+    await waitVisible(row(todoId));
     await waitVisible(row(prId));
     expect(await pressedPills()).toEqual(["all"]);
 
     // Nothing is Done (archived tasks are not listed, and the only seeded PR
-    // is open), so this is the empty state.
+    // is open), so this is the empty state. The Todo pill is rendered on a
+    // zero too, which is exactly why the count is the thing asserted.
     expect(await pillCount("done")).toEqual(0);
     await clickWhenVisible(pill("done"));
     await waitVisible(EMPTY);
@@ -1806,7 +2040,7 @@ describe("dashboard phases", () => {
 
     await clickWhenVisible(pill("all"));
     await waitVisible(row(prId));
-    await waitVisible(row(backlogId));
+    await waitVisible(row(todoId));
     await waitGone(EMPTY);
   });
 
@@ -1834,6 +2068,9 @@ describe("dashboard phases", () => {
       threeDaysAgo,
     );
     await showDashboard();
+    // Never opened and never prompted, so the second task is a Todo row while
+    // it is here: age and phase are independent halves of the same row.
+    await waitRowPhase(ageId, "todo");
     await waitVisible(age(prId));
     expect(await textOf(age(prId))).toEqual("3 days ago");
     await snap("dashboard-task-age.png");
@@ -1854,19 +2091,83 @@ describe("dashboard phases", () => {
     await waitForAgentReady(ageId);
 
     // Polled, because `task_touch` is deliberately fire-and-forget.
-    let disk: string | null = null;
-    await browser
-      .waitUntil(
-        async () => {
-          disk = await diskStamp(ageId);
-          const elapsed = Date.now() - Date.parse(disk ?? "");
-          return elapsed < 120_000 && elapsed > -5_000;
-        },
-        { timeout: 10_000, interval: 200 },
-      )
-      .catch(() => {
-        throw new Error(`last_opened_at never went null -> fresh on disk (it holds ${disk})`);
-      });
+    await waitFreshStamp(ageId, "last_opened_at");
+  });
+
+  it("reads a pushed clean branch as In review and a merged one as Done, with no PR", async () => {
+    // The PR half is out of the way for this case: everything below is the git
+    // rule on its own, which is what a handed-off task looks like on a repo
+    // with no forge, or before anybody has opened a PR.
+    await browser.execute(() => window.__termic!.usePr.setState({ byTask: {} }));
+
+    const wt = (await browser.execute(
+      (id) => window.__termic!.useApp.getState().tasks.find((w: any) => w.id === id)?.path ?? null,
+      prId,
+    )) as string | null;
+    if (!wt) throw new Error(`task ${prId} has no worktree path on the record`);
+    // Step (b) needs a clean tree, so say so HERE: a dropping left in the
+    // worktree by creation would otherwise present as "never reached
+    // in_review" with nothing naming the file responsible.
+    expect(git("status --porcelain", wt)).toEqual("");
+
+    await showDashboard();
+    await forceGit(prId);
+    // Started, no commits of its own, no remote branch at all. `ahead` is null
+    // rather than 0, and null is not "nothing left to push".
+    await waitGitPhase(prId, "in_progress");
+
+    // (a) A commit of its own is not enough on its own: nothing has the work
+    // but this machine.
+    writeFileSync(path.join(wt, "phase-probe.txt"), "phase probe\n");
+    git("add phase-probe.txt", wt);
+    git('-c user.email=e2e@termic.dev -c user.name=e2e commit -q -m "e2e phase probe"', wt);
+    await forceGit(prId);
+    await waitGitPhase(prId, "in_progress");
+
+    // (b) Pushed: own commits, clean tree, and the remote has everything.
+    git(`push -q -u origin ${BRANCH}`, wt);
+    await forceGit(prId);
+    await waitGitPhase(prId, "in_review");
+    await snap("dashboard-phase-git-review.png");
+
+    // (c) One untracked file is enough to take it back, and that is the
+    // intended reading rather than an oversight: unfinished work in the
+    // worktree is unfinished work, whatever the commits say. Round trip, so
+    // the rule is proved in both directions rather than as a one-way latch.
+    const stray = path.join(wt, "phase-stray.txt");
+    writeFileSync(stray, "stray\n");
+    await forceGit(prId);
+    await waitGitPhase(prId, "in_progress");
+    rmSync(stray, { force: true });
+    await forceGit(prId);
+    await waitGitPhase(prId, "in_review");
+
+    // (d) Merged into the base by fast-forward. The base is resolved from the
+    // task's own `base_branch`, which is a LOCAL `main` here (the fixture's
+    // refs are shared with every worktree cut from it), so the merge in the
+    // fixture checkout is the load-bearing half; pushing `origin/main` on
+    // behind it covers a task whose base is stored remote-qualified.
+    const base = (await browser.execute(
+      (id) => window.__termic!.useApp.getState().tasks.find((w: any) => w.id === id)?.base_branch ?? null,
+      prId,
+    )) as string | null;
+    const head = git("rev-parse --abbrev-ref HEAD", fixture);
+    if (head !== "main") git("checkout -q main", fixture);
+    try {
+      git(`merge --ff-only -q ${BRANCH}`, fixture);
+    } catch (e) {
+      throw new Error(
+        `could not fast-forward main (the task's base is "${base}") onto ${BRANCH} in the ` +
+          `fixture: ${(e as Error).message}. The fixture's main moved after the task was cut ` +
+          `from it, which is an environment problem, not a phase one.`,
+      );
+    }
+    git("push -q origin main", fixture);
+    if (head !== "main") git(`checkout -q ${head}`, fixture);
+
+    await forceGit(prId);
+    await waitGitPhase(prId, "done");
+    await snap("dashboard-phase-git-done.png");
   });
 });
 

@@ -584,6 +584,19 @@ export const taskRecordSpawn = (id: string) => invoke<number>("task_record_spawn
  *  every activation, so the Rust side reads ONE record rather than every
  *  profile's whole tasks dir. */
 export const taskTouch = (id: string) => invoke<string>("task_touch", { id });
+/** Stamp `started_at` the first time a human submits a prompt into the task,
+ *  and resolve with whatever is now on disk. WRITE-ONCE on the Rust side: a
+ *  second call leaves the original stamp alone, so the caller does not have to
+ *  be the only one. Synchronous over there (one record read + one write), and
+ *  the reply is dropped by `markStarted` the way `taskTouch`'s is. */
+export const taskMarkStarted = (id: string) => invoke<string>("task_mark_started", { id });
+/** Where this task's branch stands against the commit it was cut from, for
+ *  the derived phase (`src/lib/taskPhase.ts`). Read-only and async: it shells
+ *  out to git, so the store polls it at a floor and only while the dashboard
+ *  is mounted (`src/store/taskGit.ts`). Rejects for an archived task and for a
+ *  main-checkout one, neither of which has a branch this question applies to. */
+export const taskGitPhaseState = (id: string) =>
+  invoke<import("@/lib/types").TaskGitState>("task_git_phase_state", { id });
 export const taskSetHasHistory = (id: string, value: boolean) =>
   invoke<void>("task_set_has_history", { id, value });
 export const taskSetAgentSessionId = (id: string, cli: string, uuid: string) =>

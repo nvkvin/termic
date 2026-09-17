@@ -291,6 +291,22 @@ export interface Task {
    *  collapsing them with `??` is correct. (CLAUDE.md forbids that only where
    *  `null` is a distinct answer from "nothing there yet"; it is not, here.) */
   last_opened_at?: string | null;
+  /** RFC3339 UTC of the FIRST prompt a human submitted into any terminal of
+   *  this task. Write-once (`task_mark_started` refuses to move it) and
+   *  app-written, never typed. This is what separates Todo from In progress:
+   *  creating a task spawns its agent, so a spawn says nothing about whether
+   *  anybody has given it work.
+   *
+   *  `null` and absent both mean "no prompt has been submitted here", so
+   *  collapsing them is correct (same reasoning as `last_opened_at` above). */
+  started_at?: string | null;
+  /** The commit this task's branch was cut from, recorded at create. `null`
+   *  on a record written before the field existed, on an imported task, and on
+   *  one whose branch already existed. `task_git_phase_state` then falls back
+   *  to the branch reflog's creation entry, and reports `base_known: false`
+   *  only when neither is available; the phase refuses its git rules in that
+   *  case rather than guessing a base and counting the wrong commits. */
+  base_sha?: string | null;
   /** Manual sidebar position within the project, written by drag-to-reorder
    *  (`taskReorder`). Undefined on tasks the user has never dragged, which
    *  sort AFTER any ordered sibling — so untouched projects stay in creation
@@ -953,6 +969,38 @@ export interface GitStatus {
   repos: GitRepo[];
   total_changed: number;
   repos_changed: number;
+}
+
+/** The four git facts the derived task phase needs, and nothing else
+ *  (`task_git_phase_state`). Deliberately narrower than `GitStatus`: this is
+ *  polled for every task on the dashboard, so it answers "where does this
+ *  branch stand against its base" in one command rather than handing back a
+ *  file list nobody on that screen renders. See `src/store/taskGit.ts` for the
+ *  polling rules and `src/lib/taskPhase.ts` for how each field is read. */
+export interface TaskGitState {
+  /** Commits on the branch side that the base commit cannot reach. 0 after
+   *  any merge, which is what lets `merged_into_base` and this disagree
+   *  harmlessly: the phase checks merged first. */
+  own_commits: number;
+  /** Staged, unstaged OR untracked in the HOST worktree. Untracked counts on
+   *  purpose: a stray new file is unfinished work, and the phase should not
+   *  call a task handed off while one is sitting there. */
+  dirty: boolean;
+  /** Commits the remote branch does not have. `null` when there is no remote
+   *  branch at all, which is NOT the same as zero: never pushed cannot mean
+   *  "nothing left to push". */
+  ahead: number | null;
+  /** The branch reached the base branch by any route: fast-forward, merge
+   *  commit, rebase or squash. Biased toward false, because a wrong `true`
+   *  tells the user to archive live work. */
+  merged_into_base: boolean;
+  /** Whether the commit the branch was cut from is known: `base_sha` on the
+   *  record, or, for a task that predates that field, the branch reflog's
+   *  creation entry (so it is true for most tasks under git's 90-day reflog
+   *  expiry). Informational for the phase: `own_commits` is counted against
+   *  the base BRANCH and never needed it, and Rust already folds it into
+   *  `merged_into_base` (the fast-forward tier cannot fire without it). */
+  base_known: boolean;
 }
 
 /** One row of the Commit tab's Graph section (issue #199). */

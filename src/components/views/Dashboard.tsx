@@ -3,11 +3,12 @@
 // and the populated state share the same shape — adding a project doesn't yank
 // you somewhere else.
 
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import { useApp, selectTaskTabs } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { usePrefs } from "@/store/prefs";
 import { usePr } from "@/store/pr";
+import { useTaskGit, startDashboardGitPolling, stopDashboardGitPolling } from "@/store/taskGit";
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { TaskLocationIcon } from "@/components/TaskLocationIcon";
 import { TaskWorkBadge } from "@/components/TaskWorkBadge";
@@ -80,12 +81,16 @@ export function Dashboard() {
   const agents = useApp(s => s.agents);
   const dashboardPhase    = useUI(s => s.dashboardPhase);
   const setDashboardPhase = useUI(s => s.setDashboardPhase);
-  // ONE PR subscription for the whole page. Every row needs a phase and the
-  // phase needs the live PR, but a `usePr` hook per row would put N
-  // subscribers on a store that re-publishes `byTask` on every poll tick.
-  // Subscribing once here costs one re-render of a page that is only mounted
-  // while no task is open (docs/performance.md bear traps 5 and 8).
-  const byTask = usePr(s => s.byTask);
+  // ONE subscription EACH to the two live stores the phase reads, for the
+  // whole page. Every row needs a phase and the phase needs both, but a hook
+  // per row would put N subscribers on stores that re-publish `byTask` on
+  // every poll tick. Subscribing once here costs one re-render of a page that
+  // is only mounted while no task is open (docs/performance.md bear traps 5
+  // and 8). Note what is NOT subscribed to here: the whole `tabs` record,
+  // which changes on every keystroke in every task. The rows read their own
+  // slice through `selectTaskTabs`.
+  const prByTask  = usePr(s => s.byTask);
+  const gitByTask = useTaskGit(s => s.byTask);
   // Prefs and the agent registry are hoisted rather than read per row: they
   // are stable references shared by every task, and this component already
   // re-renders on any `tasks` change, so a subscription per row would buy no
@@ -97,15 +102,42 @@ export function Dashboard() {
   const workingIndicator    = usePrefs(s => s.workingIndicator);
   const rowCtx: TaskRowContext = { agents, useBranchAsTaskName, workPrefs: { settledHighlight, workingIndicator } };
 
+  // The git half of the phase is polled ONLY while this page is mounted, which
+  // is only while no task is open. The phase is drawn nowhere else, and
+  // `task_git_phase_state` shells out to git: running it behind an agent the
+  // user is driving would be the worst moment to spend it. See the header of
+  // src/store/taskGit.ts.
+  //
+  // Gated on there being tasks at all, the same gate `initPrStatusPoller` has
+  // and for the same reason: on LAUNCH this page mounts before `loadAll`
+  // resolves, so starting here would run the immediate pass over an empty
+  // store and then wait a full tick. Every git-derived phase would read In
+  // progress for the first 30 seconds of every launch. The dep is the boolean,
+  // not `tasks`, so adding a second task does not restart the timer.
+  const hasTasks = tasks.length > 0;
+  useEffect(() => {
+    if (!hasTasks) return;
+    startDashboardGitPolling();
+    return () => stopDashboardGitPolling();
+  }, [hasTasks]);
+
   const hasActiveTask = (projId: string) =>
     tasks.some(w => w.project_id === projId && !w.archived);
 
   // Counts are over every non-archived task and are deliberately NOT keyed on
   // the selected phase: the numbers on the pills describe the fleet, not the
   // current view, so they must not move when you click one.
+  //
+  // The git lookup yields `undefined` (nothing has polled this task) and
+  // `null` (its lookup failed), and BOTH mean "we do not know": `taskPhase`
+  // falls through on either, the same way it does for an unresolved PR.
   const counts = useMemo(
-    () => phaseCounts(tasks.filter(w => !w.archived), id => byTask[id]?.lookup?.pr ?? null),
-    [tasks, byTask],
+    () => phaseCounts(
+      tasks.filter(w => !w.archived),
+      id => prByTask[id]?.lookup?.pr ?? null,
+      id => gitByTask[id]?.state,
+    ),
+    [tasks, prByTask, gitByTask],
   );
   const taskCount = tasks.reduce((n, w) => (w.archived ? n : n + 1), 0);
 
@@ -118,14 +150,14 @@ export function Dashboard() {
     const byProject = new Map<string, PhasedTask[]>();
     for (const w of tasks) {
       if (w.archived) continue;
-      const phase = taskPhase(w, byTask[w.id]?.lookup?.pr ?? null);
+      const phase = taskPhase(w, prByTask[w.id]?.lookup?.pr ?? null, gitByTask[w.id]?.state);
       if (dashboardPhase !== null && phase !== dashboardPhase) continue;
       const list = byProject.get(w.project_id);
       if (list) list.push({ task: w, phase });
       else byProject.set(w.project_id, [{ task: w, phase }]);
     }
     return byProject;
-  }, [tasks, byTask, dashboardPhase]);
+  }, [tasks, prByTask, gitByTask, dashboardPhase]);
 
   const filtered = dashboardPhase !== null;
   const nothingMatches = filtered && visibleByProject.size === 0;
@@ -203,10 +235,10 @@ export function Dashboard() {
         )}
 
         {/* Phase filter — hidden until there is at least one task, so a fresh
-            install sees exactly the page it sees today. It also stays while a
-            filter is selected, for the same reason the Backlog pill does:
-            archiving the last task would otherwise take the row away and leave
-            "Nothing in progress" on screen with nothing to click to clear it. */}
+            install sees exactly the page it sees today. It stays while a
+            filter is selected even if that empties the fleet: archiving the
+            last task would otherwise take the row away and leave "Nothing in
+            progress" on screen with nothing to click to clear it. */}
         {(taskCount > 0 || filtered) && (
           <PhaseFilterRow
             selected={dashboardPhase}
@@ -524,27 +556,26 @@ function PhaseFilterRow({ selected, counts, total, onPick }: {
         selected={selected === null}
         onClick={() => onPick(null)}
       />
-      {PHASE_ORDER
-        // All, In progress, In review and Done are always on screen so the
-        // vocabulary stays put between visits. Backlog is not: every
-        // GUI-created task is In progress within a second of existing, so a
-        // permanent "Backlog 0" would be a word the user learns to ignore.
-        // It appears when it has members, and stays while it is the filter
-        // (otherwise clearing the last backlog task pulls the pill out from
-        // under the selection).
-        .filter(p => p !== "backlog" || counts.backlog > 0 || selected === "backlog")
-        .map(p => (
-          <PhasePill
-            key={p}
-            phase={p}
-            label={PHASE_LABEL[p]}
-            count={counts[p]}
-            selected={selected === p}
-            // Clicking the selected pill again clears the filter: the pill
-            // you just pressed is the obvious place to press to undo it.
-            onClick={() => onPick(selected === p ? null : p)}
-          />
-        ))}
+      {/* ALL FOUR, always, in lifecycle order, so the vocabulary stays put
+          between visits and the row reads left to right as a task's life.
+          Todo used to be conditional, on the theory that every GUI-created
+          task was In progress within a second of existing and a permanent
+          "Todo 0" would be a word the user learns to ignore. That premise is
+          gone: a task is Todo until somebody actually prompts it, which makes
+          it the state every new task sits in, and a pill that comes and goes
+          is worse than a zero. */}
+      {PHASE_ORDER.map(p => (
+        <PhasePill
+          key={p}
+          phase={p}
+          label={PHASE_LABEL[p]}
+          count={counts[p]}
+          selected={selected === p}
+          // Clicking the selected pill again clears the filter: the pill
+          // you just pressed is the obvious place to press to undo it.
+          onClick={() => onPick(selected === p ? null : p)}
+        />
+      ))}
     </div>
   );
 }
