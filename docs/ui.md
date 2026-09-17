@@ -936,14 +936,33 @@ and "In review").
   proportion to their length, which is how a long goal would crush the task
   name, the same trap the Git Compare bar's two-row wrap records above. The
   goal stays on the row after the task starts, because it stays on the record.
-- **Parked** (`data-testid="task-parked"`) as a faint word beside the age, and
-  the row is DIMMED (`opacity-60`, what the sidebar already puts on a task with
-  no live PTY), so "put down" and "not running" look alike, which they are. It
-  keys on the derived PHASE, not on `parked_at`, so a row can never say Parked
-  while the Parked pill would not list it: Done outranks Parked, and a parked
-  task whose PR merged is finished. A `park_reason`, when there is one, goes in
-  the `title` rather than on screen: it is a second variable-length string on a
-  row that already truncates.
+- **The phase glyph** (`data-testid="task-phase"`, carrying `data-phase`), one
+  monochrome shape on EVERY row, between the age and the badges so it lands in
+  the same column whether or not the row has a PR chip. Empty ring for Todo,
+  half filled for In progress, ring with a dot for In review, check for Done,
+  and the same Moon the Park menu item carries. The label, plus a
+  `park_reason` when there is one, is in the `title`.
+
+  The first version of this drew NOTHING on the row, reasoning from #292 that
+  any mark beside the PR chip repeats it. What that produced was a board where
+  Todo, In progress and Parked were invisible and the other two were legible
+  only because the chip happened to be there: three treatments in one column
+  and no answer at all on most rows. #292's objection was narrower. Its status
+  square was COLOURED, in the chip's own vocabulary, so purple meant "merged"
+  on one and "In review" on the other and the two could contradict each other.
+  Neither half holds here: colour stays the chip's, and the phase is DERIVED
+  from the PR state, so a merged PR is Done and the two marks cannot disagree.
+  Monochrome also means the phase still reads for someone who cannot tell the
+  chip's green from its purple, which the chip alone never did.
+
+  The chip is not merely redundant either. It carries what the phase throws
+  away on purpose: failing checks and draft, because CI status is a property
+  of the work rather than a stage of it.
+- **A parked row is DIMMED** (`opacity-60`, what the sidebar already puts on a
+  task with no live PTY), so "put down" and "not running" look alike, which
+  they are. Both the dim and the glyph key on the derived PHASE, not on
+  `parked_at`, so a row can never read Parked while the Parked pill would not
+  list it: Done outranks Parked, and a parked task whose PR merged is finished.
 
 ### Setting a goal, and parking
 

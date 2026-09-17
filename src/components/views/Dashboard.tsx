@@ -17,6 +17,7 @@ import { GroupActionsMenuItems } from "@/components/sidebar/GroupActionsMenuItem
 import { taskLabel } from "@/lib/taskLabel";
 import { taskWorkBadge } from "@/lib/taskWorkState";
 import { taskGoalText, parkReasonText } from "@/lib/taskNotes";
+import { TaskPhaseGlyph } from "@/components/TaskPhaseGlyph";
 import {
   taskPhase, taskAgeLabel, phaseCounts, PHASE_ORDER, PHASE_LABEL, PHASE_EMPTY_LABEL,
 } from "@/lib/taskPhase";
@@ -442,16 +443,22 @@ function DashboardProjectCard({ project, rows, filtered, ctx, onSettings }: {
 // with it anyway, so a per-row subscription would buy no isolation and add one
 // subscriber per task to a store that republishes on every poll.
 //
-// And the phase is NOT drawn on the row. The filter row above carries the
-// vocabulary; a row reading "In review" beside a PR chip that already says
-// open is the redundancy PR #292 was rejected for, and it would cost the row
-// width the task name currently gets.
+// The phase IS drawn on the row, as one monochrome glyph, and the first
+// version of this feature got that wrong. It drew nothing, reasoning from
+// #292 that anything beside the PR chip repeats it. What that actually
+// produced was a board where Todo, In progress and Parked were invisible and
+// the other two were legible only because the chip happened to be there:
+// three treatments in one column, and no answer at all on most rows.
 //
-// The two things the row DOES say about the ladder are the goal and Parked,
-// and both are drawn in the age's register: faint, uncoloured, one line. No
-// coloured chip, deliberately. #292 put a coloured status square beside the PR
-// chip and the two used the same colours for opposite meanings (purple was
-// both "merged" and "In review"); the PR chip owns colour on this page.
+// #292's objection was narrower than "do not draw it". Its status square was
+// COLOURED, in the chip's own vocabulary, so purple meant "merged" on one and
+// "In review" on the other and the two could contradict each other. Neither
+// half of that is true here. Colour stays the chip's, and the phase is
+// DERIVED from the PR state, so a merged PR is Done and the two marks cannot
+// disagree. See src/components/TaskPhaseGlyph.tsx.
+//
+// The goal is the row's other ladder signal, drawn in the age's register:
+// faint, uncoloured, one line, with the full text in its tooltip.
 //
 // - The GOAL is what makes a planned task look planned, which is the only
 //   thing separating it on screen from a task nobody has touched. It stays on
@@ -556,17 +563,6 @@ function DashboardTaskRow({ task: w, phase, ctx }: { task: Task; phase: TaskPhas
             reason the filter pills are, the PR chip owns colour on this page.
             The name spans are `min-w-0 shrink truncate`, so this fixed-width
             cluster takes its width from the name, never the other way round. */}
-        {/* Ahead of the age because it is the more stable fact: the age moves
-            every day, this one only when somebody decides it has. The reason
-            lives in the tooltip rather than on screen, where it would be a
-            second variable-length string on a row that already truncates. */}
-        {parked && (
-          <span
-            data-testid="task-parked"
-            className="shrink-0 text-[11.5px] text-[var(--color-fg-faint)]"
-            title={parkReason || undefined}
-          >Parked</span>
-        )}
         {age && w.last_opened_at && (
           <span
             data-testid="task-age"
@@ -574,6 +570,19 @@ function DashboardTaskRow({ task: w, phase, ctx }: { task: Task; phase: TaskPhas
             title={`Last opened ${AGE_TITLE_FMT.format(new Date(w.last_opened_at))}`}
           >{age}</span>
         )}
+        {/* Every row, every phase, one shape. Sits between the age and the
+            badges so it lands in the same column whether or not the row has a
+            PR chip, which is the whole point: three of the five phases used to
+            be invisible here and the other two were legible only because the
+            chip happened to be there.
+
+            Monochrome. Colour stays the PR chip's, so the two marks cannot be
+            confused for one vocabulary (PR #292), and the phase still reads
+            for someone who cannot tell the chip's green from its purple.
+
+            A park reason rides in its tooltip, which is where it went when the
+            row stopped spelling "Parked" out in words. */}
+        <TaskPhaseGlyph phase={phase} note={parkReason || undefined} />
         <TaskPrBadge task={w} />
         {badge && <TaskWorkBadge reason={badge} />}
       </span>

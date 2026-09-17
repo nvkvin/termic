@@ -2216,7 +2216,17 @@ describe("dashboard phases", () => {
     const PARK_ALSO_STOP = '[data-testid="park-also-stop"]';
     const PARK_CONFIRM = '[data-testid="park-confirm"]';
 
-    /** One row's own copy of a per-row hook. `task-goal` and `task-parked`
+    /** The phase the row's GLYPH is reporting, which is the mark a reader
+     *  actually sees. Deliberately not read off `data-task-phase`: that is the
+     *  row's own copy, and asserting one against the other is what catches a
+     *  glyph that stopped following the phase. */
+    const glyphPhase = (id: string) =>
+      browser.execute(
+        (sel) => (document.querySelector(sel) as HTMLElement | null)?.dataset.phase ?? null,
+        `[data-dashboard-task-id="${id}"] [data-testid="task-phase"]`,
+      ) as Promise<string | null>;
+
+    /** One row's own copy of a per-row hook. `task-goal` and `task-phase`
      *  are rendered once per dashboard row and are NOT unique, the same trap
      *  `work-badge` has, so every read of one goes through its row. */
     const inRow = (id: string, testid: string) => `${row(id)} [data-testid="${testid}"]`;
@@ -2551,11 +2561,14 @@ describe("dashboard phases", () => {
 
       await showDashboard();
       await waitRowPhase(nowId, "parked");
-      await waitVisible(inRow(nowId, "task-parked"));
-      expect(await textOf(inRow(nowId, "task-parked"))).toEqual("Parked");
+      // The glyph is on EVERY row, so the question is what it SAYS, never
+      // whether it is there. Read independently of the row's own
+      // `data-task-phase`: if both came from the same attribute the case
+      // would prove the row agrees with itself.
+      expect(await glyphPhase(nowId)).toEqual("parked");
       // The reason rides in the tooltip rather than on the row, which already
       // truncates a goal and a name.
-      expect(await titleOf(inRow(nowId, "task-parked"))).toEqual(REASON);
+      expect(await titleOf(inRow(nowId, "task-phase"))).toEqual(`Parked: ${REASON}`);
       await waitDisk(nowId, "park_reason", REASON);
       const stamp = await diskParkedAt(nowId);
       expect(stamp).not.toBeNull();
@@ -2599,7 +2612,7 @@ describe("dashboard phases", () => {
       // `parked_at` answers "since when", so re-parking must not move it.
       expect(await diskParkedAt(nowId)).toEqual(stamp);
       await showDashboard();
-      await browser.waitUntil(async () => (await titleOf(inRow(nowId, "task-parked"))) === REVISED, {
+      await browser.waitUntil(async () => (await titleOf(inRow(nowId, "task-phase"))) === `Parked: ${REVISED}`, {
         timeout: 8_000,
         timeoutMsg: "the row's tooltip never picked up the rewritten reason",
       });
@@ -2609,7 +2622,7 @@ describe("dashboard phases", () => {
       expect(await pickTaskMenuItem(nowId, "task-menu-park")).toEqual("Unpark task");
       await showDashboard();
       await waitRowPhase(nowId, "in_progress");
-      expect(await countOf(inRow(nowId, "task-parked"))).toEqual(0);
+      expect(await glyphPhase(nowId)).toEqual("in_progress");
       await waitDisk(nowId, "parked_at", null);
       await waitDisk(nowId, "park_reason", null);
     });
@@ -2639,7 +2652,7 @@ describe("dashboard phases", () => {
 
       await showDashboard();
       await waitRowPhase(nowId, "in_progress");
-      expect(await countOf(inRow(nowId, "task-parked"))).toEqual(0);
+      expect(await glyphPhase(nowId)).toEqual("in_progress");
       // And it un-parked the RECORD, not just this session's copy of it: the
       // reason goes with the stamp, since a reason for a park that is over is
       // a lie on the next read.
@@ -2673,7 +2686,7 @@ describe("dashboard phases", () => {
       // Parked would hide a landed branch behind a state nobody revisits.
       await seedPr(parkedId, { ...BASE_PR, state: "merged", head: PARK_BRANCH });
       await waitRowPhase(parkedId, "done");
-      expect(await countOf(inRow(parkedId, "task-parked"))).toEqual(0);
+      expect(await glyphPhase(parkedId)).toEqual("done");
       // Outranked, not wiped. Nothing clears a park except the next prompt,
       // so the record still says the user put this down.
       expect(await diskParkedAt(parkedId)).not.toBeNull();
@@ -2682,7 +2695,7 @@ describe("dashboard phases", () => {
       // happened to read Done: take the snapshot away and Parked comes back.
       await browser.execute(() => window.__termic!.usePr.setState({ byTask: {} }));
       await waitRowPhase(parkedId, "parked");
-      await waitVisible(inRow(parkedId, "task-parked"));
+      expect(await glyphPhase(parkedId)).toEqual("parked");
     });
 
     it("filters the board down to exactly the parked tasks", async () => {
