@@ -16,6 +16,7 @@ import { TaskPrBadge } from "@/components/TaskPrBadge";
 import { GroupActionsMenuItems } from "@/components/sidebar/GroupActionsMenuItems";
 import { taskLabel } from "@/lib/taskLabel";
 import { taskWorkBadge } from "@/lib/taskWorkState";
+import { taskGoalText, parkReasonText } from "@/lib/taskNotes";
 import {
   taskPhase, taskAgeLabel, phaseCounts, PHASE_ORDER, PHASE_LABEL, PHASE_EMPTY_LABEL,
 } from "@/lib/taskPhase";
@@ -445,6 +446,22 @@ function DashboardProjectCard({ project, rows, filtered, ctx, onSettings }: {
 // vocabulary; a row reading "In review" beside a PR chip that already says
 // open is the redundancy PR #292 was rejected for, and it would cost the row
 // width the task name currently gets.
+//
+// The two things the row DOES say about the ladder are the goal and Parked,
+// and both are drawn in the age's register: faint, uncoloured, one line. No
+// coloured chip, deliberately. #292 put a coloured status square beside the PR
+// chip and the two used the same colours for opposite meanings (purple was
+// both "merged" and "In review"); the PR chip owns colour on this page.
+//
+// - The GOAL is what makes a planned task look planned, which is the only
+//   thing separating it on screen from a task nobody has touched. It stays on
+//   the row after the task starts, because it stays on the record.
+// - PARKED reads as a faint word and DIMS the row, which is what a stopped
+//   task already looks like, so it adds nothing new to the page's vocabulary.
+//   It keys on the PHASE, not on `parked_at`, so a row can never say Parked
+//   while the Parked pill would not list it: Done outranks Parked, and a
+//   parked task whose PR merged is finished. The reason, when there is one,
+//   goes in the tooltip rather than on screen.
 function DashboardTaskRow({ task: w, phase, ctx }: { task: Task; phase: TaskPhase; ctx: TaskRowContext }) {
   const setActive = useApp(s => s.setActiveTask);
   const tabs      = useApp(selectTaskTabs(w.id));
@@ -456,6 +473,13 @@ function DashboardTaskRow({ task: w, phase, ctx }: { task: Task; phase: TaskPhas
   // Recomputed at render, which is enough: this page is remounted on every
   // visit and the label's finest bucket is a whole day.
   const age = taskAgeLabel(w.last_opened_at);
+  // Both read straight off the record the row was already handed. No hook,
+  // no store read: a row that subscribed to anything new here would widen the
+  // fan-out this component's whole shape exists to keep narrow (bear trap 5,
+  // and src/store/selectorFanout.test.ts counts it).
+  const goal = taskGoalText(w);
+  const parked = phase === "parked";
+  const parkReason = parked ? parkReasonText(w) : "";
 
   return (
     // A div with a button role, not a <button>: the PR chip is itself a button
@@ -478,7 +502,13 @@ function DashboardTaskRow({ task: w, phase, ctx }: { task: Task; phase: TaskPhas
       // Dim the task name to match the sidebar's task rows
       // (fg-dim by default, fg on hover); the "on" / branch
       // keep their own explicit colors.
-      className="group flex cursor-pointer items-center gap-3 rounded-md px-3 py-2 text-left text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
+      className={cn(
+        "group flex cursor-pointer items-center gap-3 rounded-md px-3 py-2 text-left text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
+        // Dimmed, not coloured. The same `opacity-60` the sidebar puts on a
+        // task with no live PTY, so "put down" and "not running" look alike,
+        // which they are.
+        parked && "opacity-60",
+      )}
     >
       {/* Use the CLI brand icon for main-checkout rows
           too — matches the sidebar's unified rendering.
@@ -503,6 +533,20 @@ function DashboardTaskRow({ task: w, phase, ctx }: { task: Task; phase: TaskPhas
         </>
       )}
       <TaskLocationIcon isMainCheckout={w.is_main_checkout} className="self-center" />
+      {/* The goal, in the age's register: faint, uncoloured, one line. `flex-1`
+          (basis 0) rather than `shrink`, so it takes only what the name and
+          branch leave and is the first thing to give under pressure. Two
+          shrinking items with natural bases split the deficit in proportion to
+          their length, which is how a long goal would crush the task name (the
+          same trap the Git Compare bar records in docs/ui.md). Full text in the
+          tooltip, since one line of a goal is often half a sentence. */}
+      {goal && (
+        <span
+          data-testid="task-goal"
+          className="min-w-0 flex-1 truncate text-[11.5px] text-[var(--color-fg-faint)]"
+          title={goal}
+        >{goal}</span>
+      )}
       {/* Live signals, right-aligned so a row with none is unchanged. Both
           are read-only here: the PR chip renders what the poller already
           resolved and never kicks a fetch of its own. */}
@@ -512,6 +556,17 @@ function DashboardTaskRow({ task: w, phase, ctx }: { task: Task; phase: TaskPhas
             reason the filter pills are, the PR chip owns colour on this page.
             The name spans are `min-w-0 shrink truncate`, so this fixed-width
             cluster takes its width from the name, never the other way round. */}
+        {/* Ahead of the age because it is the more stable fact: the age moves
+            every day, this one only when somebody decides it has. The reason
+            lives in the tooltip rather than on screen, where it would be a
+            second variable-length string on a row that already truncates. */}
+        {parked && (
+          <span
+            data-testid="task-parked"
+            className="shrink-0 text-[11.5px] text-[var(--color-fg-faint)]"
+            title={parkReason || undefined}
+          >Parked</span>
+        )}
         {age && w.last_opened_at && (
           <span
             data-testid="task-age"
@@ -556,8 +611,10 @@ function PhaseFilterRow({ selected, counts, total, onPick }: {
         selected={selected === null}
         onClick={() => onPick(null)}
       />
-      {/* ALL FOUR, always, in lifecycle order, so the vocabulary stays put
-          between visits and the row reads left to right as a task's life.
+      {/* ALL FIVE, always, in lifecycle order (Parked last, after Done: it is
+          not a stage of the life the first four spell out, it is a task
+          stepping out of the line), so the vocabulary stays put between visits
+          and the row reads left to right as a task's life.
           Todo used to be conditional, on the theory that every GUI-created
           task was In progress within a second of existing and a permanent
           "Todo 0" would be a word the user learns to ignore. That premise is

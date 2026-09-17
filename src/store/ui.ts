@@ -125,6 +125,16 @@ interface UIState {
    *  closed. Lives in UI store so opening doesn't churn the task
    *  tree. */
   resumeOverrideTaskId: string | null;
+  /** Task id whose GOAL is being edited, null = closed. The goal is free
+   *  text recording what the task is for; a task carrying one with no
+   *  `started_at` is what the dashboard draws as Planned. Lives in the UI
+   *  store, like every other per-task dialog, so opening it doesn't churn
+   *  the task tree. */
+  taskGoalTaskId: string | null;
+  /** Task id being PARKED, null = closed. Only the park half opens a dialog
+   *  (it asks for the optional reason); unparking is immediate from the menu,
+   *  because there is nothing to ask. */
+  parkTaskId: string | null;
   /** Read-only "Keyboard shortcuts" cheat-sheet modal (opened from the
    *  sidebar footer). Distinct from Settings → Shortcuts (which edits them). */
   /** True while Termic is in windowless mode (window closed to the menu bar,
@@ -288,6 +298,10 @@ interface UIState {
   closeRunCommands: () => void;
   openResumeOverride: (taskId: string) => void;
   closeResumeOverride: () => void;
+  openTaskGoal: (taskId: string) => void;
+  closeTaskGoal: () => void;
+  openParkTask: (taskId: string) => void;
+  closeParkTask: () => void;
   openShortcutsHelp: () => void;
   closeShortcutsHelp: () => void;
   openWelcome: () => void;
@@ -440,6 +454,8 @@ export const useUI = create<UIState>(set => ({
   editCommandTaskId: null,
   runCommandsDialog: null,
   resumeOverrideTaskId: null,
+  taskGoalTaskId: null,
+  parkTaskId: null,
   windowless: false,
   // Assume focused until told otherwise: a first paint that guessed "away"
   // would badge a turn the user watched finish.
@@ -496,6 +512,10 @@ export const useUI = create<UIState>(set => ({
   closeRunCommands:   () => set({ runCommandsDialog: null }),
   openResumeOverride: (taskId) => set({ resumeOverrideTaskId: taskId }),
   closeResumeOverride:() => set({ resumeOverrideTaskId: null }),
+  openTaskGoal:       (taskId) => set({ taskGoalTaskId: taskId }),
+  closeTaskGoal:      () => set({ taskGoalTaskId: null }),
+  openParkTask:       (taskId) => set({ parkTaskId: taskId }),
+  closeParkTask:      () => set({ parkTaskId: null }),
   setWindowless: (v) => set({ windowless: v }),
   setWindowFocused: (v) => set(s => (s.windowFocused === v ? s : { windowFocused: v })),
   setClosePromptOpen: (v) => set({ closePromptOpen: v }),
