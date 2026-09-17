@@ -93,8 +93,52 @@ describe("taskPhase: in_progress", () => {
 
   it("a dirty worktree drops a committed, pushed branch back to in_progress", () => {
     // The work cycle: this is the oscillation the design accepts on purpose.
+    // NOTE the `null` PR. That cycle is the NO-PR path only, which the four
+    // cases below pin from the other side.
     const task = makeTask({ started_at: STARTED });
     expect(taskPhase(task, null, { ...HANDED_OFF, dirty: true })).toBe("in_progress");
+  });
+
+  // An open PR is an explicit act by a person saying the work is ready to be
+  // looked at. `dirty` and `ahead` are PROXIES for that same statement, used
+  // only where no such statement exists, so they must not overrule it. The
+  // practical half: a dirty worktree under an open PR is what addressing
+  // review comments looks like, and a phase that flipped on every edit would
+  // be the noise `changes_requested` is already kept out of the phase to
+  // avoid. None of this was pinned until someone asked what it did.
+  describe("taskPhase: an open PR outranks the local worktree", () => {
+    it("stays in_review with a dirty worktree", () => {
+      const task = makeTask({ started_at: STARTED });
+      expect(taskPhase(task, makePr({ state: "open" }), { ...HANDED_OFF, dirty: true }))
+        .toBe("in_review");
+    });
+
+    it("stays in_review with commits that were never pushed", () => {
+      const task = makeTask({ started_at: STARTED });
+      expect(taskPhase(task, makePr({ state: "open" }), { ...HANDED_OFF, ahead: 3 }))
+        .toBe("in_review");
+    });
+
+    it("stays in_review with no remote branch at all", () => {
+      // `ahead: null` is "there is no remote branch", the one the no-PR rule
+      // treats as strictly not-handed-off.
+      const task = makeTask({ started_at: STARTED });
+      expect(taskPhase(task, makePr({ state: "open" }), { ...HANDED_OFF, ahead: null }))
+        .toBe("in_review");
+    });
+
+    it("stays in_review mid-rework, dirty and ahead and nothing committed", () => {
+      const task = makeTask({ started_at: STARTED });
+      const git = makeGit({ own_commits: 0, dirty: true, ahead: 5 });
+      expect(taskPhase(task, makePr({ state: "open" }), git)).toBe("in_review");
+    });
+
+    it("but a DRAFT PR with the same clean pushed branch is in_progress", () => {
+      // The asymmetry is deliberate and this is the control for it: draft is
+      // the person saying the opposite, so it wins over the git rule too.
+      const task = makeTask({ started_at: STARTED });
+      expect(taskPhase(task, makePr({ state: "draft" }), HANDED_OFF)).toBe("in_progress");
+    });
   });
 
   it("unknown git with started_at is in_progress", () => {

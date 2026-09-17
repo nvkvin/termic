@@ -843,14 +843,29 @@ has polled, `null` for one whose lookup failed, both "we do not know"); and a
 main-checkout task never enters the git rules at all, because `pollableTasks`
 skips `is_main_checkout`.
 
-**The phase moves In progress <-> In review with each work cycle**, and that is
-truthful rather than noisy: edit something and the tree is dirty, so it drops
-back; commit and push and it returns. It is a different thing from the
-review-round oscillation the design avoids, where `changes_requested`
-deliberately does not move the phase because a reviewer's opinion is not a
-change in where the work stands. One consequence on purpose: a stray untracked
-file pins a task at In progress. Unfinished work in the worktree is unfinished
-work, whatever the commits say.
+**With no PR, the phase moves In progress <-> In review with each work
+cycle**, and that is truthful rather than noisy: edit something and the tree is
+dirty, so it drops back; commit and push and it returns. It is a different
+thing from the review-round oscillation the design avoids, where
+`changes_requested` deliberately does not move the phase because a reviewer's
+opinion is not a change in where the work stands. One consequence on purpose: a
+stray untracked file pins a task at In progress. Unfinished work in the
+worktree is unfinished work, whatever the commits say.
+
+**Once a PR is open, none of that applies.** An open PR reads In review however
+dirty the worktree is and however many commits are unpushed. The asymmetry is
+real and deliberate: without a PR a single untracked file pins a task at In
+progress, and with one, nothing local moves it at all.
+
+An open PR is an explicit act by a person saying the work is ready to be looked
+at. `dirty` and `ahead` are PROXIES for that same statement, used only where
+the person has not made it, and a proxy must not overrule the thing it stands
+in for. The practical half matters as much: a dirty worktree under an open PR
+is what addressing review comments looks like, so a phase that flipped on every
+edit would be noise, for the same reason `changes_requested` is kept out of the
+phase. A draft PR is the control that shows this is a rule rather than an
+oversight: it is the person saying the opposite, so it reads In progress even
+on a clean, fully pushed branch.
 
 **On upgrade**, existing tasks are backfilled: one that had ever spawned an
 agent reads In progress, so nothing that was underway reappears as Todo, while

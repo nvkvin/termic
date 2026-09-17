@@ -109,8 +109,8 @@
 //   undefined. A main-checkout task has no branch of its own to compare, and
 //   it leaves In progress by being archived or by its PR.
 //
-// The phase moves In progress <-> In review with each work cycle: edit
-// something and the tree goes dirty, so it drops back to In progress;
+// WITH NO PR, the phase moves In progress <-> In review with each work cycle:
+// edit something and the tree goes dirty, so it drops back to In progress;
 // commit and push and it returns to In review. That is truthful rather than
 // noisy, and it is a different thing from the review-round oscillation this
 // design avoids: `changes_requested` deliberately does not move the phase,
@@ -118,6 +118,24 @@
 // One consequence worth knowing on purpose: a stray untracked file pins a
 // task at In progress. That is the intended reading. Unfinished work in the
 // worktree is unfinished work, whatever the commits say.
+//
+// ONCE A PR IS OPEN, none of that applies: an open PR is In review however
+// dirty the worktree is and however many commits are unpushed. The "WITH NO
+// PR" above is load-bearing, and it is worth reading twice, because the
+// asymmetry is real. Without a PR a single untracked file pins a task at In
+// progress; with one, nothing local moves it at all.
+//
+// That is on purpose. An open PR is an explicit act by a person saying the
+// work is ready to be looked at, while `dirty` and `ahead` are PROXIES for
+// exactly that statement, used only where the person has not made it. A proxy
+// must not overrule the thing it stands in for. The practical half matters as
+// much: a dirty worktree under an open PR is what addressing review comments
+// looks like, so a phase that flipped on every edit would be noise, which is
+// the same reason `changes_requested` is kept out of the phase.
+//
+// A draft PR is the control that shows this is a rule and not an oversight:
+// it is the person saying the opposite, so it reads In progress even on a
+// clean, fully pushed branch.
 
 import type { PrStatus, Task, TaskGitState } from "./types";
 import { relativeDayLabel, daysSince } from "./relativeDay";
