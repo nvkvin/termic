@@ -165,14 +165,14 @@ describe("editor open", () => {
     expect(out!.text).toBe("See the docs");
   });
 
-  it("sets the preview in GitHub's type: 16px, 1.5 leading, a 980px measure", async () => {
+  it("sets the preview in GitHub's type: 14px, 1.5 leading, a 980px measure", async () => {
     const m = await browser.execute(() => {
       const host = [...document.querySelectorAll(".markdown-body")]
         .find((el) => el.getBoundingClientRect().width > 0) as HTMLElement;
       const cs = getComputedStyle(host);
       return { size: cs.fontSize, lh: cs.lineHeight, max: cs.maxWidth };
     });
-    expect(m).toEqual({ size: "16px", lh: "24px", max: "980px" });
+    expect(m).toEqual({ size: "14px", lh: "21px", max: "980px" });
   });
 
   it("previews a markdown file outside the task, and follows its relative links", async () => {

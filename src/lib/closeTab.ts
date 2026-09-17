@@ -12,6 +12,19 @@ import { usePrefs } from "@/store/prefs";
 import type { ScratchTab, Tab } from "@/lib/types";
 import { agentDisplayName, isTerminalCli } from "@/lib/agents";
 import { discardScratchPad } from "@/lib/scratchTabs";
+import { isScheduled } from "@/lib/scheduledQueue";
+
+/** Scheduled queue messages (GH #300) this close would delete. They live on
+ *  the tab's durable record, so a close that keeps the record (the MAIN strip
+ *  tab, which stays durable when closed) loses nothing; every other agent
+ *  tab close drops the record and them with it. */
+function scheduledLostOnClose(tab: Tab | undefined, paneTab: boolean): number {
+  if (tab?.type !== "terminal") return 0;
+  if (!paneTab && tab.is_default) return 0;
+  return (tab.queue ?? []).filter(isScheduled).length;
+}
+
+const scheduledPhrase = (n: number) => `${n} scheduled ${n === 1 ? "message" : "messages"}`;
 
 /** The scratchpad close prompt (GH #244), resolving true when the pad's tab
  *  may close. A pad has never been written anywhere the user chose, so
@@ -57,6 +70,19 @@ async function confirmTabClose(taskId: string, tab: Tab | undefined, paneTab: bo
       title: "Close without saving?",
       message: `"${name}" has unsaved changes. Closing the tab will discard them. ⌘S to save first.`,
       confirmLabel: "Discard & close",
+      destructive: true,
+    });
+    return ok === true;
+  }
+  // Scheduled messages outrank the close-confirm opt-out: that opt-out was
+  // about stopping a process the Resume list can bring back, and the Resume
+  // list does not bring these back.
+  const lost = scheduledLostOnClose(tab, paneTab);
+  if (lost) {
+    const ok = await useUI.getState().askConfirm({
+      title: "Delete scheduled messages?",
+      message: `This tab has ${scheduledPhrase(lost)}. Closing the tab deletes ${lost === 1 ? "it" : "them"}.`,
+      confirmLabel: "Close tab",
       destructive: true,
     });
     return ok === true;
@@ -136,13 +162,18 @@ async function confirmBulkClose(tabs: Tab[]): Promise<boolean> {
   // three-way prompt afterwards (see closeSetWithScratchPrompts), because
   // "discard" on a pad is a per-note decision and there is no file to go back
   // to. A set of nothing BUT pads therefore skips this confirm entirely.
-  if (!dirty.length && (!live.length || !usePrefs.getState().confirmBeforeCloseAgentTab)) return true;
+  // Bulk closes are main-strip or pane sets; either way the per-tab rule holds.
+  const scheduled = tabs.reduce((n, t) => n + scheduledLostOnClose(t, !!(t as { paneId?: string }).paneId), 0);
+  if (!dirty.length && !scheduled && (!live.length || !usePrefs.getState().confirmBeforeCloseAgentTab)) return true;
   const parts: string[] = [];
   if (dirty.length) {
     parts.push(`termic discards the unsaved changes in ${dirty.length} ${dirty.length === 1 ? "file" : "files"}.`);
   }
   if (live.length) {
     parts.push(`termic ends ${live.length} agent ${live.length === 1 ? "session" : "sessions"}.`);
+  }
+  if (scheduled) {
+    parts.push(`It deletes ${scheduledPhrase(scheduled)}.`);
   }
   const ok = await useUI.getState().askConfirm({
     title: `Close ${tabs.length} ${tabs.length === 1 ? "tab" : "tabs"}?`,

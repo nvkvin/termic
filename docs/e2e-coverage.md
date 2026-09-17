@@ -112,6 +112,7 @@ until `make e2e` is green and this file reflects it.
 | ✅ Editor persist | Single-click = preview tab; double-click persists it | `editor.e2e.ts` |
 | ✅ Split panes | Unsplit start; split-right → 2 leaves; split-below → 3 | `tabs-layout.e2e.ts` |
 | ✅ Message queue | Message held while working, drains on idle | `agent.e2e.ts` |
+| ✅ Scheduled messages (GH #300) | Scheduling from the popover (Send after preset) writes the task FILE and sends nothing; a future item survives eviction and a re-read from disk; removing it from the popover clears it on disk; an item that came due while the task was closed is delivered once on reopen with a "due N days ago" toast; closing a secondary tab holding one asks, and backing out keeps both. Pick/persist/ticker rules in vitest | `agent.e2e.ts`, `lib/scheduledQueue.test.ts`, `store/scheduledQueue.integration.test.ts` |
 | ✅ Command palette | Opens/lists; filters; command activation closes it; Escape closes; the top-bar button toggles it open and shut and names the live binding in its label; top-bar tooltips (palette, Prompts, right-panel toggle) print their live glyphs | `app.e2e.ts` |
 | ✅ File finder | ⌘P lists the repo's files; selecting one opens an editor tab | `files.e2e.ts` |
 | ✅ Git stage/unstage/commit | Stage → unstage → re-stage + commit → clean | `git.e2e.ts` |

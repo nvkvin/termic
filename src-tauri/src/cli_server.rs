@@ -7904,6 +7904,7 @@ mod tests {
             pane_leaf_id: None,
             run_member: run.map(str::to_string),
             pinned: false,
+            scheduled: Vec::new(),
         };
         let mut host = host;
         host.tasks.iter_mut().find(|t| t.id == "w3").unwrap().persisted_tabs = vec![
@@ -7941,6 +7942,7 @@ mod tests {
             pane_leaf_id: None,
             run_member: None,
             pinned: false,
+            scheduled: Vec::new(),
         };
         let mut host = host;
         host.tasks.iter_mut().find(|t| t.id == "w3").unwrap().persisted_tabs =
@@ -8020,6 +8022,7 @@ mod tests {
             pane_leaf_id: None,
             run_member: None,
             pinned: false,
+            scheduled: Vec::new(),
         });
         // Exact id resolves off the durable record...
         let e = resolve_tab_selector(&host, &t, "brand-new").unwrap_err();
@@ -8081,6 +8084,7 @@ mod tests {
                 pane_leaf_id: None,
                 run_member: None,
                 pinned: false,
+                scheduled: Vec::new(),
             },
             crate::PersistedTab {
                 id: "tab-x".into(),
@@ -8093,6 +8097,7 @@ mod tests {
                 pane_leaf_id: None,
                 run_member: None,
                 pinned: false,
+                scheduled: Vec::new(),
             },
             crate::PersistedTab {
                 id: "tab-sh".into(),
@@ -8105,6 +8110,7 @@ mod tests {
                 pane_leaf_id: None,
                 run_member: None,
                 pinned: false,
+                scheduled: Vec::new(),
             },
         ];
         assert_eq!(resolve_tab_selector(&host, &t, "tab-a").unwrap().id, "tab-a");

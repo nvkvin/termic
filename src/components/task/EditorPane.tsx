@@ -551,7 +551,7 @@ export function EditorPane({ task, tab, active, onContent }: {
         viewRef.current = view;
         elog("view created");
         if (tab.type === "scratch") {
-          // An agent's `termic pad write` lands IN this buffer: the human sees
+          // An agent's `termic scratchpad write` lands IN this buffer: the human sees
           // it at once, Cmd+Z takes it back, and the immediate flush makes the
           // file agree with the window.
           unregisterPadRef.current = registerLivePad(task.id, tab.scratchId, {

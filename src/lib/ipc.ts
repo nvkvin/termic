@@ -630,6 +630,10 @@ export const taskSetTabs = (id: string, tabs: import("@/lib/types").PersistedTab
 export const taskSetTabSessionId = (id: string, tabId: string, uuid: string) =>
   invoke<void>("task_set_tab_session_id", { id, tabId, uuid });
 
+/** Replace one durable tab's scheduled queue messages (GH #300). */
+export const taskSetTabScheduled = (id: string, tabId: string, items: import("@/lib/types").ScheduledMessage[]) =>
+  invoke<void>("task_set_tab_scheduled", { id, tabId, items });
+
 /** Persist the JSON-encoded SplitTree for a task. Pass null to clear. */
 export const taskSetSplitLayout = (id: string, layout: string | null) =>
   invoke<void>("task_set_split_layout", { id, layout });

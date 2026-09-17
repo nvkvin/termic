@@ -406,11 +406,6 @@ specs and get an issue at the same time. That is the whole promotion path:
 
 - **Mobile app.** ([#165](https://github.com/simion/termic/issues/165)) A
   companion app for checking on and steering tasks while away from the Mac.
-- **Scheduled messages.** ([#300](https://github.com/simion/termic/issues/300))
-  Queue a message into an agent chat with a "send after" date, for the
-  check-the-release-logs-next-week prompt. It sends the next time that chat
-  is open on or after the date. Spec in
-  [docs/plans/scheduled-prompts.md](docs/plans/scheduled-prompts.md).
 - **Import Warp and Ghostty themes.** Termic has a native JSON theme format,
   but two large theme ecosystems already exist and neither is ours. Scan
   both directories, translate, and let people pick from the library they

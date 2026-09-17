@@ -383,7 +383,7 @@ describe("scratchpads", () => {
   });
 });
 
-// `termic pad` over the real control socket: an agent writes notes the human
+// `termic scratchpad` over the real control socket: an agent writes notes the human
 // reads. The pad opens without taking focus, and a write to an OPEN pad lands
 // in its editor at once rather than behind it on disk.
 describe("scratchpads from the CLI", () => {

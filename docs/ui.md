@@ -522,9 +522,11 @@ Three tabs. Setup + Run stream via `useScriptRuns`. Terminal is opt-in: click `+
 ## Markdown preview
 
 **GitHub's typography, the theme's colours.** `.markdown-body` in `index.css`
-ports Primer's markdown stylesheet metric for metric: system font at
-16px/1.5, 16px block spacing, GitHub's heading scale, 85% monospace code
-with a 6px radius, zebra table rows, and a 980px measure centered in the pane.
+ports Primer's markdown stylesheet: 16px block spacing, GitHub's heading
+scale, 85% monospace code with a 6px radius, zebra table rows, and a 980px
+measure centered in the pane. The one deliberate departure is the base size,
+system font at 14px/1.5 instead of GitHub's 16px, which read as too large
+next to the app's 13-14px chrome. Headings and code are `em`, so they follow.
 Colours map onto theme tokens (links use `--color-palette-blue`), so the
 document sits on the app surface under every theme. The old Inter 14px/1.65
 across the full pane width read as heavy on a wide window.
@@ -1167,6 +1169,48 @@ through without the component knowing any of them.
 Measurements live next to the constants in `AgentChip.tsx`. Re-derive them
 before moving a number, and do it in both themes: every one of these values is
 the ceiling of something.
+
+## Scheduled queue messages (GH #300)
+
+The queue popover's "Send after" row (Next turn / Tomorrow / In 3 days / In a
+week / a date) turns a message into a scheduled one. The promise, stated under
+the picker and never stronger: **sent the next time this chat is open and idle
+on or after the date.** Nothing fires on its own. There is no daemon and no
+Rust timer; with the app closed, `open -a Termic && "$TERMIC_CLI" send <task>
+--resume -p "..."` under launchd is the headless route.
+
+- **Dates are local midnight.** A preset or a picked date resolves to the start
+  of that day, so "in a week" made at 14:05 still sends when the chat is opened
+  at 09:00 that day. A date input is parsed as local, not UTC
+  (`localDateValue`), which would be a day early west of Greenwich.
+- **The drain** (`sendNextQueued` in TerminalPane, rules in
+  `lib/scheduledQueue.ts`'s `pickQueueItem`): a due scheduled item sends
+  whether or not the queue is active; a future one is skipped so ordinary items
+  behind it still drain; future items do not keep the loop "running" and
+  suppress the "Message queue finished" toast. A respawn pauses ordinary items
+  and leaves scheduled ones alone, because a reopened chat is exactly when they
+  exist.
+- **A scheduled send waits for readiness**, like `seedPromptWhenReady`: it can
+  be the first thing typed into a session resumed seconds ago, and claude's
+  startup dialogs eat keystrokes (its trust picker answers `No, exit` on the
+  submit). `blocked`, `lost`, a PTY swap, a turn the user started during the
+  wait, or a missing echo all KEEP the item for the next try. It is removed and
+  the file rewritten only after the write lands. More than an hour late toasts
+  "Scheduled message sent (due N days ago)"; the prompt text is never changed.
+- **Two kicks.** The PTY coming up (`tabPtyLive` in the queueKick effect's
+  deps) covers reopening a chat. For a chat already open when the date passes,
+  `lib/scheduledTicker.ts` walks mounted tabs once a minute and bumps
+  `queueKick` only on a live, idle tab with a due item; a pass with nothing due
+  writes nothing to the store. Not per-tab `setTimeout`s: past ~24.8 days the
+  delay overflows, and timers do not track sleep.
+- **Closing** a secondary or pane agent tab that holds scheduled messages asks
+  "Delete scheduled messages?" even with the close confirm turned off, because
+  the Resume list does not bring them back. The main strip tab stays durable
+  when closed, so it does not ask.
+
+Must be checked by hand whenever the readiness path changes: a resumed claude
+session that shows an update or trust dialog at startup. No suite catches a
+prompt typed into a splash screen.
 
 ## Settled detection / notifications
 

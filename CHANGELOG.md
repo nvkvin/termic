@@ -4,6 +4,51 @@ All notable changes to Termic, newest first. This file is the human-authored
 source of truth: the in-app Update card and the /changelog page on termic.dev
 are generated from it. See the `release` skill for how entries are added.
 
+## [1.5.0] - 2026-09-17
+
+Scheduled messages, agent scratchpads from the CLI, and a GitHub-style markdown preview.
+
+### Features
+- **Schedule a message for later.** The message queue grows a "Send after"
+  row: tomorrow, in 3 days, in a week, or a date you pick. The message is
+  saved with the tab and sent the first time that chat is open and idle on or
+  after the date, into the same session that already holds the context, so
+  "check the release logs next week" lands where the work was done. Nothing
+  fires with the app closed or in a chat you never open, and a message that
+  goes out late says so. Pending ones sit in the queue popover, where you can
+  cancel them. Thanks to
+  [@mikolajhilgert](https://github.com/mikolajhilgert) for the request.
+  ([#300](https://github.com/simion/termic/issues/300))
+- **Agents keep notes you can read.** `termic scratchpad new`, `write`,
+  `read` and `list` let an agent put findings, a plan or a running report in
+  a scratchpad tab in its own task: outside git, updating live as it writes,
+  and undoable. A new pad opens without taking focus. `termic tab` with no
+  task now opens the tab in the caller's own task, so an agent can start a
+  second agent beside itself, and `termic --help` opens with a quick start
+  for exactly those moves.
+- **Agents sign what they send each other.** The instructions every agent
+  gets now ask for a prompt sent to another agent to open with
+  `[Agent message from <agent>, task <id>]` and end with a signature, and tell
+  the receiver such a prompt comes from a peer, not from you.
+- **A markdown preview that reads like GitHub.** GitHub's typography (heading
+  scale, code, tables, a centered measure) in the theme's colours. The
+  rendered text is selectable and copies as clean rich text. A `.md` opened
+  from a path in the terminal previews too.
+- **Word wrap in the editor**, in Settings > Appearance and as "Toggle word
+  wrap" in the command palette.
+- **A resizable usages list.** Drag its corner to see long paths and the
+  code beside them; the size is remembered, and hovering a row shows its full
+  path.
+
+### Bug fixes
+- **A claude tab resumes the session it moved to with `/clear` or
+  `/resume`.** A relaunch used to resume the session from before the
+  `/clear`, so the agent had no memory of the work since.
+  ([#306](https://github.com/simion/termic/issues/306))
+- **Saving General, Tasks, Sandbox or Docker settings no longer deletes
+  agent accounts** added since that settings page was opened.
+  ([#308](https://github.com/simion/termic/issues/308))
+
 ## [1.4.6] - 2026-09-16
 
 Clone a project from a git URL, walk recent tabs, read changed files.

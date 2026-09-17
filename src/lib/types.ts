@@ -478,6 +478,20 @@ export interface PersistedTab {
   run_member?: string | null;
   /** Pinned state, so a pinned tab comes back pinned and leftmost. */
   pinned?: boolean;
+  /** Scheduled queue messages (GH #300). Absent when there are none (Rust
+   *  skips an empty list). Owned by `taskSetTabScheduled`; `taskSetTabs`
+   *  never writes it. */
+  scheduled?: ScheduledMessage[];
+}
+
+/** A queue message with a "send after" date, as the task file stores it.
+ *  Mirror of `ScheduledMessage` in src-tauri/src/lib.rs. */
+export interface ScheduledMessage {
+  id: string;
+  text: string;
+  /** Epoch ms. Sent the first time the tab is live and idle on or after it. */
+  not_before: number;
+  created: number;
 }
 
 /** Per-member input for `task_create_multi`. `root_path` matches a
@@ -1461,6 +1475,12 @@ export interface QueueItem {
   text: string;
   repeat: number;
   remaining: number;
+  /** "Send after" date, epoch ms (GH #300). Present = a scheduled item:
+   *  one-shot, persisted with the tab, sent once due whether or not the
+   *  queue is active. Absent = an ordinary runtime-only item. */
+  notBefore?: number;
+  /** When a scheduled item was created, epoch ms. */
+  created?: number;
   /** CLI delivery-confirmation id (`termic send` to a busy agent): the
    *  drain reports delivered/failed to `cli_prompt_report` on the FIRST
    *  send, then clears this so repeats never re-report. */

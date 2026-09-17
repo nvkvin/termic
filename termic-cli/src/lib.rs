@@ -87,17 +87,37 @@ pub enum OutputFormat {
     StreamJson,
 }
 
+/// The four things an agent inside a task reaches for, at the top of
+/// `termic --help` so they are found before the full command list. Every
+/// one targets the caller's own task ($TERMIC_TASK_ID) with no argument.
+macro_rules! quick_start_help {
+    () => {
+        "\
+Quick start, from inside a task (your own task is the default target):
+  termic tab --agent claude -p \"<prompt>\"                start another agent in this task
+  termic scratchpad new --title \"<title>\" -c \"<text>\"    create a scratchpad, prints its id
+  termic scratchpad write <id> --append -c \"<text>\"      update it (omit -c to read stdin)
+  termic new <name> -p \"<prompt>\"                        launch a new task with its agent"
+    };
+}
+
 #[derive(Parser, Debug)]
 #[command(
     name = "termic",
     bin_name = "termic",
     version = VERSION,
     disable_help_subcommand = true,
-    about = "Control the Termic app from any shell: create and drive agent tasks, list them, wait on them.",
-    long_about = "Control the Termic app from any shell. The app is the daemon: every command \
+    about = concat!(
+        "Control the Termic app from any shell: create and drive agent tasks, list them, wait on them.\n\n",
+        quick_start_help!()
+    ),
+    long_about = concat!(
+        "Control the Termic app from any shell. The app is the daemon: every command \
 talks to the running Termic over a local socket and fails fast when it cannot. \
 Requires the CLI to be enabled in Termic Settings (General). \
-`termic help --json` prints the whole command surface machine-readably.",
+`termic help --json` prints the whole command surface machine-readably.\n\n",
+        quick_start_help!()
+    ),
     after_help = EXIT_CODES_HELP
 )]
 pub struct Cli {
@@ -811,6 +831,12 @@ never delivered."
         #[arg(long, requires = "wait", value_name = "DURATION")]
         timeout: Option<String>,
     },
+
+    /// Scratchpads in a task: notes an agent writes for the human to read.
+    // `pad` stays as a hidden alias: it is the short name an agent guesses.
+    #[command(subcommand, name = "scratchpad", alias = "pad")]
+    Pad(PadCmd),
+
     /// Quit Termic: every running agent dies with it. For the human at the keyboard, not for agents driving Termic.
     ///
     /// The only shell-side teardown for a windowless instance. Asks for
@@ -906,10 +932,6 @@ TTY without --yes), 4 app not running, 5 CLI disabled, 6 refused, \
     /// Manage registered projects.
     #[command(subcommand)]
     Project(ProjectCmd),
-
-    /// Scratchpads in a task: notes an agent writes for the human to read.
-    #[command(subcommand)]
-    Pad(PadCmd),
 
     /// Print help; `--json` prints the whole surface machine-readably.
     #[command(
@@ -1010,7 +1032,7 @@ the selector, the default tab without --yes), 4 app not running, \
     },
 }
 
-/// Which task a pad verb acts on. Shared by every `pad` subcommand.
+/// Which task a pad verb acts on. Shared by every `scratchpad` subcommand.
 #[derive(clap::Args, Debug, Clone, Default)]
 pub struct PadTarget {
     /// Task name, task id, or qualified project/name. Omitted: your own
@@ -1068,11 +1090,11 @@ running, 5 CLI disabled, 6 refused, 8 connection lost."
     },
     /// Replace a scratchpad's text, or append to it.
     #[command(
-        after_help = "<PAD> is the pad's id (from `pad new` or `pad list`) or its exact title, \
+        after_help = "<PAD> is the pad's id (from `scratchpad new` or `scratchpad list`) or its exact title, \
 case-insensitive. A title shared by two pads is an error listing their ids.
 
 The text comes from -c/--content, or from stdin when -c is omitted or `-`, \
-so `make test 2>&1 | termic pad write results --append` works. If the pad is \
+so `make test 2>&1 | termic scratchpad write results --append` works. If the pad is \
 open in the window, it updates in place and the human sees the change \
 immediately; the write is undoable there with Cmd+Z.
 
@@ -2972,6 +2994,9 @@ mod tests {
         assert!(Cli::try_parse_from(["termic", "pad", "list", "--project", "web"]).is_err());
         // `pad` alone is not a verb.
         assert!(Cli::try_parse_from(["termic", "pad"]).is_err());
+        // The canonical name parses to the same command as the alias.
+        let full = Cli::try_parse_from(["termic", "scratchpad", "write", "findings", "-c", "x"]).unwrap();
+        assert!(matches!(full.cmd, Cmd::Pad(PadCmd::Write { .. })));
     }
 
     #[test]
@@ -3096,7 +3121,7 @@ mod tests {
             "apply", "path", "wait", "archive", "tab", "agents", "quit", "project add",
             "project list",
             "project remove", "help", "prompts", "prompts show",
-            "pad list", "pad new", "pad write", "pad read",
+            "scratchpad list", "scratchpad new", "scratchpad write", "scratchpad read",
         ] {
             assert!(names.contains(&expected), "missing {expected} in {names:?}");
         }

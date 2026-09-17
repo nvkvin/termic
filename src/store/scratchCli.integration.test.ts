@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 //
-// `termic pad` through the webview handler: an agent's notes land in the
+// `termic scratchpad` through the webview handler: an agent's notes land in the
 // task's scratchpads, open ones update in place, and nothing steals focus.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";

@@ -1162,7 +1162,7 @@ commits:
     }
 }
 
-/// `pad list` text: one row per pad, id first so it can be copied.
+/// `scratchpad list` text: one row per pad, id first so it can be copied.
 pub fn pad_list_text(pads: &[termic_proto::PadInfo]) -> String {
     if pads.is_empty() {
         return "no scratchpads".to_string();

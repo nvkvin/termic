@@ -42,6 +42,8 @@ import { imageFromClipboard, pastePathText } from "@/lib/clipboardImage";
 import { setupImeReplacementBridge } from "@/lib/ime";
 import { deliverMessage, sendMessageToPty } from "@/lib/agentSend";
 import { failCliQueuedPrompts, reportCliPromptDelivery } from "@/lib/cliPromptReports";
+import { waitForAgentReady } from "@/lib/agentReady";
+import { hasDueScheduled, lateBy, pickQueueItem } from "@/lib/scheduledQueue";
 import type { TerminalTab, Task, SandboxMode } from "@/lib/types";
 import { effectiveSandboxMode, isTaskCaged } from "@/lib/types";
 import { SandboxIcon, SANDBOX_VISUALS, DockerSandboxIcon } from "@/components/SandboxIcon";
@@ -569,6 +571,54 @@ const captureArmedRef = useRef(false);
   // faster than the user-configured floor.
   const lastQueueSendAtRef = useRef(0);
   const queueThrottleTimerRef = useRef<number | null>(null);
+  // The scheduled item (GH #300) whose readiness wait + delivery is under way,
+  // so a second kick during the wait does not type it twice.
+  const scheduledInFlightRef = useRef<string | null>(null);
+
+  // Deliver one scheduled item. Unlike an ordinary queue send, this can be
+  // the first thing typed into a chat that was resumed seconds ago (the whole
+  // point: "send it when I open the chat"), and a resumed TUI is not ready at
+  // its first idle. So it waits for readiness the way seedPromptWhenReady
+  // does, and every way it can fail KEEPS the item: the next idle, or the
+  // minute ticker, tries again. Removed only once the write has landed.
+  const deliverScheduled = useCallback(async (ptyId: string, itemId: string, force: boolean) => {
+    const getTab = () => useApp.getState().tabs[task.id]?.find(t => t.id === tab.id) as TerminalTab | undefined;
+    const keep = (why: string) => {
+      scheduledInFlightRef.current = null;
+      debugLogRef.current?.("scheduled-kept", why);
+      logWorkState("scheduled-kept", `cli=${tab.cli} ${why}`);
+    };
+    try {
+      const hooksOwnReadiness = useApp.getState().agentHooksInstalled[tab.cli] === true;
+      const outcome = force ? "ready" : await waitForAgentReady(getTab, { hooksOwnReadiness });
+      if (outcome === "lost" || outcome === "blocked") return keep(`agent not ready (${outcome})`);
+      const now = getTab();
+      if (!now?.ptyId || now.ptyId !== ptyId) return keep("pty changed during the wait");
+      // The user started a turn while we waited: its done drains us after.
+      if (!force && now.workState === "working") return keep("agent went busy during the wait");
+      const item = now.queue?.find(q => q.id === itemId);
+      if (!item) return keep("item removed during the wait");
+      try {
+        await deliverMessage(ptyId, item.text, { verifyEcho: outcome !== "ready" });
+      } catch (e) {
+        return keep(String((e as Error)?.message ?? e));
+      }
+      const sentAt = Date.now();
+      lastQueueSendAtRef.current = sentAt;
+      const after = getTab();
+      patchTab(task.id, tab.id, {
+        lastInputAt: sentAt,
+        queue: (after?.queue ?? []).filter(q => q.id !== itemId),
+      });
+      useApp.getState().syncScheduledMessages(task.id, tab.id);
+      scheduledInFlightRef.current = null;
+      debugLogRef.current?.("scheduled-send", `"${item.text.slice(0, 40)}"`);
+      const late = item.notBefore != null ? lateBy(item.notBefore, sentAt) : null;
+      if (late) useUI.getState().pushToast(`Scheduled message sent (due ${late} ago)`, "info");
+    } catch (e) {
+      keep(String(e));
+    }
+  }, [task.id, tab.id, tab.cli, patchTab]);
 
   // Drain one message from the tab's queue (the ralph loop). Returns true if
   // a message was sent OR a send is already scheduled (so fireDone suppresses
@@ -580,13 +630,33 @@ const captureArmedRef = useRef(false);
     const ptyId = ptyRef.current;
     if (!ptyId) return false;
     const cur = useApp.getState().tabs[task.id]?.find(t => t.id === tab.id) as TerminalTab | undefined;
-    if (!cur || cur.type !== "terminal" || !cur.queueActive) return false;
+    if (!cur || cur.type !== "terminal") return false;
     const q = cur.queue ?? [];
-    if (!q.length) {
-      // Loop finished — stop and let fireDone show the final done badge.
+    // A scheduled item (GH #300) is eligible once due whether or not the
+    // queue is active; a future one is skipped so ordinary items still drain.
+    const idx = pickQueueItem(q, { queueActive: !!cur.queueActive, now: Date.now(), force });
+    if (idx < 0) {
+      if (!cur.queueActive) return false;
+      // No ordinary item is left, so the loop is over. Future scheduled
+      // items do not keep it running (they never needed it), but they do
+      // mean the queue is not "finished", so no toast while any remain.
       patchTab(task.id, tab.id, { queueActive: false });
-      useUI.getState().pushToast("Message queue finished");
+      if (!q.length) useUI.getState().pushToast("Message queue finished");
       return false;
+    }
+    const head = q[idx];
+    if (head.notBefore != null) {
+      if (scheduledInFlightRef.current) return true;
+      scheduledInFlightRef.current = head.id;
+      // fireDone returns on `true` without ending the turn, trusting the send
+      // to start the next one. This send is async and may be KEPT (agent not
+      // ready), so end the turn here: a tab left "working" is skipped by both
+      // the kick effect and the ticker, and the item would never retry.
+      if (cur.workState === "working") {
+        useApp.getState().setWorkState(task.id, tab.id, "idle", "scheduled send pending");
+      }
+      void deliverScheduled(ptyId, head.id, force);
+      return true;
     }
     // Rate limit the automatic loop: if the floor hasn't elapsed since the last
     // send, defer this one to the remainder rather than firing now. A timer
@@ -613,7 +683,6 @@ const captureArmedRef = useRef(false);
         }
       }
     }
-    const head = q[0];
     if (head.promptId) {
       // CLI-queued prompt (`termic send` to a busy agent): the server's
       // --wait blocks on this report, so the delivery is tracked, not
@@ -649,12 +718,12 @@ const captureArmedRef = useRef(false);
     useApp.getState().markStarted(task.id);
     const remaining = head.remaining - 1;
     const nextQueue = remaining <= 0
-      ? q.slice(1)
-      : [{ ...head, remaining, promptId: undefined }, ...q.slice(1)];
+      ? q.filter((_, i) => i !== idx)
+      : q.map((item, i) => i === idx ? { ...head, remaining, promptId: undefined } : item);
     patchTab(task.id, tab.id, { queue: nextQueue });
     debugLogRef.current?.("queue-send", `"${head.text.slice(0, 40)}" remaining=${remaining} left=${nextQueue.length}`);
     return true;
-  }, [task.id, tab.id, patchTab]);
+  }, [task.id, tab.id, patchTab, deliverScheduled]);
   sendNextQueuedRef.current = sendNextQueued;
 
   // Programmatic Restart (the CLI's `send --resume` on an exited agent):
@@ -683,12 +752,16 @@ const captureArmedRef = useRef(false);
   // adding a message to an idle agent with an already-active queue still fires.
   const queueActive = tab.type === "terminal" ? tab.queueActive : undefined;
   const queueKick = tab.type === "terminal" ? tab.queueKick : undefined;
+  //
+  // A due scheduled item (GH #300) wakes it too, without an active queue.
+  // `tabPtyLive` is in the deps for exactly that: reopening a chat whose item
+  // came due while it was closed spawns the PTY, and the spawn is the kick.
   useEffect(() => {
-    if (!queueActive) return;
     const cur = useApp.getState().tabs[task.id]?.find(t => t.id === tab.id) as TerminalTab | undefined;
+    if (!queueActive && !hasDueScheduled(cur?.queue, Date.now())) return;
     if (cur?.workState === "working") return;
     sendNextQueuedRef.current?.();
-  }, [queueActive, queueKick, task.id, tab.id]);
+  }, [queueActive, queueKick, tabPtyLive, task.id, tab.id]);
 
   // "Send now": drain the head immediately on a queueForceKick bump, WITHOUT
   // the mid-turn guard above — the user explicitly asked to advance now.

@@ -9,6 +9,11 @@
 // send, at the top), and the input sits at the BOTTOM where you naturally add
 // the next item. Queues are per-agent, so a selector appears when more than
 // one work-done-capable agent is running in the task.
+//
+// "Send after" (GH #300) turns the message into a scheduled one: one-shot,
+// saved with the tab, sent the first time this chat is open and idle on or
+// after the date. The copy under the picker states that ceiling and must
+// never promise a time.
 
 import { useMemo, useState } from "react";
 import { useApp } from "@/store/app";
@@ -19,8 +24,17 @@ import { Tip } from "@/components/ui/Tooltip";
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { workDoneCapable } from "@/lib/agents";
 import { cn } from "@/lib/utils";
-import { MessageSquarePlus, X, Repeat, CornerDownLeft, Send } from "lucide-react";
+import { MessageSquarePlus, X, Repeat, CornerDownLeft, Send, CalendarClock } from "lucide-react";
 import type { TerminalTab } from "@/lib/types";
+import { dateInputValue, formatScheduleDate, isScheduled, localDateValue, startOfDayIn } from "@/lib/scheduledQueue";
+
+/** "Send after" presets, in days from today. Each resolves to local midnight
+ *  of that day, so "in a week" still sends that morning. */
+const SCHEDULE_PRESETS: Array<{ label: string; days: number }> = [
+  { label: "Tomorrow", days: 1 },
+  { label: "In 3 days", days: 3 },
+  { label: "In a week", days: 7 },
+];
 
 const MAX_REPEAT = 99;
 
@@ -48,6 +62,8 @@ export function MessageQueueButton({ taskId, compact = false, className, preferT
   const agents = useApp(s => s.agents);
   const patchTab = useApp(s => s.patchTab);
   const enqueueAgentMessage = useApp(s => s.enqueueAgentMessage);
+  const scheduleAgentMessage = useApp(s => s.scheduleAgentMessage);
+  const syncScheduledMessages = useApp(s => s.syncScheduledMessages);
   const forceAgentQueueSend = useApp(s => s.forceAgentQueueSend);
 
   // Only work-done-capable agent tabs with a live PTY can host a queue — the
@@ -65,8 +81,11 @@ export function MessageQueueButton({ taskId, compact = false, className, preferT
   // confusing. The popover still lists every agent via the selector.
   const activeAgent = targets.find(t => t.id === defaultTabId);
   const queuedCount = (activeAgent?.queue ?? []).reduce((sum, q) => sum + q.remaining, 0);
+  const scheduledCount = (activeAgent?.queue ?? []).filter(isScheduled).length;
   const queueRunning = !!activeAgent?.queueActive;
   const showBadge = queuedCount > 0;
+  // Scheduled-only reads "1 scheduled": "1 queued" suggests it is next up.
+  const badgeLabel = queuedCount > scheduledCount ? `${queuedCount} queued` : `${scheduledCount} scheduled`;
 
   const [open, setOpen] = useState(false);
   // Selected target defaults to the active agent (if capable) each time the
@@ -74,6 +93,11 @@ export function MessageQueueButton({ taskId, compact = false, className, preferT
   const [selectedTabId, setSelectedTabId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [repeat, setRepeat] = useState(1);
+  // "Send after" as local-midnight epoch ms, or null for an ordinary item.
+  const [notBefore, setNotBefore] = useState<number | null>(null);
+  // The date field only exists once asked for: an EMPTY date input in WebKit
+  // renders today's date, which reads as a date already picked.
+  const [pickingDate, setPickingDate] = useState(false);
 
   const target =
     targets.find(t => t.id === selectedTabId) ??
@@ -95,6 +119,8 @@ export function MessageQueueButton({ taskId, compact = false, className, preferT
       setSelectedTabId(preferred?.id ?? null);
       setDraft("");
       setRepeat(1);
+      setNotBefore(null);
+      setPickingDate(false);
     }
     setOpen(next);
   }
@@ -103,6 +129,13 @@ export function MessageQueueButton({ taskId, compact = false, className, preferT
     if (!target) return;
     const text = draft.trim();
     if (!text) return;
+    if (notBefore != null) {
+      scheduleAgentMessage(taskId, target.id, text, notBefore);
+      setDraft("");
+      setNotBefore(null);
+      setPickingDate(false);
+      return;
+    }
     const r = Math.min(MAX_REPEAT, Math.max(1, Math.round(repeat) || 1));
     // enqueueAgentMessage owns the queueKick-bump protocol (see app store):
     // bumping queueKick is what wakes TerminalPane's drain effect; a
@@ -118,11 +151,13 @@ export function MessageQueueButton({ taskId, compact = false, className, preferT
     // Emptying the queue stops the loop so a later work-done doesn't fire a
     // stray "finished" toast.
     patchTab(taskId, target.id, next.length ? { queue: next } : { queue: [], queueActive: false });
+    syncScheduledMessages(taskId, target.id);
   }
 
   function clearAll() {
     if (!target) return;
     patchTab(taskId, target.id, { queue: [], queueActive: false });
+    syncScheduledMessages(taskId, target.id);
   }
 
   function sendNow() {
@@ -133,7 +168,9 @@ export function MessageQueueButton({ taskId, compact = false, className, preferT
   const tip = !canQueue
     ? "Run an agent here to queue messages for it"
     : showBadge
-      ? `${queuedCount} queued · the next is sent when the agent finishes`
+      ? queuedCount > scheduledCount
+        ? `${queuedCount} queued · the next is sent when the agent finishes`
+        : `${scheduledCount} scheduled · sent when this chat is open on or after the date`
       : "Auto-send messages to the agent, one after each turn it finishes";
 
   return (
@@ -149,6 +186,7 @@ export function MessageQueueButton({ taskId, compact = false, className, preferT
               // whether the loop is mid-send. Same numbers the label shows.
               data-testid="queue-button"
               data-queued={queuedCount}
+              data-scheduled={scheduledCount}
               data-queue-running={queueRunning ? "1" : "0"}
               className={cn(
                 // Filled chip (no border — keeps the footer clean) so it reads
@@ -168,7 +206,7 @@ export function MessageQueueButton({ taskId, compact = false, className, preferT
                   queued" is a number you are watching, "Queue messages" is a
                   label for a button whose icon already says it. */}
               <span className={cn("tabular-nums", !showBadge && "@max-[680px]:hidden")}>
-                {showBadge ? `${queuedCount} queued` : "Queue messages"}
+                {showBadge ? badgeLabel : "Queue messages"}
               </span>
             </button>
           </PopoverTrigger>
@@ -231,6 +269,17 @@ export function MessageQueueButton({ taskId, compact = false, className, preferT
               >
                 <span className="mt-0.5 w-3 shrink-0 text-right font-mono text-[10.5px] text-[var(--color-fg-faint)]">{i + 1}</span>
                 <span className="min-w-0 flex-1 whitespace-pre-wrap break-words font-mono text-[var(--color-fg)]">{q.text}</span>
+                {q.notBefore != null && (
+                  <Tip content={`Sends when this chat is open on or after ${formatScheduleDate(q.notBefore)}`} side="top">
+                    <span
+                      data-testid="queue-item-scheduled"
+                      className="mt-0.5 flex shrink-0 items-center gap-1 rounded bg-[var(--color-bg-3)] px-1 py-px text-[10.5px] text-[var(--color-fg-dim)]"
+                    >
+                      <CalendarClock className="h-3 w-3" />
+                      {q.notBefore <= Date.now() ? "due" : formatScheduleDate(q.notBefore)}
+                    </span>
+                  </Tip>
+                )}
                 {q.repeat > 1 && (
                   <span className="mt-0.5 shrink-0 rounded bg-[var(--color-bg-3)] px-1 py-px font-mono text-[10.5px] text-[var(--color-fg-dim)]" title="Sends remaining">
                     ×{running && i === 0 ? q.remaining : q.repeat}
@@ -263,8 +312,57 @@ export function MessageQueueButton({ taskId, compact = false, className, preferT
             placeholder="Add a message (e.g. continue)…"
             className="box-border max-h-32 min-h-[44px] w-full resize-y rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 font-mono text-[12.5px] leading-snug text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]"
           />
+          <div className="flex flex-wrap items-center gap-1" data-testid="queue-send-after">
+            <span className="mr-0.5 flex items-center gap-1 text-[11.5px] text-[var(--color-fg-faint)]">
+              <CalendarClock className="h-3 w-3" /> Send after
+            </span>
+            {[{ label: "Next turn", days: 0 }, ...SCHEDULE_PRESETS].map(p => {
+              const value = p.days === 0 ? null : startOfDayIn(p.days);
+              const on = !pickingDate && notBefore === value;
+              return (
+                <button
+                  key={p.label}
+                  type="button"
+                  data-testid={`queue-send-after-${p.days}`}
+                  aria-pressed={on}
+                  onClick={() => { setPickingDate(false); setNotBefore(value); }}
+                  className={cn(
+                    "rounded-md border px-1.5 py-px text-[11.5px]",
+                    on
+                      ? "border-[var(--color-accent)] bg-[var(--color-bg-2)] text-[var(--color-fg)]"
+                      : "border-[var(--color-border)] text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)]",
+                  )}
+                >
+                  {p.label}
+                </button>
+              );
+            })}
+            {pickingDate ? (
+              <input
+                type="date"
+                data-testid="queue-send-after-date"
+                min={dateInputValue(startOfDayIn(1))}
+                value={dateInputValue(notBefore ?? startOfDayIn(1))}
+                onChange={e => {
+                  const ms = localDateValue(e.target.value);
+                  // Today or earlier would be due at once; clamp to tomorrow.
+                  setNotBefore(ms != null && ms >= startOfDayIn(1) ? ms : startOfDayIn(1));
+                }}
+                className="rounded-md border border-[var(--color-accent)] bg-[var(--color-bg)] px-1.5 py-px font-mono text-[11.5px] text-[var(--color-fg)] outline-none"
+              />
+            ) : (
+              <button
+                type="button"
+                data-testid="queue-send-after-pick"
+                onClick={() => { setPickingDate(true); setNotBefore(startOfDayIn(1)); }}
+                className="rounded-md border border-[var(--color-border)] px-1.5 py-px text-[11.5px] text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)]"
+              >
+                Pick a date
+              </button>
+            )}
+          </div>
           <div className="flex items-center gap-2">
-            <label className="flex items-center gap-1 text-[11.5px] text-[var(--color-fg-faint)]" title="Send this message N times (each waits for its own work-done)">
+            {notBefore == null && <label className="flex items-center gap-1 text-[11.5px] text-[var(--color-fg-faint)]" title="Send this message N times (each waits for its own work-done)">
               <Repeat className="h-3 w-3" />
               <input
                 type="number"
@@ -276,7 +374,7 @@ export function MessageQueueButton({ taskId, compact = false, className, preferT
                 className="w-12 rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-1.5 py-0.5 text-center font-mono text-[12px] text-[var(--color-fg)] outline-none focus:border-[var(--color-accent)]"
               />
               ×
-            </label>
+            </label>}
             {queue.length > 0 && (
               <Tip content="Send the next queued message right now, ignoring the work-done wait and the send interval" side="top">
                 <Button variant="ghost" size="sm" className="ml-auto gap-1.5" onClick={sendNow}>
@@ -285,11 +383,13 @@ export function MessageQueueButton({ taskId, compact = false, className, preferT
               </Tip>
             )}
             <Button variant="primary" size="sm" className={cn("gap-1.5", queue.length === 0 && "ml-auto")} disabled={!draft.trim()} onClick={addMessage}>
-              Add <CornerDownLeft className="h-3 w-3" />
+              {notBefore == null ? "Add" : "Schedule"} <CornerDownLeft className="h-3 w-3" />
             </Button>
           </div>
-          <p className="text-[10.5px] leading-snug text-[var(--color-fg-faint)]">
-            Sends on each work-done. A false "done" can advance early; remove items any time.
+          <p className="text-[10.5px] leading-snug text-[var(--color-fg-faint)]" data-testid="queue-hint">
+            {notBefore == null
+              ? `Sends on each work-done. A false "done" can advance early; remove items any time.`
+              : `Sends the next time this chat is open on or after ${formatScheduleDate(notBefore)}.`}
           </p>
         </div>
       </PopoverContent>

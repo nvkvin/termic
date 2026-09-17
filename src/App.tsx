@@ -9,6 +9,7 @@ import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { useApp } from "@/store/app";
 import { usePr, initCommentWatcher, initPrStatusPoller } from "@/store/pr";
+import { initScheduledTicker } from "@/lib/scheduledTicker";
 import { taskSpotlightStatus } from "@/lib/ipc";
 import { reapOrphanedServers } from "@/lib/lsp/pageSession";
 import { installPointerEventsGuard } from "@/lib/pointerEventsGuard";
@@ -83,6 +84,10 @@ export function App() {
     // badge and what notices a merge. Also after loadAll: a pass before the
     // tasks are in the store has nothing to poll.
     void loaded.then(() => initPrStatusPoller());
+    // Scheduled queue messages (GH #300): the minute tick that sends a due
+    // one into a chat that is already open and idle. Writes nothing when
+    // nothing is due.
+    void loaded.then(() => initScheduledTicker());
     // CLI install detection runs at startup + when Settings → Agent CLIs
     // opens (AgentsSection drives the latter). Deliberately NOT on every
     // window focus — `loadAll` re-runs on focus, detection does not.

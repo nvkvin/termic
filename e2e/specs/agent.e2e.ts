@@ -31,6 +31,8 @@ import {
   taskViewBadge,
   waitForAgentReady,
   waitForAppShell,
+  waitForText,
+  waitForTextGone,
   pressEscape,
   setHooksOwnState,
   waitForWorkBadge,
@@ -543,6 +545,177 @@ describe("message queue", () => {
     );
 
     await snap("message-queue.png");
+  });
+});
+
+// Scheduled queue messages (GH #300). A queue message with a "send after"
+// date is saved with its tab and sent the first time that chat is open and
+// idle on or after the date. Cases: scheduling through the popover persists to
+// the task FILE and does not send; a future item survives the task being
+// evicted and re-read from disk; an item that came due while the task was
+// closed is delivered once on reopen; removing one clears it on disk; closing
+// a secondary tab that holds one asks first.
+describe("scheduled messages", () => {
+  let taskId!: string;
+  after(async () => {
+    if (taskId) await archiveTask(taskId);
+  });
+
+  const DAY = 24 * 60 * 60 * 1000;
+  const mainTab = (id: string) => browser.execute(
+    (t) => (window.__termic!.useApp.getState().tabs[t] ?? []).find((x: any) => x.is_default)?.id as string,
+    id,
+  );
+  // What the task FILE holds, not the store's mirror of it.
+  const onDisk = (id: string, tab: string) => browser.execute(async (t, tb) => {
+    const all: any[] = await window.__termic!.ipc.tasksList();
+    const rec = all.find(w => w.id === t)?.persisted_tabs?.find((p: any) => p.id === tb);
+    return (rec?.scheduled ?? []).map((m: any) => m.text) as string[];
+  }, id, tab);
+  const scheduledChip = (id: string) => browser.execute((t) => {
+    const el = document.querySelector(`[data-task-id="${t}"] [data-testid="queue-button"]`) as HTMLElement | null;
+    return el ? Number(el.dataset.scheduled ?? "0") : null;
+  }, id);
+  // Evict the task (every PTY dies), drop its in-memory tabs, re-read the
+  // task files, reopen it. The tabs come back from `persisted_tabs` exactly as
+  // on a relaunch, which a plain stopTask would not do: it keeps the tabs.
+  const reopenFromDisk = async (id: string) => {
+    await browser.execute(async (t) => {
+      const app = window.__termic!.useApp;
+      app.getState().stopTask(t);
+      app.getState().setActiveTask(null);
+      app.setState((s: any) => ({ tabs: { ...s.tabs, [t]: [] } }));
+      await app.getState().loadAll();
+    }, id);
+    await browser.execute((t) => window.__termic!.useApp.getState().setActiveTask(t), id);
+    await waitForAgentReady(id);
+  };
+
+  it("schedules from the popover: saved to the task file, not sent", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    taskId = await openTask("e2e-scheduled");
+    await waitForAgentReady(taskId);
+    const tab = await mainTab(taskId);
+
+    await clickWhenVisible(`[data-task-id="${taskId}"] [data-testid="queue-button"]`);
+    const composer = await $('textarea[placeholder^="Add a message"]');
+    await composer.waitForDisplayed({ timeout: 5_000 });
+    await composer.setValue("check the release logs");
+    // No date field until asked for: WebKit paints an EMPTY one as today's
+    // date, which reads as already picked. Asking opens it on tomorrow.
+    const dateField = () => browser.execute(() =>
+      (document.querySelector('[data-testid="queue-send-after-date"]') as HTMLInputElement | null)?.value ?? null);
+    expect(await dateField()).toBeNull();
+    await clickWhenVisible('[data-testid="queue-send-after-pick"]');
+    const tomorrow = await browser.execute(() => {
+      const d = new Date(); d.setDate(d.getDate() + 1);
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    });
+    expect(await dateField()).toBe(tomorrow);
+    await clickWhenVisible('[data-testid="queue-send-after-7"]');
+    expect(await dateField()).toBeNull();
+    // The hint states the ceiling where the choice is made, and never a time.
+    const hint = await $('[data-testid="queue-hint"]').getText();
+    expect(hint).toMatch(/^Sends the next time this chat is open on or after /);
+    await clickByText("Schedule");
+
+    await browser.waitUntil(async () => (await scheduledChip(taskId)) === 1, {
+      timeout: 5_000, timeoutMsg: "the queue chip never counted the scheduled message",
+    });
+    expect(await $('[data-testid="queue-item-scheduled"]').isDisplayed()).toBe(true);
+    await snap("scheduled-message-popover.png");
+    await pressEscape(taskId);
+    expect(await onDisk(taskId, tab)).toEqual(["check the release logs"]);
+  });
+
+  it("a future item survives the task being re-read from disk, unsent", async () => {
+    const tab = await mainTab(taskId);
+    await reopenFromDisk(taskId);
+    await browser.waitUntil(async () => (await scheduledChip(taskId)) === 1, {
+      timeout: 10_000, timeoutMsg: "the scheduled message did not come back with the tab",
+    });
+    expect(await onDisk(taskId, tab)).toEqual(["check the release logs"]);
+  });
+
+  it("removing it from the popover clears it on disk", async () => {
+    const tab = await mainTab(taskId);
+    await clickWhenVisible(`[data-task-id="${taskId}"] [data-testid="queue-button"]`);
+    await browser.waitUntil(
+      () => browser.execute(() => !!document.querySelector('[data-testid="queue-item-scheduled"]')),
+      { timeout: 5_000, timeoutMsg: "the popover never listed the scheduled item" },
+    );
+    // The remove button only shows on hover; its handler is what is under test.
+    await browser.execute(() => {
+      const li = document.querySelector('[data-testid="queue-item-scheduled"]')!.closest("li")!;
+      (li.querySelector('button[title="Remove"]') as HTMLElement).click();
+    });
+    await browser.waitUntil(async () => (await scheduledChip(taskId)) === 0, {
+      timeout: 5_000, timeoutMsg: "removing the item did not empty the chip",
+    });
+    await pressEscape(taskId);
+    await browser.waitUntil(async () => (await onDisk(taskId, tab)).length === 0, {
+      timeout: 5_000, timeoutMsg: "the removed item is still in the task file",
+    });
+  });
+
+  it("an item that came due while the task was closed is sent once on reopen", async () => {
+    const tab = await mainTab(taskId);
+    // Written straight to the file with a date in the past, the state a real
+    // week-long wait leaves behind.
+    await browser.execute(async (t, tb, at) => {
+      const s = window.__termic!.useApp.getState();
+      s.stopTask(t);
+      s.setActiveTask(null);
+      await window.__termic!.ipc.taskSetTabScheduled(t, tb, [
+        { id: crypto.randomUUID(), text: "overdue check", not_before: at, created: at },
+      ]);
+    }, taskId, tab, Date.now() - 3 * DAY);
+    expect(await onDisk(taskId, tab)).toEqual(["overdue check"]);
+
+    const reopenedAt = Date.now();
+    await reopenFromDisk(taskId);
+    // Delivered: the queue empties, the file forgets it, and a submit stamped
+    // the tab (terminal output is a canvas, so the stamp is the evidence).
+    await browser.waitUntil(async () => (await onDisk(taskId, tab)).length === 0, {
+      timeout: 30_000, interval: 300, timeoutMsg: "the overdue message was never delivered",
+    });
+    const t = await browser.execute(
+      (id, tb) => (window.__termic!.useApp.getState().tabs[id] ?? []).find((x: any) => x.id === tb),
+      taskId, tab,
+    ) as any;
+    expect(t.queue ?? []).toEqual([]);
+    expect(t.lastInputAt).toBeGreaterThan(reopenedAt);
+    await waitForText("Scheduled message sent (due 3 days ago)");
+  });
+
+  it("closing a secondary tab that holds one asks before deleting it", async () => {
+    const tb = await browser.execute((t) => {
+      const tab = { id: crypto.randomUUID(), type: "terminal", cli: "fakeagent", title: "Second" };
+      window.__termic!.useApp.getState().addTab(t, tab as never);
+      return tab.id;
+    }, taskId);
+    await browser.waitUntil(
+      () => browser.execute((t, x) =>
+        !!(window.__termic!.useApp.getState().tabs[t] ?? []).find((y: any) => y.id === x)?.ptyId, taskId, tb),
+      { timeout: 20_000, timeoutMsg: "the secondary agent never spawned" },
+    );
+    await browser.execute((t, x, at) =>
+      window.__termic!.useApp.getState().scheduleAgentMessage(t, x, "later", at), taskId, tb, Date.now() + DAY);
+    await browser.waitUntil(async () => (await onDisk(taskId, tb)).length === 1, {
+      timeout: 5_000, timeoutMsg: "the secondary tab's schedule was not saved",
+    });
+
+    await browser.execute((x) =>
+      (document.querySelector(`[data-tab-id="${x}"] button[title="Close tab"]`) as HTMLElement).click(), tb);
+    await waitForText("Delete scheduled messages?");
+    await snap("scheduled-message-close.png");
+    // Backing out keeps the tab and its schedule.
+    await browser.keys("Escape");
+    await waitForTextGone("Delete scheduled messages?");
+    expect(await browser.execute((t, x) =>
+      (window.__termic!.useApp.getState().tabs[t] ?? []).some((y: any) => y.id === x), taskId, tb)).toBe(true);
+    expect(await onDisk(taskId, tb)).toEqual(["later"]);
   });
 });
 

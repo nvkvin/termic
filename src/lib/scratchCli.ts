@@ -1,4 +1,4 @@
-// The webview half of `termic pad list|new|write|read`: an agent's notes for
+// The webview half of `termic scratchpad list|new|write|read`: an agent's notes for
 // the human, in the task's scratchpads.
 //
 // The server resolves the task; everything about pads happens here, because
@@ -63,7 +63,7 @@ export async function resolvePad(taskId: string, selector: string): Promise<PadI
   if (byTitle.length > 1) {
     throw new Error(`"${selector}" matches ${byTitle.length} pads (${byTitle.map(p => p.id).join(", ")}); pass an id`);
   }
-  throw new Error(`no pad "${selector}" in this task (see \`termic pad list\`)`);
+  throw new Error(`no pad "${selector}" in this task (see \`termic scratchpad list\`)`);
 }
 
 async function createPad(taskId: string, title: string | null, content: string): Promise<PadInfo> {

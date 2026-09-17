@@ -1,6 +1,11 @@
 {
   "versions": [
     {
+      "version": "1.5.0",
+      "date": "2026-09-17",
+      "summary": "Scheduled messages, agent scratchpads from the CLI, and a GitHub-style markdown preview."
+    },
+    {
       "version": "1.4.6",
       "date": "2026-09-16",
       "summary": "Clone a project from a git URL, walk recent tabs, read changed files."

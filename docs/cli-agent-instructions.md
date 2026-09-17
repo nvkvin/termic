@@ -195,17 +195,17 @@ Rules that matter:
 A scratchpad is a tab in a task that holds text outside the worktree:
 nothing in it reaches git, and the user sees it update as you write.
 Use one for findings, a plan, or a running report meant to be READ,
-not committed. Every `pad` verb targets your own task unless you pass
+not committed. Every `scratchpad` verb targets your own task unless you pass
 `--task`.
 
-- `"$TERMIC_CLI" pad new --title "<title>" -c "<text>"` - create one
+- `"$TERMIC_CLI" scratchpad new --title "<title>" -c "<text>"` - create one
   (it opens without taking focus) and print its id. `-c -` reads stdin.
-- `"$TERMIC_CLI" pad write <id> --append -c "<text>"` - add to it;
+- `"$TERMIC_CLI" scratchpad write <id> --append -c "<text>"` - add to it;
   without `--append` the text replaces it. With no `-c`, stdin, so
-  `make test 2>&1 | "$TERMIC_CLI" pad write <id> --append` works. An
+  `make test 2>&1 | "$TERMIC_CLI" scratchpad write <id> --append` works. An
   open pad updates in place and the user can undo your write.
-- `"$TERMIC_CLI" pad read <id>` - print it, including the user's edits.
-- `"$TERMIC_CLI" pad list` - every pad in the task, with ids.
+- `"$TERMIC_CLI" scratchpad read <id>` - print it, including the user's edits.
+- `"$TERMIC_CLI" scratchpad list` - every pad in the task, with ids.
 
 Address pads by id: a title works when it is unique, but titles change.
 

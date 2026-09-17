@@ -20,6 +20,7 @@ import { useNavHistory } from "@/store/navHistory";
 import { useRecentPlaces } from "@/store/recentPlaces";
 import { takeUnattendedSpawn } from "@/lib/unattendedSpawns";
 import { failCliQueuedPromptsInTabs } from "@/lib/cliPromptReports";
+import { hydrateScheduled, scheduledOf } from "@/lib/scheduledQueue";
 import { focusTerminalTab, focusMainTab, focusPaneTab } from "@/lib/tabFocus";
 import { agentDisplayName, STICKY_DONE_MS } from "@/lib/agents";
 import { scoped } from "@/lib/profileScope";
@@ -432,6 +433,17 @@ export interface AppState {
    *  queueKick-bump protocol (don't rely on a queueActive false->true edge)
    *  lives in exactly one place. No-op for non-terminal tabs. */
   enqueueAgentMessage: (taskId: string, tabId: string, text: string, repeat?: number, promptId?: string) => void;
+  /** Queue a one-shot message that waits for `notBefore` (GH #300), persist
+   *  it with the tab, and wake the drain (it sends at once if already due and
+   *  the agent is idle). Does NOT activate the queue: a scheduled item never
+   *  needs it, and activating it would start draining ordinary items the
+   *  user had paused. */
+  scheduleAgentMessage: (taskId: string, tabId: string, text: string, notBefore: number) => void;
+  /** Write a tab's scheduled queue items to the task file when they differ
+   *  from its `persisted_tabs` record. Call after ANY change to a queue that
+   *  may hold scheduled items (add, remove, clear, delivery). Writes nothing
+   *  when they already match. */
+  syncScheduledMessages: (taskId: string, tabId: string) => void;
   /** Force the head queued message out immediately (the "Send now" button),
    *  even while the agent is mid-turn. Bumps `queueForceKick`, which a
    *  dedicated TerminalPane effect watches and drains without the mid-turn
@@ -573,6 +585,18 @@ function durablePersistedTabs(tabs: Tab[] | undefined): PersistedTab[] {
       run_member: t.runTab ? t.runTab.member : null,
       pinned: !!t.pinned,
     }));
+}
+
+/** Carry each record's `scheduled` over from `prior` by tab id. The durable
+ *  tab list is built from live tabs, which know nothing of what is on disk;
+ *  `scheduled` is written only by syncScheduledMessages, so the in-memory
+ *  mirror must keep the value that write left, not re-derive it. Appended
+ *  last and only when non-empty, which is how Rust serializes it, so a record
+ *  read back from disk still compares equal. */
+function withPriorScheduled(next: PersistedTab[], prior: PersistedTab[]): PersistedTab[] {
+  const byId = new Map(prior.filter(p => p.scheduled?.length).map(p => [p.id, p.scheduled!]));
+  if (!byId.size) return next;
+  return next.map(t => byId.has(t.id) ? { ...t, scheduled: byId.get(t.id) } : t);
 }
 
 /**
@@ -1974,6 +1998,7 @@ export const useApp = create<AppState>((set, get) => ({
         ...(pt.session_id ? { sessionId: pt.session_id } : {}),
         ...(unattendedRestore && pt.is_default ? { unattended: true } : {}),
         ...(pt.pinned ? { pinned: true } : {}),
+        ...(pt.scheduled?.length ? { queue: hydrateScheduled(pt.scheduled) } : {}),
         // idle: restored run tabs keep their spot but never auto-fire the
         // script — the user presses play (RunPane placeholder / pill).
         ...(pt.run_member != null ? { runTab: { member: pt.run_member, previewUrl: null, idle: true } } : {}),
@@ -2019,6 +2044,7 @@ export const useApp = create<AppState>((set, get) => ({
               ...(pt.pinned ? { pinned: true } : {}),
               ...(pt.command ? { command: pt.command } : {}),
               ...(pt.session_id ? { sessionId: pt.session_id } : {}),
+              ...(pt.scheduled?.length ? { queue: hydrateScheduled(pt.scheduled) } : {}),
                     ...(pt.run_member != null ? { runTab: { member: pt.run_member, previewUrl: null, idle: true } } : {}),
             });
           }
@@ -2046,7 +2072,7 @@ export const useApp = create<AppState>((set, get) => ({
       // When we repaired corruption, overwrite persisted_tabs DIRECTLY with
       // the cleaned set — can't go through syncDurableTabs, whose merge would
       // re-add the dropped phantom tabs as "closed-but-durable".
-      const cleaned = wasCorrupt ? durablePersistedTabs(allRestored) : null;
+      const cleaned = wasCorrupt ? withPriorScheduled(durablePersistedTabs(allRestored), persisted) : null;
       set(state => ({
         // Merge rather than replace: a background setup tab may already have
         // been added (fired right after task creation, before this effect
@@ -2117,7 +2143,7 @@ export const useApp = create<AppState>((set, get) => ({
     const liveIds = new Set(live.map(t => t.id));
     const prev = task.persisted_tabs ?? [];
     const closed = prev.filter(p => !liveIds.has(p.id) && p.is_default);
-    const next = [...live, ...closed];
+    const next = [...withPriorScheduled(live, prev), ...closed];
     // Skip the work when nothing changed (avoids task-identity churn
     // that would re-render the sidebar, and a redundant disk write).
     if (JSON.stringify(prev) === JSON.stringify(next)) return;
@@ -2577,6 +2603,43 @@ export const useApp = create<AppState>((set, get) => ({
     });
     return { tabs: { ...s.tabs, [taskId]: next } };
   }),
+
+  scheduleAgentMessage: (taskId, tabId, text, notBefore) => {
+    set(s => {
+      const list = s.tabs[taskId] || [];
+      const next = list.map(t => {
+        if (t.id !== tabId || t.type !== "terminal") return t;
+        const item = { id: crypto.randomUUID(), text, repeat: 1, remaining: 1, notBefore, created: Date.now() };
+        return { ...t, queue: [...(t.queue ?? []), item], queueKick: (t.queueKick ?? 0) + 1 } as Tab;
+      });
+      return { tabs: { ...s.tabs, [taskId]: next } };
+    });
+    get().syncScheduledMessages(taskId, tabId);
+  },
+
+  syncScheduledMessages: (taskId, tabId) => {
+    const s = get();
+    const tab = (s.tabs[taskId] ?? []).find(t => t.id === tabId);
+    const task = s.tasks.find(w => w.id === taskId);
+    if (!task || tab?.type !== "terminal") return;
+    const items = scheduledOf(tab.queue);
+    const record = (task.persisted_tabs ?? []).find(pt => pt.id === tabId);
+    // Not durable (yet): the Rust side would no-op too. A durable agent tab is
+    // recorded on add, so this only skips tabs that never persist.
+    if (!record) return;
+    if (JSON.stringify(record.scheduled ?? []) === JSON.stringify(items)) return;
+    set(st => ({
+      tasks: st.tasks.map(w => w.id !== taskId ? w : {
+        ...w,
+        persisted_tabs: (w.persisted_tabs ?? []).map(pt => {
+          if (pt.id !== tabId) return pt;
+          const { scheduled: _drop, ...rest } = pt;
+          return items.length ? { ...rest, scheduled: items } : rest;
+        }),
+      }),
+    }));
+    ipc.taskSetTabScheduled(taskId, tabId, items).catch(() => {});
+  },
 
   forceAgentQueueSend: (taskId, tabId) => set(s => {
     const list = s.tabs[taskId] || [];

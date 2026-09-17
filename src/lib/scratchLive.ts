@@ -1,5 +1,5 @@
 // The OPEN scratchpads, by task and pad id, so something outside the editor
-// (the CLI's `pad` verbs) can reach the buffer the human is looking at.
+// (the CLI's `scratchpad` verbs) can reach the buffer the human is looking at.
 //
 // An open pad's truth is its CodeMirror buffer, not the file behind it: the
 // file lags typing by the flush debounce, and an editor never re-reads it
