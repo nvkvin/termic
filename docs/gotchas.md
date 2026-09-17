@@ -801,11 +801,19 @@ background poll whose read-to-write window is a few microseconds, so nobody
 has seen them lose a write. Adding a frequent one is how the race stops being
 theoretical.
 
-`task_mark_started` follows the rule the hard way and the easy way at once: it
-fires on the user's FIRST prompt, which is exactly when the pane is spawning and
-`task_record_spawn` and `task_set_tabs` are firing for the same task, so it is
-sync like `task_touch`, and it is write-once, so there is only ever one write to
-lose. `task_git_phase_state` is the other half of the rule: it is IO-heavy
-enough to need `spawn_blocking`, so it is strictly READ-ONLY on the record and
-must never call `save_task`. If it ever needs to persist something, that write
+`task_mark_started` is the hard case: it fires on EVERY prompt submission,
+which is exactly when the pane is spawning and `task_record_spawn` and
+`task_set_tabs` are firing for the same task, so it is sync like `task_touch`.
+It used to be write-once as well, which meant there was only ever one write to
+lose; it is not any more, because it also clears the park (a prompt into a
+parked task means the user has picked it back up). The STAMP is still written
+once, but the command can write on any call, so the rule is doing real work
+here rather than being belt-and-braces. It still skips the write when nothing
+changed, which is the case on almost every call. The two setters beside it,
+`task_set_goal` and `task_set_parked`, are sync for the same reason and are
+user-paced on top of it.
+
+`task_git_phase_state` is the other half of the rule: it is IO-heavy enough to
+need `spawn_blocking`, so it is strictly READ-ONLY on the record and must
+never call `save_task`. If it ever needs to persist something, that write
 goes through a sync command, not through the async one that computed it.

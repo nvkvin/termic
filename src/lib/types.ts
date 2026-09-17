@@ -300,6 +300,47 @@ export interface Task {
    *  `null` and absent both mean "no prompt has been submitted here", so
    *  collapsing them is correct (same reasoning as `last_opened_at` above). */
   started_at?: string | null;
+  /** What this task is FOR, in the user's own words, set from the New Task
+   *  dialog or edited later. Free text, not a state: nothing derives a phase
+   *  from it and nothing keeps it current.
+   *
+   *  It exists because there was nowhere else to write one down. The only
+   *  place a task's purpose could live was the agent's prompt box, and
+   *  submitting that stamps `started_at`, so "note this down for later"
+   *  was impossible. A task with a goal and NO `started_at` is what the UI
+   *  reads as Planned: the phase is still `todo` (see src/lib/taskPhase.ts on
+   *  why Planned is not a fifth value), and the goal is what makes that row
+   *  read as something somebody intends to do rather than an empty shell.
+   *
+   *  `null` and absent both mean "no goal recorded", so collapsing them is
+   *  correct (same reasoning as `last_opened_at` above). */
+  goal?: string | null;
+  /** RFC3339 UTC of when the user deliberately put this task down, set by
+   *  `task_set_parked` and cleared by unparking or by the next prompt.
+   *
+   *  THE ONE HAND-SET SIGNAL IN THE PHASE. Everything else a phase reads is
+   *  evidence the app gathered on its own, and this is the state no evidence
+   *  can supply: "I have stopped working on this on purpose" leaves no trace
+   *  in git or in the forge. It is safe to let a person set it precisely
+   *  because it clears itself the moment evidence arrives: `markStarted`
+   *  wipes it on the next prompt into any terminal of the task, since sending
+   *  a prompt to a parked task means you are working on it again.
+   *
+   *  Re-parking an already parked task does NOT move the stamp, so the value
+   *  answers "since when", not "when was it last touched".
+   *
+   *  `null` and absent both mean "not parked", so collapsing them is correct
+   *  (same reasoning as `last_opened_at` above). */
+  parked_at?: string | null;
+  /** Why the task is parked, in the user's own words ("waiting on the API
+   *  key"), optional even when `parked_at` is set: parking without a reason
+   *  is the common case and demanding one would just get an empty string.
+   *
+   *  This is where "blocked" lives. There is deliberately no Blocked phase:
+   *  blocked is a reason for having put something down, not a stage of the
+   *  work, and a phase for it would be a second hand-set state with no
+   *  evidence behind it. Cleared alongside `parked_at`, never on its own. */
+  park_reason?: string | null;
   /** The commit this task's branch was cut from, recorded at create. `null`
    *  on a record written before the field existed, on an imported task, and on
    *  one whose branch already existed. `task_git_phase_state` then falls back

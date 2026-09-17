@@ -488,6 +488,58 @@ pub struct Task {
     /// when it is `None`. See that command for what an expired reflog costs.
     #[serde(default)]
     pub base_sha: Option<String>,
+    /// What this task is FOR, in the user's own words.
+    ///
+    /// The one field on this record a person types, and the one half of the
+    /// phase that derivation genuinely cannot supply: nothing in git, in the
+    /// forge or in the agent's state knows what somebody meant to do here,
+    /// because an intention has no live twin anywhere.
+    ///
+    /// It is also what makes "note a task down for later" possible at all.
+    /// The only place to write an intention before this was the agent's
+    /// prompt box, and submitting that stamps `started_at`, so recording work
+    /// you had not begun had nowhere to go. A task carrying a goal and no
+    /// `started_at` reads as Planned.
+    ///
+    /// Stored TRIMMED, and `None` rather than `""` once the box is cleared:
+    /// an empty string is a goal that renders as nothing, which is a
+    /// different fact from having none, and only one of the two should make a
+    /// task read as Planned. `None` on every record written before the field
+    /// existed, which is the right answer for all of them (nobody had written
+    /// a goal yet), so there is no migration.
+    #[serde(default)]
+    pub goal: Option<String>,
+    /// RFC3339 UTC stamp of when the user deliberately put this task down.
+    ///
+    /// The other half a person sets, for the same reason: "I have stopped
+    /// working on this on purpose" looks exactly like "I have not touched it
+    /// in a while" from the outside, and only the user can tell them apart.
+    ///
+    /// A re-park does NOT move it. The stamp is what "parked 3 days ago" is
+    /// rendered from, so re-writing it whenever the reason is edited would
+    /// make the one number this state is worth showing lie.
+    ///
+    /// Cleared by `task_set_parked(id, false, _)` and, more importantly, by
+    /// `task_mark_started`: submitting a prompt into a parked task means the
+    /// user is working on it again, so the park clears itself. A flag only a
+    /// human can clear is exactly the stale-signal problem the derived phase
+    /// exists to avoid.
+    #[serde(default)]
+    pub parked_at: Option<String>,
+    /// Why the task was put down, free text, optional.
+    ///
+    /// There is no Blocked phase: "blocked on the API key" is a parked task
+    /// with a reason. One state with an optional note beats two states that
+    /// differ only in why, and the user never has to decide which of them a
+    /// given pause is.
+    ///
+    /// Editable WITHOUT unparking, so `task_set_parked(id, true, reason)` on
+    /// an already-parked task rewrites this and leaves `parked_at` alone.
+    /// Trimmed and `None` rather than `""` like `goal`, and always cleared
+    /// together with `parked_at`, never on its own: a reason for a park that
+    /// is over is not a fact about anything.
+    #[serde(default)]
+    pub park_reason: Option<String>,
     /// True when this task points at the project's main repo checkout
     /// (no git worktree created). Used by the "open repo directly" feature:
     /// archive skips `git worktree remove`, and the UI shows a distinct icon.
@@ -1722,7 +1774,9 @@ fn load_tasks_in(id: &ProfileId) -> Vec<Task> {
 /// alternative costs. [`load_tasks_all`] re-parses every record of every
 /// profile, which is fine a handful of times per session and wrong on any path
 /// the user walks repeatedly: `task_touch` fires on every activation,
-/// `task_mark_started` on the first prompt of a task, and
+/// `task_mark_started` and `task_set_goal` on every prompt submission and
+/// every goal edit respectively (both bail before writing when nothing
+/// changed, but both still have to read the record to know that), and
 /// `task_git_phase_state` runs once per visible task on every dashboard poll,
 /// where the whole-fleet load would be N record parses per task per pass to
 /// answer a question about one of them.
@@ -5918,6 +5972,9 @@ fn task_open_repo(
         last_opened_at: None,
         started_at: None,
         base_sha: None,
+        goal: None,
+        parked_at: None,
+        park_reason: None,
         pr_url: None,
         pr_number: None,
         pr_provider: None,
@@ -6181,6 +6238,9 @@ fn task_import_worktree(
         last_opened_at: None,
         started_at: None,
         base_sha: None,
+        goal: None,
+        parked_at: None,
+        park_reason: None,
         pr_url: None,
         pr_number: None,
         pr_provider: None,
@@ -6594,6 +6654,9 @@ fn task_create_sync(app: AppHandle, args: CreateTaskArgs) -> Result<Task, String
         last_opened_at: None,
         started_at: None,
         base_sha,
+        goal: None,
+        parked_at: None,
+        park_reason: None,
         pr_url: None,
         pr_number: None,
         pr_provider: None,
@@ -7099,6 +7162,9 @@ fn task_create_multi_sync(app: AppHandle, args: CreateMultiArgs) -> Result<Task,
         last_opened_at: None,
         started_at: None,
         base_sha,
+        goal: None,
+        parked_at: None,
+        park_reason: None,
         pr_url: None,
         pr_number: None,
         pr_provider: None,
@@ -9008,36 +9074,189 @@ fn task_touch_sync(id: String) -> Result<String, String> {
     Ok(w.last_opened_at.clone().unwrap_or_default())
 }
 
-/// Stamp `started_at` the first time work is submitted into this task, and
-/// return the stamp now on disk.
+/// Record that work is happening on this task NOW: stamp `started_at` if it
+/// has never been stamped, and clear any park either way. Returns the
+/// `started_at` now on disk.
 ///
-/// WRITE-ONCE. A task that already carries a stamp gets its existing one back
-/// untouched, with no file write at all: the field records when work STARTED,
-/// so a later prompt must not move it. The frontend bails on its own copy too,
-/// and the bail lives here as well because that copy is per-window state and a
-/// second window (or a relaunch) would otherwise re-submit.
+/// Two separate rules, and only the first is write-once.
+///
+/// The STAMP is write-once. A task that already carries one keeps it
+/// byte-for-byte: the field records when work STARTED, so a later prompt must
+/// not move it. The bail lives here as well as in the frontend because the
+/// frontend's copy is per-window state and a second window (or a relaunch)
+/// would otherwise re-submit.
+///
+/// The frontend's bail is narrower than this one ON PURPOSE, and that is the
+/// contract between the two halves: it may skip the call when the task is
+/// started AND NOT parked, never when it is parked. Rust owns the clear, so a
+/// prompt into a parked task has to reach this command or the park never
+/// lifts. See `markStarted` in `src/store/app.ts`.
+///
+/// The PARK is cleared on every call. Sending a prompt into a parked task
+/// means the user has picked it back up, and the park has to follow, or the
+/// one manual flag on the record becomes exactly the stale signal the derived
+/// phase exists to avoid: a task somebody is visibly working in, still
+/// claiming "put down, blocked on the API key" until a human remembers to
+/// clear it by hand. So the command is no longer write-once even though the
+/// stamp is.
+///
+/// It still skips the write when NOTHING changed, which is the case on every
+/// prompt after the first into an unparked task, i.e. almost every call. That
+/// bail is why this stays cheap on a path that fires on each submission. See
+/// [`mark_task_started`] for the rule itself.
 ///
 /// Same shape as [`task_touch_sync`] and for the same reasons: it reads ONE
 /// record via [`load_task_by_id`] rather than `load_tasks_all()`, and
 /// it is SYNC, so it serializes on the main thread against every other
-/// unlocked read-modify-write of the same file. It fires on the user's first
-/// prompt, which is exactly when the pane is spawning and `task_record_spawn`
-/// and `task_set_tabs` are firing for the same task. See docs/gotchas.md,
-/// "Task record setters serialize on the main thread".
+/// unlocked read-modify-write of the same file. It fires on every prompt
+/// submission, and the first one is exactly when the pane is spawning and
+/// `task_record_spawn` and `task_set_tabs` are firing for the same task. See
+/// docs/gotchas.md, "Task record setters serialize on the main thread".
 #[tauri::command]
 fn task_mark_started(id: String) -> Result<String, String> {
     task_mark_started_sync(id)
 }
 
+/// The rule behind [`task_mark_started`], split out so the bail is testable
+/// without a filesystem and without a real clock, exactly as
+/// [`touch_task_record`] is. Returns whether `w` changed and so needs saving.
+///
+/// `|=` rather than `||`: the park must be cleared whether or not the stamp
+/// was written, and `||` would short-circuit past it on every call after the
+/// first.
+fn mark_task_started(w: &mut Task, now: chrono::DateTime<chrono::Utc>) -> bool {
+    let mut changed = false;
+    if w.started_at.is_none() {
+        w.started_at = Some(now.to_rfc3339());
+        changed = true;
+    }
+    changed |= clear_task_park(w);
+    changed
+}
+
 fn task_mark_started_sync(id: String) -> Result<String, String> {
     let mut w = load_task_by_id(&id).ok_or("no such task")?;
-    if let Some(existing) = w.started_at {
-        return Ok(existing);
+    if mark_task_started(&mut w, chrono::Utc::now()) {
+        save_task(&w).map_err(|e| e.to_string())?;
     }
-    let stamp = chrono::Utc::now().to_rfc3339();
-    w.started_at = Some(stamp.clone());
-    save_task(&w).map_err(|e| e.to_string())?;
-    Ok(stamp)
+    Ok(w.started_at.clone().unwrap_or_default())
+}
+
+/// Normalize a piece of user-typed text for storage on the record: trimmed,
+/// and `None` when what is left is empty.
+///
+/// Both `goal` and `park_reason` go through it, so clearing a box actually
+/// clears the field rather than storing `""`. The two are not the same fact:
+/// an empty goal would still make a task read as Planned, and an empty park
+/// reason would render as a blank line under the park chip.
+fn normalize_task_note(s: Option<String>) -> Option<String> {
+    s.map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+}
+
+/// Clear both park fields. Returns whether `w` changed.
+///
+/// They move together and never apart: a reason without a stamp is a note
+/// about a park that is over, and nothing renders it. Shared by
+/// [`set_task_parked`] and [`mark_task_started`], which is the point, since
+/// the second one is how a park usually ends.
+fn clear_task_park(w: &mut Task) -> bool {
+    if w.parked_at.is_none() && w.park_reason.is_none() {
+        return false;
+    }
+    w.parked_at = None;
+    w.park_reason = None;
+    true
+}
+
+/// The rule behind [`task_set_goal`], pure and testable. Returns whether `w`
+/// changed and so needs saving.
+fn set_task_goal(w: &mut Task, goal: Option<String>) -> bool {
+    let next = normalize_task_note(goal);
+    if w.goal == next {
+        return false;
+    }
+    w.goal = next;
+    true
+}
+
+/// Write (or clear) what this task is for.
+///
+/// A blank or whitespace-only goal stores `None`, not `""`, so emptying the
+/// box really does remove the goal. Unchanged values skip the write: the
+/// frontend can fire this on blur without making every focus change a disk
+/// write.
+///
+/// SYNC, single-record, same discipline as [`task_touch`] and
+/// [`task_mark_started`]: an unlocked read-modify-write of one JSON file,
+/// correct only because sync commands run one after another on the main
+/// thread. See docs/gotchas.md, "Task record setters serialize on the main
+/// thread".
+#[tauri::command]
+fn task_set_goal(id: String, goal: Option<String>) -> Result<(), String> {
+    let mut w = load_task_by_id(&id).ok_or("no such task")?;
+    if set_task_goal(&mut w, goal) {
+        save_task(&w).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// The rule behind [`task_set_parked`], pure and clock-injected. Returns
+/// whether `w` changed and so needs saving.
+///
+/// Parking an ALREADY-parked task does not move `parked_at`. The stamp is
+/// what "parked 3 days ago" is rendered from, and editing the reason is the
+/// common way to call this twice, so re-stamping would reset the age every
+/// time the user clarified why.
+fn set_task_parked(
+    w: &mut Task,
+    parked: bool,
+    reason: Option<String>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    if !parked {
+        return clear_task_park(w);
+    }
+    let mut changed = false;
+    if w.parked_at.is_none() {
+        w.parked_at = Some(now.to_rfc3339());
+        changed = true;
+    }
+    let next = normalize_task_note(reason);
+    if w.park_reason != next {
+        w.park_reason = next;
+        changed = true;
+    }
+    changed
+}
+
+/// Park or unpark a task, and return the `parked_at` now on disk (`None` once
+/// unparked).
+///
+/// The return is the point: the caller gets the REAL stamp back and folds
+/// that into its store, rather than inventing a `Date.now()` that would drift
+/// from the file by however long the round trip took and then disagree with
+/// it after a reload.
+///
+/// Parking is deliberately not a phase of its own to reach any other way.
+/// There is no Blocked state either: "blocked on the API key" is this, with a
+/// reason. The reason can be edited without unparking, which is why `true` on
+/// an already-parked task is a meaningful call rather than a no-op.
+///
+/// Unparking clears the reason too. Nothing renders a reason for a park that
+/// is over, and leaving it would resurface on the next park.
+///
+/// SYNC, single-record, same discipline as its siblings above.
+#[tauri::command]
+fn task_set_parked(
+    id: String,
+    parked: bool,
+    reason: Option<String>,
+) -> Result<Option<String>, String> {
+    let mut w = load_task_by_id(&id).ok_or("no such task")?;
+    if set_task_parked(&mut w, parked, reason, chrono::Utc::now()) {
+        save_task(&w).map_err(|e| e.to_string())?;
+    }
+    Ok(w.parked_at.clone())
 }
 
 /// Set the persisted `has_resumable_history` flag for a task.
@@ -22932,7 +23151,7 @@ pub fn run() {
             repo_config_load, repo_config_load_at, repo_config_save, repo_config_scaffold, repo_config_add_allowed_host, repo_config_add_allowed_path,
 
             task_reorder,
-            task_restore, task_delete, task_run_script, task_run_script_stream, task_ensure_extra_ports, task_stop_script, task_record_spawn, task_set_has_history, task_touch, task_mark_started, task_git_phase_state, task_set_agent_session_id,
+            task_restore, task_delete, task_run_script, task_run_script_stream, task_ensure_extra_ports, task_stop_script, task_record_spawn, task_set_has_history, task_touch, task_mark_started, task_set_goal, task_set_parked, task_git_phase_state, task_set_agent_session_id,
             task_set_tabs, task_set_tab_session_id,
             task_set_split_layout,
             task_set_right_tabs, task_set_right_tab_session_id,
@@ -30471,10 +30690,14 @@ filename f.rs
 
     // ── started_at / task_mark_started ──────────────────────────────
     //
-    // `started_at` is WRITE-ONCE: it records when work began, so a later
-    // prompt must not move it. The bail lives in the command as well as the
+    // The STAMP is write-once: it records when work began, so a later prompt
+    // must not move it. The bail lives in the command as well as the
     // frontend, because the frontend's copy is per-window state and a second
     // window would otherwise re-submit.
+    //
+    // The COMMAND is not write-once, and has not been since it took over
+    // clearing the park. It can write on any call, and the cases for that
+    // half live with the park tests below.
 
     // Both new fields have to survive a record written before either existed,
     // and `None` has to survive the trip: for `started_at` it is what makes a
@@ -30551,6 +30774,265 @@ filename f.rs
     fn marking_a_task_that_does_not_exist_is_an_error() {
         with_scratch_data_dir(|_data| {
             assert_eq!(crate::task_mark_started_sync("nope".into()), Err("no such task".into()));
+        });
+    }
+
+    // ── goal / parked: the one manual half ──────────────────────────
+    //
+    // Every other input to the phase is derived from a live signal and so
+    // cannot go stale. These two cannot be derived at all: nothing in git, in
+    // the forge or in the agent's state knows what somebody meant to do here,
+    // or that they put it down on purpose. The rules below are what keep the
+    // manual half honest anyway. Blank means absent rather than empty, a
+    // re-park does not move the stamp, and a prompt clears the park with
+    // nobody asked to.
+
+    /// RFC3339 to UTC, so these cases can name an instant instead of sleeping.
+    fn utc(s: &str) -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&chrono::Utc)
+    }
+
+    // None of the three fields existed when today's records were written, and
+    // `load_tasks_in` DROPS a record it cannot parse. So a missing field is
+    // not "this task has no goal", it is "this task is gone from the app".
+    // Absent has to mean `None`, which is the entire migration.
+    //
+    // What supplies that is NOT the per-field `#[serde(default)]`. Measured,
+    // by removing it: a missing `Option<T>` field deserializes to `None` on
+    // its own, and `Task` carries a container-level `#[serde(default)]` on
+    // top of that, so either one alone would do it. With both removed from
+    // `goal` this still passes. The per-field attribute is kept anyway,
+    // because every sibling field carries one and because it is what would
+    // hold the day one of these stopped being an `Option`.
+    #[test]
+    fn a_task_written_before_the_goal_and_park_fields_existed_reads_as_none() {
+        let mut value = serde_json::to_value(Task::default()).unwrap();
+        for k in ["goal", "parked_at", "park_reason"] {
+            assert!(value.get(k).is_some(), "{k} stopped serializing");
+            value.as_object_mut().unwrap().remove(k);
+        }
+        // The whole record still parses, which is what keeps it in the list.
+        let back: Task = serde_json::from_value(value).expect("a pre-upgrade record must load");
+        assert_eq!(back.goal, None);
+        assert_eq!(back.parked_at, None);
+        assert_eq!(back.park_reason, None);
+    }
+
+    // The one that drives the real failure mode: not "the goal is missing"
+    // but "the TASK is missing", because `load_tasks_in` drops a record it
+    // cannot parse and says nothing. Through the real load rather than
+    // `from_value`, since dropping is what the load does and what a
+    // `from_value` case cannot see.
+    #[test]
+    fn a_pre_upgrade_record_on_disk_still_loads_with_the_task_intact() {
+        with_scratch_data_dir(|_data| {
+            let mut value = serde_json::to_value(a_task("old", ProfileId::Root)).unwrap();
+            let obj = value.as_object_mut().unwrap();
+            for k in ["goal", "parked_at", "park_reason"] {
+                assert!(obj.remove(k).is_some(), "{k} stopped serializing");
+            }
+            let dir = crate::tasks_dir_in(&ProfileId::Root).unwrap();
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("old.json"), serde_json::to_string(&value).unwrap()).unwrap();
+
+            let list = crate::load_tasks_in(&ProfileId::Root);
+            assert_eq!(list.len(), 1, "the record was dropped, so the task vanished");
+            assert_eq!(list[0].id, "old");
+            assert_eq!(list[0].goal, None);
+            assert_eq!(list[0].parked_at, None);
+            assert_eq!(list[0].park_reason, None);
+        });
+    }
+
+    #[test]
+    fn a_blank_or_whitespace_only_goal_stores_none_rather_than_an_empty_string() {
+        let mut w = Task::default();
+        assert!(set_task_goal(&mut w, Some("  Ship the parked chip  ".into())));
+        assert_eq!(w.goal.as_deref(), Some("Ship the parked chip"), "stored untrimmed");
+
+        // Emptying the box has to REMOVE the goal: `""` is a goal that
+        // renders as nothing, and a task carrying one would still read as
+        // Planned, which is a different task from one nobody has described.
+        assert!(set_task_goal(&mut w, Some(String::new())));
+        assert_eq!(w.goal, None);
+
+        assert!(set_task_goal(&mut w, Some("Ship the parked chip".into())));
+        assert!(set_task_goal(&mut w, Some("  \t \n ".into())));
+        assert_eq!(w.goal, None, "whitespace only is the same as cleared");
+
+        assert!(set_task_goal(&mut w, Some("Ship the parked chip".into())));
+        assert!(set_task_goal(&mut w, None));
+        assert_eq!(w.goal, None);
+    }
+
+    #[test]
+    fn a_goal_that_did_not_change_asks_for_no_write() {
+        let mut w = Task { goal: Some("Ship the parked chip".into()), ..Default::default() };
+        assert!(!set_task_goal(&mut w, Some("Ship the parked chip".into())));
+        // Whitespace around the same text is the same goal, so a blur after a
+        // stray keystroke is not a disk write either.
+        assert!(!set_task_goal(&mut w, Some(" Ship the parked chip\n".into())));
+        assert_eq!(w.goal.as_deref(), Some("Ship the parked chip"));
+
+        // Already empty, cleared again: still nothing to write.
+        let mut none = Task::default();
+        assert!(!set_task_goal(&mut none, Some("   ".into())));
+        assert!(!set_task_goal(&mut none, None));
+    }
+
+    // "Parked 3 days ago" is the one number this state is worth rendering, so
+    // the stamp has to survive every way of calling park a second time.
+    // Editing the reason is the common one, and it is what would have broken.
+    #[test]
+    fn re_parking_never_moves_the_stamp_and_the_reason_stays_editable() {
+        let t0 = utc("2026-03-01T09:00:00Z");
+        let mut w = Task::default();
+        assert!(set_task_parked(&mut w, true, Some("blocked on the API key".into()), t0));
+        let first = w.parked_at.clone().expect("parked");
+        assert_eq!(utc(&first), t0, "the stamp is a real instant, not just a string");
+
+        // A week later, same reason: nothing changed, so no write, and the
+        // stamp is byte-identical.
+        let t1 = t0 + chrono::Duration::days(7);
+        assert!(!set_task_parked(&mut w, true, Some("  blocked on the API key  ".into()), t1));
+        assert_eq!(w.parked_at.as_deref(), Some(first.as_str()));
+
+        // Reason edited a week later: a write, but the stamp does NOT move.
+        // Re-stamping here would turn "parked 7 days ago" into "parked just
+        // now" every time the user clarified why.
+        assert!(set_task_parked(&mut w, true, Some("waiting on bob to review".into()), t1));
+        assert_eq!(w.parked_at.as_deref(), Some(first.as_str()));
+        assert_eq!(w.park_reason.as_deref(), Some("waiting on bob to review"));
+
+        // And a blank reason drops the note without unparking.
+        assert!(set_task_parked(&mut w, true, Some("   ".into()), t1));
+        assert_eq!(w.park_reason, None);
+        assert_eq!(w.parked_at.as_deref(), Some(first.as_str()), "still parked");
+    }
+
+    #[test]
+    fn unparking_clears_the_stamp_and_the_reason_together() {
+        let t0 = utc("2026-03-01T09:00:00Z");
+        let mut w = Task::default();
+        set_task_parked(&mut w, true, Some("blocked on the API key".into()), t0);
+
+        assert!(set_task_parked(&mut w, false, None, t0 + chrono::Duration::days(2)));
+        assert_eq!(w.parked_at, None);
+        assert_eq!(w.park_reason, None, "a reason for a park that is over renders as nothing");
+
+        // Already unparked: no write. A reason handed to an unpark is dropped
+        // rather than stored, which is what stops it resurfacing at the next
+        // park attached to a stamp it has nothing to do with.
+        assert!(!set_task_parked(&mut w, false, Some("ignore me".into()), t0));
+        assert_eq!(w.park_reason, None);
+    }
+
+    // The important one. A flag only a human can clear is exactly the stale
+    // signal the derived phase exists to avoid: without this, a task somebody
+    // is visibly working in keeps claiming "put down, blocked on the API key"
+    // until they remember to say otherwise.
+    #[test]
+    fn a_prompt_clears_the_park_even_when_the_start_stamp_is_already_set() {
+        let mut w = Task {
+            started_at: Some("2026-02-01T08:00:00Z".into()),
+            parked_at: Some("2026-02-20T10:00:00Z".into()),
+            park_reason: Some("blocked on the API key".into()),
+            ..Default::default()
+        };
+
+        assert!(
+            mark_task_started(&mut w, utc("2026-03-01T09:00:00Z")),
+            "the park has to be written away, so this cannot report no-write",
+        );
+        assert_eq!(w.parked_at, None);
+        assert_eq!(w.park_reason, None);
+        // The STAMP is still write-once. It is the COMMAND that is not.
+        assert_eq!(w.started_at.as_deref(), Some("2026-02-01T08:00:00Z"));
+    }
+
+    // The bail that keeps the common case off the disk. This fires on every
+    // prompt submission, and after the first one into an unparked task there
+    // is nothing left to write.
+    #[test]
+    fn a_prompt_into_an_unparked_started_task_asks_for_no_write() {
+        let now = utc("2026-03-01T09:00:00Z");
+        let mut w = Task { started_at: Some("2026-02-01T08:00:00Z".into()), ..Default::default() };
+        assert!(!mark_task_started(&mut w, now));
+        assert_eq!(w.started_at.as_deref(), Some("2026-02-01T08:00:00Z"));
+
+        // A Planned task picked back up writes both halves in one go.
+        let mut planned = Task {
+            goal: Some("Ship the parked chip".into()),
+            parked_at: Some("2026-02-20T10:00:00Z".into()),
+            park_reason: Some("blocked on the API key".into()),
+            ..Default::default()
+        };
+        assert!(mark_task_started(&mut planned, now));
+        assert_eq!(planned.started_at.as_deref(), Some(now.to_rfc3339().as_str()));
+        assert_eq!(planned.parked_at, None);
+        assert_eq!(planned.park_reason, None);
+        // The goal is NOT cleared. It says what the task is for, and starting
+        // work does not answer that question.
+        assert_eq!(planned.goal.as_deref(), Some("Ship the parked chip"));
+    }
+
+    #[test]
+    fn setting_a_goal_writes_back_to_the_profile_the_task_came_from() {
+        // Same trap as `task_touch` and `task_mark_started`: the command reads
+        // ONE file, so the record it parses carries the DEFAULT profile
+        // (`profile` is `serde(skip)`). Forget the re-tag and the save lands
+        // in the root tree and the task exists twice.
+        with_scratch_data_dir(|data| {
+            crate::profiles::save_registry(data, &two_profile_registry()).unwrap();
+            crate::save_task(&a_task("t5", ProfileId::Slug("home".into()))).unwrap();
+
+            crate::task_set_goal("t5".into(), Some("  Ship the parked chip  ".into())).unwrap();
+            assert!(!data.join("tasks/t5.json").exists(), "the goal moved t5 into the root");
+            let home = crate::load_tasks_in(&ProfileId::Slug("home".into()));
+            assert_eq!(home.len(), 1);
+            assert_eq!(home[0].goal.as_deref(), Some("Ship the parked chip"));
+
+            // Clearing the box removes the field rather than writing "".
+            crate::task_set_goal("t5".into(), Some("   ".into())).unwrap();
+            assert_eq!(crate::load_tasks_in(&ProfileId::Slug("home".into()))[0].goal, None);
+
+            assert_eq!(crate::task_set_goal("nope".into(), None), Err("no such task".into()));
+        });
+    }
+
+    #[test]
+    fn parking_reports_the_stamp_that_actually_landed_on_disk() {
+        // The return value exists so the caller folds the REAL stamp into its
+        // store instead of inventing a `Date.now()` that drifts from the file
+        // by the round trip and then disagrees with it after a reload.
+        with_scratch_data_dir(|_data| {
+            crate::save_task(&a_task("t6", ProfileId::Root)).unwrap();
+
+            let stamp =
+                crate::task_set_parked("t6".into(), true, Some("blocked on the API key".into()))
+                    .unwrap()
+                    .expect("parking reports a stamp");
+            assert!(chrono::DateTime::parse_from_rfc3339(&stamp).is_ok(), "not RFC3339: {stamp}");
+            let list = crate::load_tasks_in(&ProfileId::Root);
+            assert_eq!(list[0].parked_at.as_deref(), Some(stamp.as_str()));
+            assert_eq!(list[0].park_reason.as_deref(), Some("blocked on the API key"));
+
+            // A prompt into it unparks it on disk, with nobody asked to.
+            crate::task_mark_started_sync("t6".into()).expect("the task is there");
+            let list = crate::load_tasks_in(&ProfileId::Root);
+            assert_eq!(list[0].parked_at, None);
+            assert_eq!(list[0].park_reason, None);
+            assert!(list[0].started_at.is_some());
+
+            // Unparking reports None rather than the stamp it just removed.
+            crate::task_set_parked("t6".into(), true, None).unwrap();
+            assert_eq!(crate::task_set_parked("t6".into(), false, None).unwrap(), None);
+            assert_eq!(crate::load_tasks_in(&ProfileId::Root)[0].parked_at, None);
+
+            assert_eq!(
+                crate::task_set_parked("nope".into(), true, None),
+                Err("no such task".into()),
+            );
         });
     }
 

@@ -8,6 +8,8 @@ vi.mock("@/lib/ipc", () => ({
   taskTouch: vi.fn().mockResolvedValue("2026-01-01T00:00:00Z"),
   taskRecordSpawn: vi.fn().mockResolvedValue(1),
   taskMarkStarted: vi.fn().mockResolvedValue("2026-01-01T00:00:00Z"),
+  taskSetGoal: vi.fn().mockResolvedValue(undefined),
+  taskSetParked: vi.fn().mockResolvedValue(null),
   taskGitPhaseState: vi.fn().mockRejectedValue(new Error("not mocked")),
   ptyWrite: vi.fn(),
   ptyKill: vi.fn().mockResolvedValue(undefined),

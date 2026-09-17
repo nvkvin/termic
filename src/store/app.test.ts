@@ -8,6 +8,9 @@ vi.mock("@/lib/ipc", () => ({
   taskTouch: vi.fn().mockResolvedValue("2026-01-01T00:00:00Z"),
   taskRecordSpawn: vi.fn().mockResolvedValue(1),
   taskMarkStarted: vi.fn().mockResolvedValue("2026-01-01T00:00:00Z"),
+  taskSetGoal: vi.fn().mockResolvedValue(undefined),
+  // Resolves with the resulting `parked_at`; cases that care override it.
+  taskSetParked: vi.fn().mockResolvedValue(null),
   taskGitPhaseState: vi.fn().mockRejectedValue(new Error("not mocked")),
   ptyWrite: vi.fn(),
   ptyKill: vi.fn().mockResolvedValue(undefined),
@@ -1893,5 +1896,408 @@ describe("markStarted", () => {
 
     expect(() => useApp.getState().markStarted("ws1")).not.toThrow();
     expect(startedAt("ws1")).toBeTruthy();
+  });
+
+  // Any prompt un-parks: sending something into a task you put down means you
+  // have picked it up again, and a park the user has to clear by hand is the
+  // stale-by-hand signal the whole design refuses.
+  describe("un-parking", () => {
+    const parkedAt = (id: string) => useApp.getState().tasks.find(w => w.id === id)?.parked_at;
+    const reason = (id: string) => useApp.getState().tasks.find(w => w.id === id)?.park_reason;
+
+    it("clears the park on a task that was already started", () => {
+      useApp.setState({
+        tasks: [makeTask({
+          id: "ws1",
+          started_at: "2026-01-02T03:04:05.000Z",
+          parked_at: "2026-02-02T03:04:05.000Z",
+          park_reason: "waiting on the API key",
+        })],
+      });
+
+      useApp.getState().markStarted("ws1");
+
+      expect(parkedAt("ws1")).toBeNull();
+      expect(reason("ws1")).toBeNull();
+      // The original stamp is untouched: write-once holds here too, not only
+      // on the Rust side.
+      expect(startedAt("ws1")).toBe("2026-01-02T03:04:05.000Z");
+      expect(ipc.taskMarkStarted).toHaveBeenCalledTimes(1);
+    });
+
+    it("stamps and un-parks in ONE notification for a parked task nobody started", () => {
+      useApp.setState({
+        tasks: [makeTask({ id: "ws1", parked_at: "2026-02-02T03:04:05.000Z" })],
+      });
+      let notifications = 0;
+      const unsub = useApp.subscribe(() => { notifications++; });
+
+      useApp.getState().markStarted("ws1");
+
+      unsub();
+      expect(notifications).toBe(1);
+      expect(startedAt("ws1")).toBeTruthy();
+      expect(parkedAt("ws1")).toBeNull();
+    });
+
+    it("costs nothing once the task is started AND unparked", () => {
+      // The steady state after the park is cleared: the second prompt and
+      // every one after it must not copy the state again (bear trap 8).
+      useApp.setState({
+        tasks: [makeTask({
+          id: "ws1",
+          started_at: "2026-01-02T03:04:05.000Z",
+          parked_at: "2026-02-02T03:04:05.000Z",
+        })],
+      });
+      useApp.getState().markStarted("ws1");
+      vi.mocked(ipc.taskMarkStarted).mockClear();
+
+      const before = useApp.getState();
+      useApp.getState().markStarted("ws1");
+      useApp.getState().markStarted("ws1");
+
+      expect(useApp.getState().tasks).toBe(before.tasks);
+      expect(ipc.taskMarkStarted).not.toHaveBeenCalled();
+    });
+
+    it("treats a null parked_at as not parked, so a started task still bails", () => {
+      useApp.setState({
+        tasks: [makeTask({
+          id: "ws1", started_at: "2026-01-02T03:04:05.000Z", parked_at: null,
+        })],
+      });
+      const before = useApp.getState();
+
+      useApp.getState().markStarted("ws1");
+
+      expect(useApp.getState().tasks).toBe(before.tasks);
+      expect(ipc.taskMarkStarted).not.toHaveBeenCalled();
+    });
+  });
+});
+
+// ── setTaskGoal ───────────────────────────────────────────────────────
+//
+// Free text, not a state: what is worth pinning is that it writes once and
+// that an unchanged submit costs nothing (docs/performance.md bear trap 8).
+describe("setTaskGoal", () => {
+  const goalOf = (id: string) => useApp.getState().tasks.find(w => w.id === id)?.goal;
+
+  beforeEach(() => {
+    useApp.setState({ tasks: [makeTask({ id: "ws1" }), makeTask({ id: "ws2" })] });
+  });
+
+  it("records the goal in the store and on disk", () => {
+    useApp.getState().setTaskGoal("ws1", "Ship the importer");
+
+    expect(goalOf("ws1")).toBe("Ship the importer");
+    expect(ipc.taskSetGoal).toHaveBeenCalledTimes(1);
+    expect(ipc.taskSetGoal).toHaveBeenCalledWith("ws1", "Ship the importer");
+    // Per task, not per app.
+    expect(goalOf("ws2")).toBeUndefined();
+  });
+
+  it("does not touch started_at: writing a goal is not starting work", () => {
+    useApp.getState().setTaskGoal("ws1", "Ship the importer");
+
+    expect(useApp.getState().tasks.find(w => w.id === "ws1")?.started_at).toBeUndefined();
+  });
+
+  it("writes nothing when the goal is unchanged", () => {
+    useApp.getState().setTaskGoal("ws1", "Ship the importer");
+    vi.mocked(ipc.taskSetGoal).mockClear();
+
+    const before = useApp.getState();
+    let notifications = 0;
+    const unsub = useApp.subscribe(() => { notifications++; });
+
+    useApp.getState().setTaskGoal("ws1", "Ship the importer");
+
+    unsub();
+    expect(notifications).toBe(0);
+    // Same ARRAY, not merely equal.
+    expect(useApp.getState().tasks).toBe(before.tasks);
+    expect(ipc.taskSetGoal).not.toHaveBeenCalled();
+  });
+
+  it("treats null, undefined and absent as one value, so clearing an empty goal is a no-op", () => {
+    const before = useApp.getState();
+
+    useApp.getState().setTaskGoal("ws1", null);
+
+    expect(useApp.getState().tasks).toBe(before.tasks);
+    expect(ipc.taskSetGoal).not.toHaveBeenCalled();
+  });
+
+  it("trims what it stores, the way the record does on the way to disk", () => {
+    useApp.getState().setTaskGoal("ws1", "  Ship the importer  ");
+
+    expect(goalOf("ws1")).toBe("Ship the importer");
+    expect(ipc.taskSetGoal).toHaveBeenCalledWith("ws1", "Ship the importer");
+  });
+
+  it("a whitespace-only goal is no goal, so it neither writes nor stores a blank", () => {
+    // Rust's `normalize_task_note` collapses this to None. If this side kept
+    // `"  "`, the store would hold a truthy goal the disk does not have, and
+    // the row would read Planned until the next loadAll.
+    const before = useApp.getState();
+
+    useApp.getState().setTaskGoal("ws1", "   ");
+
+    expect(useApp.getState().tasks).toBe(before.tasks);
+    expect(ipc.taskSetGoal).not.toHaveBeenCalled();
+  });
+
+  it("clears a set goal when the box is emptied to whitespace", () => {
+    useApp.getState().setTaskGoal("ws1", "Ship the importer");
+    vi.mocked(ipc.taskSetGoal).mockClear();
+
+    useApp.getState().setTaskGoal("ws1", "  ");
+
+    expect(goalOf("ws1")).toBeNull();
+    expect(ipc.taskSetGoal).toHaveBeenCalledWith("ws1", null);
+  });
+
+  it("clears a goal that was set", () => {
+    useApp.getState().setTaskGoal("ws1", "Ship the importer");
+    vi.mocked(ipc.taskSetGoal).mockClear();
+
+    useApp.getState().setTaskGoal("ws1", null);
+
+    expect(goalOf("ws1")).toBeNull();
+    expect(ipc.taskSetGoal).toHaveBeenCalledWith("ws1", null);
+  });
+
+  it("edits an existing goal", () => {
+    useApp.getState().setTaskGoal("ws1", "Ship the importer");
+    useApp.getState().setTaskGoal("ws1", "Ship the importer behind a flag");
+
+    expect(goalOf("ws1")).toBe("Ship the importer behind a flag");
+    expect(ipc.taskSetGoal).toHaveBeenCalledTimes(2);
+  });
+
+  it("is a no-op for an id that resolves to no task", () => {
+    const before = useApp.getState();
+
+    useApp.getState().setTaskGoal("nope", "Ship the importer");
+
+    expect(useApp.getState().tasks).toBe(before.tasks);
+    expect(ipc.taskSetGoal).not.toHaveBeenCalled();
+  });
+
+  it("survives a rejected write without throwing, keeping the in-memory goal", () => {
+    vi.mocked(ipc.taskSetGoal).mockRejectedValueOnce(new Error("disk full"));
+
+    expect(() => useApp.getState().setTaskGoal("ws1", "Ship the importer")).not.toThrow();
+    expect(goalOf("ws1")).toBe("Ship the importer");
+  });
+});
+
+// ── setTaskParked ─────────────────────────────────────────────────────
+//
+// The one hand-set phase input. Two things carry the design: `parked_at`
+// answers "since when" and must not move when the task is re-parked, and an
+// unchanged park must not write at all (docs/performance.md bear trap 8).
+describe("setTaskParked", () => {
+  const parkedAt = (id: string) => useApp.getState().tasks.find(w => w.id === id)?.parked_at;
+  const reason = (id: string) => useApp.getState().tasks.find(w => w.id === id)?.park_reason;
+
+  beforeEach(() => {
+    useApp.setState({ tasks: [makeTask({ id: "ws1" }), makeTask({ id: "ws2" })] });
+  });
+
+  it("parks the task with a stamp and persists it", () => {
+    const before = Date.now();
+
+    useApp.getState().setTaskParked("ws1", true, "waiting on the API key");
+
+    const at = parkedAt("ws1");
+    expect(at).toBeTruthy();
+    expect(Date.parse(at!)).toBeGreaterThanOrEqual(before);
+    expect(reason("ws1")).toBe("waiting on the API key");
+    expect(ipc.taskSetParked).toHaveBeenCalledTimes(1);
+    expect(ipc.taskSetParked).toHaveBeenCalledWith("ws1", true, "waiting on the API key");
+    expect(parkedAt("ws2")).toBeUndefined();
+  });
+
+  it("parks without a reason, which is the common case", () => {
+    useApp.getState().setTaskParked("ws1", true);
+
+    expect(parkedAt("ws1")).toBeTruthy();
+    expect(reason("ws1")).toBeNull();
+    expect(ipc.taskSetParked).toHaveBeenCalledWith("ws1", true, null);
+  });
+
+  it("writes nothing when re-parking with the same reason", () => {
+    useApp.getState().setTaskParked("ws1", true, "waiting on the API key");
+    vi.mocked(ipc.taskSetParked).mockClear();
+
+    const before = useApp.getState();
+    let notifications = 0;
+    const unsub = useApp.subscribe(() => { notifications++; });
+
+    useApp.getState().setTaskParked("ws1", true, "waiting on the API key");
+
+    unsub();
+    expect(notifications).toBe(0);
+    expect(useApp.getState().tasks).toBe(before.tasks);
+    expect(ipc.taskSetParked).not.toHaveBeenCalled();
+  });
+
+  it("writes nothing when re-parking a reasonless park with no reason", () => {
+    useApp.getState().setTaskParked("ws1", true);
+    vi.mocked(ipc.taskSetParked).mockClear();
+    const before = useApp.getState();
+
+    useApp.getState().setTaskParked("ws1", true);
+    useApp.getState().setTaskParked("ws1", true, null);
+    useApp.getState().setTaskParked("ws1", true, undefined);
+
+    expect(useApp.getState().tasks).toBe(before.tasks);
+    expect(ipc.taskSetParked).not.toHaveBeenCalled();
+  });
+
+  it("trims the reason, and a whitespace-only one is no reason at all", () => {
+    useApp.getState().setTaskParked("ws1", true, "  waiting on the API key  ");
+    expect(reason("ws1")).toBe("waiting on the API key");
+    expect(ipc.taskSetParked).toHaveBeenCalledWith("ws1", true, "waiting on the API key");
+
+    vi.mocked(ipc.taskSetParked).mockClear();
+    useApp.getState().setTaskParked("ws2", true, "   ");
+    expect(parkedAt("ws2")).toBeTruthy();
+    expect(reason("ws2")).toBeNull();
+    expect(ipc.taskSetParked).toHaveBeenCalledWith("ws2", true, null);
+  });
+
+  it("re-parking with the same reason retyped with spaces writes nothing", () => {
+    useApp.getState().setTaskParked("ws1", true, "waiting on the API key");
+    vi.mocked(ipc.taskSetParked).mockClear();
+    const before = useApp.getState();
+
+    useApp.getState().setTaskParked("ws1", true, "  waiting on the API key ");
+
+    expect(useApp.getState().tasks).toBe(before.tasks);
+    expect(ipc.taskSetParked).not.toHaveBeenCalled();
+  });
+
+  it("writes nothing when unparking a task that is not parked", () => {
+    const before = useApp.getState();
+
+    useApp.getState().setTaskParked("ws1", false);
+
+    expect(useApp.getState().tasks).toBe(before.tasks);
+    expect(ipc.taskSetParked).not.toHaveBeenCalled();
+  });
+
+  it("a CHANGED reason writes, and does NOT move parked_at", () => {
+    // The stamp answers "since when", so editing the note must not restart the
+    // clock. Rust refuses to move it; this side has to agree, or the store
+    // disagrees with disk for a round trip and then snaps back.
+    useApp.getState().setTaskParked("ws1", true, "waiting on the API key");
+    const first = parkedAt("ws1");
+    vi.mocked(ipc.taskSetParked).mockClear();
+    vi.mocked(ipc.taskSetParked).mockResolvedValueOnce(first!);
+
+    useApp.getState().setTaskParked("ws1", true, "waiting on the vendor");
+
+    expect(reason("ws1")).toBe("waiting on the vendor");
+    expect(parkedAt("ws1")).toBe(first);
+    expect(ipc.taskSetParked).toHaveBeenCalledWith("ws1", true, "waiting on the vendor");
+  });
+
+  it("dropping the reason off a parked task is a change and writes", () => {
+    useApp.getState().setTaskParked("ws1", true, "waiting on the API key");
+    const first = parkedAt("ws1");
+    vi.mocked(ipc.taskSetParked).mockClear();
+
+    useApp.getState().setTaskParked("ws1", true, null);
+
+    expect(reason("ws1")).toBeNull();
+    expect(parkedAt("ws1")).toBe(first);
+    expect(ipc.taskSetParked).toHaveBeenCalledTimes(1);
+  });
+
+  it("unparking clears both fields and sends no reason", () => {
+    useApp.getState().setTaskParked("ws1", true, "waiting on the API key");
+    vi.mocked(ipc.taskSetParked).mockClear();
+
+    useApp.getState().setTaskParked("ws1", false);
+
+    expect(parkedAt("ws1")).toBeNull();
+    expect(reason("ws1")).toBeNull();
+    expect(ipc.taskSetParked).toHaveBeenCalledWith("ws1", false, null);
+  });
+
+  it("folds the real stamp back when Rust answers with a different one", async () => {
+    // Rust owns the stamp: an already parked record on disk keeps its original,
+    // which the optimistic write here cannot know about.
+    const real = "2026-02-02T03:04:05.000Z";
+    vi.mocked(ipc.taskSetParked).mockResolvedValueOnce(real);
+
+    useApp.getState().setTaskParked("ws1", true, "waiting on the API key");
+    await vi.waitFor(() => expect(parkedAt("ws1")).toBe(real));
+    expect(reason("ws1")).toBe("waiting on the API key");
+  });
+
+  it("leaves state identity alone when the stamp comes back unchanged", async () => {
+    useApp.getState().setTaskParked("ws1", true);
+    const stamp = parkedAt("ws1")!;
+    vi.mocked(ipc.taskSetParked).mockClear();
+    // The steady case: Rust echoes what the optimistic write already had.
+    vi.mocked(ipc.taskSetParked).mockResolvedValueOnce(stamp);
+    useApp.getState().setTaskParked("ws1", true, "waiting on the API key");
+    const before = useApp.getState();
+
+    await vi.waitFor(() => expect(ipc.taskSetParked).toHaveBeenCalled());
+    await Promise.resolve();
+
+    expect(useApp.getState()).toBe(before);
+    expect(useApp.getState().tasks).toBe(before.tasks);
+  });
+
+  it("does not re-park a task a prompt un-parked while the write was in flight", async () => {
+    // markStarted clears the park, and the reply landing afterwards must not
+    // put it back: the prompt is newer evidence than the click.
+    const real = "2026-02-02T03:04:05.000Z";
+    vi.mocked(ipc.taskSetParked).mockResolvedValueOnce(real);
+
+    useApp.getState().setTaskParked("ws1", true, "waiting on the API key");
+    useApp.getState().markStarted("ws1");
+    expect(parkedAt("ws1")).toBeNull();
+
+    await vi.waitFor(() => expect(ipc.taskSetParked).toHaveBeenCalled());
+    await Promise.resolve();
+
+    expect(parkedAt("ws1")).toBeNull();
+    expect(reason("ws1")).toBeNull();
+  });
+
+  it("drops the answer for a task that is gone by the time it lands", async () => {
+    vi.mocked(ipc.taskSetParked).mockResolvedValueOnce("2026-02-02T03:04:05.000Z");
+
+    useApp.getState().setTaskParked("ws1", true);
+    useApp.setState({ tasks: [] });
+    await vi.waitFor(() => expect(ipc.taskSetParked).toHaveBeenCalled());
+    await Promise.resolve();
+
+    expect(useApp.getState().tasks).toEqual([]);
+  });
+
+  it("is a no-op for an id that resolves to no task", () => {
+    const before = useApp.getState();
+
+    useApp.getState().setTaskParked("nope", true, "waiting on the API key");
+
+    expect(useApp.getState().tasks).toBe(before.tasks);
+    expect(ipc.taskSetParked).not.toHaveBeenCalled();
+  });
+
+  it("survives a rejected write without throwing, keeping the in-memory park", async () => {
+    vi.mocked(ipc.taskSetParked).mockRejectedValueOnce(new Error("disk full"));
+
+    expect(() => useApp.getState().setTaskParked("ws1", true)).not.toThrow();
+    await vi.waitFor(() => expect(ipc.taskSetParked).toHaveBeenCalled());
+    expect(parkedAt("ws1")).toBeTruthy();
   });
 });

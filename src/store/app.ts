@@ -233,11 +233,16 @@ export interface AppState {
    *
    *  Bails when the count is unchanged, leaving state identity intact. */
   recordSpawn: (taskId: string) => void;
-  /** Stamp `started_at` the first time a human submits a prompt into this
-   *  task, in the store and on disk. Write-once on both sides: an already
-   *  stamped task (or an unknown id) bails before any `set` and before the
-   *  IPC, so the hot paths that call this on every submit cost one array
-   *  lookup once the task has started.
+  /** Record that work is happening in this task NOW, in the store and on
+   *  disk. Two facts, not one: the FIRST prompt stamps `started_at`
+   *  (write-once on both sides), and ANY prompt clears `parked_at` and
+   *  `park_reason`, because sending something into a task you deliberately
+   *  put down means you have picked it up again.
+   *
+   *  So the bail is "already started AND not parked" (or an unknown id), and
+   *  it happens before any `set` and before the IPC: the hot paths that call
+   *  this on every submit cost one array lookup and two truthiness checks
+   *  once the task is started and unparked, which is the steady state.
    *
    *  JUDGEMENT CALL: Enter in a plain SHELL tab counts as starting too. The
    *  call sites are the places user text reaches a terminal, not the places
@@ -246,6 +251,26 @@ export interface AppState {
    *  the dashboard cares about, and a phase that called that Todo would be
    *  wrong in the direction that matters (claiming nothing has happened). */
   markStarted: (taskId: string) => void;
+  /** Record what the task is for, or clear it with `null`, in the store and
+   *  on disk. Free text, not a state: it feeds no derivation, and the phase of
+   *  a task with a goal and no `started_at` is still `todo` (the goal is what
+   *  the UI draws to say Planned). Bails before any `set` and before the IPC
+   *  when the text is unchanged, so re-submitting an unedited field costs one
+   *  array lookup. */
+  setTaskGoal: (taskId: string, goal: string | null) => void;
+  /** Park or unpark the task, with an optional free-text reason, in the store
+   *  and on disk.
+   *
+   *  The only phase input a person sets by hand, and it is allowed to be one
+   *  because "I have put this down" has no live twin in git or the forge, and
+   *  because it clears itself: the next prompt into any terminal un-parks the
+   *  task through `markStarted`. Re-parking does not move `parked_at` (the
+   *  Rust side owns the stamp and this action honours it), so the value stays
+   *  an answer to "since when".
+   *
+   *  Bails before any `set` and before the IPC when nothing moves: parking an
+   *  already parked task with the same reason, or unparking an unparked one. */
+  setTaskParked: (taskId: string, parked: boolean, reason?: string | null) => void;
   setView: (page: View["page"]) => void;
   openSettings: (tab?: View["settingsTab"], repoId?: string, highlight?: string) => void;
   closeSettings: () => void;
@@ -652,6 +677,21 @@ function visitMayClearWorking(s: AppState, cli: string | undefined): boolean {
   return !(cli && s.agentHooksInstalled[cli] === true);
 }
 
+/** Trim a piece of user-typed text for the task record, and collapse what is
+ *  left of an empty box to `null`.
+ *
+ *  MIRRORS `normalize_task_note` in src-tauri/src/lib.rs, which both `goal`
+ *  and `park_reason` go through on the way to disk. Doing it on this side too
+ *  is not belt and braces: without it, clearing a box would write `""` into
+ *  the store while Rust stored `None`, so the optimistic copy would disagree
+ *  with disk until the next `loadAll`, and the unchanged-value bails below
+ *  (docs/performance.md bear trap 8) would miss the case they exist for, a box
+ *  submitted with nothing changed in it. */
+function normalizeTaskNote(s: string | null | undefined): string | null {
+  const t = (s ?? "").trim();
+  return t === "" ? null : t;
+}
+
 export function isTabOnScreenIn(s: AppState, taskId: string, tabId?: string): boolean {
   if (s.activeTaskId !== taskId) return false;
   if (tabId === undefined) return true;
@@ -1031,26 +1071,100 @@ export const useApp = create<AppState>((set, get) => ({
   },
 
   markStarted: (taskId) => {
+    // Records that work is happening NOW, which is two facts rather than one:
+    // the first prompt stamps `started_at` write-once, and ANY prompt un-parks
+    // the task. Sending something into a task you had deliberately put down
+    // means you have picked it up again, and making the user clear the park by
+    // hand is exactly the stale-by-hand signal this whole design refuses (see
+    // src/lib/taskPhase.ts).
+    //
     // Bail BEFORE the set() and before the IPC. This runs on every prompt
     // submit in every terminal, which is exactly the kind of PTY-driven path
     // where an unchanged write costs a whole ~233-key state copy and re-runs
-    // every mounted task's selectors (docs/performance.md bear trap 8). After
-    // the first prompt it is one `find` and a truthiness check.
+    // every mounted task's selectors (docs/performance.md bear trap 8). Once
+    // the task is started and not parked (the steady state) it is one `find`
+    // and two truthiness checks.
     //
     // `started_at` is null on a record that has one and absent on a record
     // written before the field existed; both mean "not started", so the
-    // truthy check covers them (same reasoning as `last_opened_at`).
+    // truthy check covers them (same reasoning as `last_opened_at`). Same for
+    // `parked_at` and "not parked".
     const task = get().tasks.find(w => w.id === taskId);
-    if (!task || task.started_at) return;
-    const stamp = new Date().toISOString();
-    set(s => ({ tasks: s.tasks.map(w => (w.id === taskId ? { ...w, started_at: stamp } : w)) }));
+    if (!task || (task.started_at && !task.parked_at)) return;
+    const stamp = task.started_at || new Date().toISOString();
+    set(s => ({
+      tasks: s.tasks.map(w =>
+        w.id === taskId ? { ...w, started_at: stamp, parked_at: null, park_reason: null } : w),
+    }));
     // Fire-and-forget, and the reply is dropped exactly like `taskTouch`'s:
     // the two stamps differ only by the IPC round trip, nothing renders
     // milliseconds, and writing the reply back would copy the whole state a
-    // second time. The Rust side is write-once, so a racing second call (two
-    // terminals submitting at the same moment) keeps the first stamp and this
-    // side has already bailed on its own copy anyway.
+    // second time. The Rust side is write-once for `started_at` and always
+    // clears the park, matching what was just written here, so a racing second
+    // call (two terminals submitting at the same moment) keeps the first stamp
+    // and this side has already bailed on its own copy anyway.
     ipc.taskMarkStarted(taskId).catch(() => {});
+  },
+
+  setTaskGoal: (taskId, goal) => {
+    const task = get().tasks.find(w => w.id === taskId);
+    if (!task) return;
+    // `null`, absent and a box holding only spaces all mean "no goal", so
+    // normalise both sides before comparing (`normalizeTaskNote` above, which
+    // is what Rust does on the way to disk): an empty dialog submitted over an
+    // already empty goal must not write. Bear trap 8 again, and the same guard
+    // is what keeps the IPC off the disk.
+    const next = normalizeTaskNote(goal);
+    if (normalizeTaskNote(task.goal) === next) return;
+    set(s => ({ tasks: s.tasks.map(w => (w.id === taskId ? { ...w, goal: next } : w)) }));
+    ipc.taskSetGoal(taskId, next).catch(() => {});
+  },
+
+  setTaskParked: (taskId, parked, reason = null) => {
+    const task = get().tasks.find(w => w.id === taskId);
+    if (!task) return;
+    const nextReason = normalizeTaskNote(reason);
+    const wasParked = !!task.parked_at;
+    // Nothing moves in two cases: unparking something that is not parked, and
+    // re-parking with the reason it already has. Both are ordinary (a menu
+    // item clicked twice, a dialog confirmed unedited) and both would
+    // otherwise copy the whole state and re-run every mounted task's
+    // selectors for no change (docs/performance.md bear trap 8).
+    if (!parked && !wasParked) return;
+    if (parked && wasParked && normalizeTaskNote(task.park_reason) === nextReason) return;
+    // Optimistic. Re-parking KEEPS the existing stamp rather than writing a
+    // fresh one: `parked_at` answers "since when", the Rust side refuses to
+    // move it, and writing a new one here would disagree with disk for a
+    // round trip and then snap back.
+    const optimistic = parked ? (task.parked_at ?? new Date().toISOString()) : null;
+    set(s => ({
+      tasks: s.tasks.map(w => (w.id === taskId
+        ? { ...w, parked_at: optimistic, park_reason: parked ? nextReason : null }
+        : w)),
+    }));
+    if (!parked) {
+      // Unparking has nothing to fold back: the reply is `null`, which is
+      // what was just written.
+      ipc.taskSetParked(taskId, false, null).catch(() => {});
+      return;
+    }
+    ipc.taskSetParked(taskId, true, nextReason).then(stamp => {
+      set(s => {
+        // Read `tasks` from the CALLBACK's state, never from a value captured
+        // before the await (same rule as `recordSpawn`), with one extra
+        // condition that action does not need: a prompt can land in this
+        // window and `markStarted` will have un-parked the task, so folding
+        // the reply back unconditionally would re-park it. Only a task that is
+        // STILL parked, with a stamp that actually differs, gets the write.
+        const cur = s.tasks.find(w => w.id === taskId);
+        if (!cur || !cur.parked_at || !stamp || cur.parked_at === stamp) return s;
+        return { tasks: s.tasks.map(w => (w.id === taskId ? { ...w, parked_at: stamp } : w)) };
+      });
+      // Paying for a second state copy here is fine in a way it would not be
+      // in `markStarted`: parking is a click on a menu, not a path a PTY
+      // drives, so it happens at human rates and the stamp it corrects is one
+      // the UI renders ("Parked 3 days ago").
+    }).catch(() => {});
   },
 
   setView: (page) => set({ view: { page }, activeTaskId: null }),

@@ -219,6 +219,105 @@ describe("taskPhase: done", () => {
   });
 });
 
+// The one hand-set value in the table. Its precedence is the whole question:
+// it sits directly below Done and above every live signal, so most of what is
+// worth pinning is which of the two wins where they disagree.
+describe("taskPhase: parked", () => {
+  const PARKED = "2026-03-01T10:00:00.000Z";
+
+  it("a parked task reads parked", () => {
+    const task = makeTask({ started_at: STARTED, parked_at: PARKED });
+    expect(taskPhase(task, null, null)).toBe("parked");
+  });
+
+  it("parked with a reason is still just parked: the reason is not a phase", () => {
+    // Blocked lives here rather than in the table, on purpose.
+    const task = makeTask({
+      started_at: STARTED,
+      parked_at: PARKED,
+      park_reason: "waiting on the API key",
+    });
+    expect(taskPhase(task, null, null)).toBe("parked");
+  });
+
+  it("parked beats an open PR", () => {
+    // The most recent statement a person made about the work wins over a live
+    // signal saying it is ready to look at. The PR chip on the row still says
+    // the PR is open, so nothing is lost by this.
+    const task = makeTask({ started_at: STARTED, parked_at: PARKED });
+    expect(taskPhase(task, makePr({ state: "open" }), null)).toBe("parked");
+  });
+
+  it("parked beats a clean pushed branch, which would otherwise be in_review", () => {
+    const task = makeTask({ started_at: STARTED, parked_at: PARKED });
+    expect(taskPhase(task, null, HANDED_OFF)).toBe("parked");
+  });
+
+  it("parked beats a draft PR, a closed PR and started_at", () => {
+    const task = makeTask({ started_at: STARTED, parked_at: PARKED });
+    expect(taskPhase(task, makePr({ state: "draft" }), null)).toBe("parked");
+    expect(taskPhase(task, makePr({ state: "closed" }), null)).toBe("parked");
+    expect(taskPhase(makeTask({ parked_at: PARKED }), null, null)).toBe("parked");
+  });
+
+  it("a parked task whose PR merged is done, not parked", () => {
+    // Finished beats put-down: the branch landed, whatever the user meant when
+    // they set it down, and Parked would hide it.
+    const task = makeTask({ started_at: STARTED, parked_at: PARKED });
+    expect(taskPhase(task, makePr({ state: "merged" }), null)).toBe("done");
+  });
+
+  it("a parked task whose branch reached the base is done, not parked", () => {
+    const task = makeTask({ started_at: STARTED, parked_at: PARKED });
+    expect(taskPhase(task, null, makeGit({ merged_into_base: true }))).toBe("done");
+  });
+
+  it("an archived parked task is done, not parked", () => {
+    const task = makeTask({ archived: true, started_at: STARTED, parked_at: PARKED });
+    expect(taskPhase(task, null, null)).toBe("done");
+  });
+
+  it("a null parked_at is not parked, the way serde writes an empty one", () => {
+    const task = makeTask({ started_at: STARTED, parked_at: null });
+    expect(taskPhase(task, null, null)).toBe("in_progress");
+  });
+
+  it("a park_reason with no parked_at does not park anything", () => {
+    // Nothing writes this pair (the store clears them together), so this only
+    // pins that `parked_at` is the signal and the reason is decoration.
+    const task = makeTask({ started_at: STARTED, park_reason: "stale leftover" });
+    expect(taskPhase(task, null, null)).toBe("in_progress");
+  });
+});
+
+// Planned is RENDERED from a goal plus no `started_at`, never derived into a
+// phase of its own: a fifth value would store what `started_at` already
+// answers. So the goal has to be inert here, in every combination.
+describe("taskPhase: a goal is text, not a state", () => {
+  it("a goal with no started_at is todo", () => {
+    const task = makeTask({ goal: "Ship the importer" });
+    expect(taskPhase(task, null, null)).toBe("todo");
+  });
+
+  it("a goal does not move a started task off in_progress", () => {
+    const task = makeTask({ goal: "Ship the importer", started_at: STARTED });
+    expect(taskPhase(task, null, null)).toBe("in_progress");
+  });
+
+  it("a goal does not move a parked task, an in_review one or a done one", () => {
+    const goal = "Ship the importer";
+    expect(taskPhase(makeTask({ goal, parked_at: "2026-03-01T10:00:00.000Z" }), null, null))
+      .toBe("parked");
+    expect(taskPhase(makeTask({ goal }), makePr({ state: "open" }), null)).toBe("in_review");
+    expect(taskPhase(makeTask({ goal, archived: true }), null, null)).toBe("done");
+  });
+
+  it("an empty goal is the same as none", () => {
+    expect(taskPhase(makeTask({ goal: "" }), null, null)).toBe("todo");
+    expect(taskPhase(makeTask({ goal: null }), null, null)).toBe("todo");
+  });
+});
+
 describe("taskPhase: unknown inputs fall through rather than forcing a phase", () => {
   it("pr undefined behaves exactly like pr null", () => {
     // A failed PrLookup (cli-missing, no-remote, error, ...) resolves to a
@@ -237,13 +336,14 @@ describe("taskPhase: unknown inputs fall through rather than forcing a phase", (
 });
 
 describe("phaseCounts", () => {
-  it("tallies a mixed list across all four phases", () => {
+  it("tallies a mixed list across all five phases", () => {
     const tasks: Task[] = [
       makeTask({ id: "a", archived: true }),
       makeTask({ id: "b", started_at: STARTED }),
       makeTask({ id: "c" }),
       makeTask({ id: "d", started_at: STARTED }),
       makeTask({ id: "e", started_at: STARTED }),
+      makeTask({ id: "f", started_at: STARTED, parked_at: "2026-03-01T10:00:00.000Z" }),
     ];
     const prById: Record<string, PrStatus | null> = {
       a: null,
@@ -251,6 +351,9 @@ describe("phaseCounts", () => {
       c: null,
       d: makePr({ state: "merged" }),
       e: null,
+      // Parked with an open PR, so this also pins that the tally follows the
+      // same precedence the single-task function does.
+      f: makePr({ state: "open" }),
     };
     const gitById: Record<string, TaskGitState | null> = {
       a: null,
@@ -259,12 +362,14 @@ describe("phaseCounts", () => {
       d: null,
       // No PR, but committed, clean and pushed: the git-derived In review.
       e: HANDED_OFF,
+      f: null,
     };
     const counts = phaseCounts(tasks, id => prById[id] ?? null, id => gitById[id] ?? null);
     expect(counts).toEqual({
       todo: 1,
       in_progress: 0,
       in_review: 2,
+      parked: 1,
       done: 2,
     });
   });
@@ -279,23 +384,29 @@ describe("phaseCounts", () => {
     expect(counts.todo).toBe(2);
   });
 
-  it("returns every phase key at zero on an empty list", () => {
+  it("returns every phase key at zero on an empty list, parked included", () => {
+    // The caller indexes this map by phase without guarding, so a missing key
+    // is a rendered `undefined` rather than a 0.
     expect(phaseCounts([], () => null, () => null)).toEqual({
-      todo: 0, in_progress: 0, in_review: 0, done: 0,
+      todo: 0, in_progress: 0, in_review: 0, parked: 0, done: 0,
     });
   });
 });
 
 describe("PHASE_ORDER / PHASE_LABEL", () => {
-  it("carries exactly the four phases, each with a label", () => {
-    expect(PHASE_ORDER).toHaveLength(4);
+  it("carries exactly the five phases, each with a label", () => {
+    expect(PHASE_ORDER).toHaveLength(5);
     for (const phase of PHASE_ORDER) {
       expect(PHASE_LABEL[phase]).toBeTruthy();
     }
   });
 
-  it("reads in lifecycle order, which is how the filter row renders", () => {
-    expect([...PHASE_ORDER]).toEqual(["todo", "in_progress", "in_review", "done"]);
+  it("reads in lifecycle order with parked LAST, after done", () => {
+    // Not the precedence order (where Parked sits directly below Done). The
+    // first four are a task's life in sequence and Parked is a task stepping
+    // out of that line, so it goes at the end rather than in the middle of a
+    // row people read left to right.
+    expect([...PHASE_ORDER]).toEqual(["todo", "in_progress", "in_review", "done", "parked"]);
   });
 });
 
@@ -313,6 +424,7 @@ describe("PHASE_EMPTY_LABEL", () => {
     expect(PHASE_EMPTY_LABEL.todo).toBe("Nothing to do");
     expect(PHASE_EMPTY_LABEL.in_progress).toBe("Nothing in progress");
     expect(PHASE_EMPTY_LABEL.in_review).toBe("Nothing in review");
+    expect(PHASE_EMPTY_LABEL.parked).toBe("Nothing parked");
     expect(PHASE_EMPTY_LABEL.done).toBe("Nothing done");
   });
 
