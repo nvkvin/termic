@@ -4,15 +4,6 @@
 it.** The phase it builds on is implemented and documented in
 [ui.md](../ui.md); this doc is only about what could sit on top of it.
 
-Related: [GH #298](https://github.com/simion/termic/issues/298), which asks
-for a board view across projects. Two of its "what ifs" are marked as likely
-first steps, and this doc is those two taken seriously:
-
-- *What if a value could do something?* A column carries an action, so moving
-  a card starts a review rather than recording that one happened.
-- *What if values updated on their own?* Rules move a task when a PR opens or
-  merges.
-
 ## What exists, and why it makes this possible
 
 A task's phase is derived at render from signals already in memory: the task
@@ -37,10 +28,9 @@ pipeline and every step leaves a real fact behind:
 | PR merges, or the branch reaches base | `merged_into_base` | Done |
 
 So an automated pipeline needs **no status field at all**. It does the work,
-and the phase follows because the work happened. Compare that with a board
-that syncs a stored column on a PR webhook: the column is a second copy of
-something git already knows, and a second copy is the thing PR #292 was
-rejected for.
+and the phase follows because the work happened. Compare that with syncing a
+stored column on a PR webhook: the column is a second copy of something git
+already knows, and a second copy is the thing PR #292 was rejected for.
 
 ## The shape
 
@@ -88,10 +78,9 @@ human actually driving it. An automation that merges its own work walks
 straight past that. Producing the PR is the valuable part anyway; the last
 click is cheap and it is the one worth keeping.
 
-**Fan-out has to be deliberate and visible.** #298 makes the point already:
-one drag could spend a lot of money across a lot of agents. Whatever starts
-work from a transition should say what it is about to do before it does it,
-and should be off by default.
+**Fan-out has to be deliberate and visible.** One transition could spend a lot
+of money across a lot of agents. Whatever starts work from a transition should
+say what it is about to do before it does it, and should be off by default.
 
 ## Open questions
 
