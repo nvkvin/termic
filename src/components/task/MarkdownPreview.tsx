@@ -44,10 +44,11 @@ import { useEffect, useRef, useState } from "react";
 import MarkdownIt from "markdown-it";
 import DOMPurify from "dompurify";
 import { Check, ImageOff, ChevronUp, ChevronDown, X } from "lucide-react";
-import { openPath, taskFileReadBase64, taskPathStat, taskRevealPath } from "@/lib/ipc";
-import { dirnamePosix, headingSlug, MARKDOWN_EXT_RE, resolveTaskHref } from "@/lib/markdownPaths";
+import { fileReadExternal, openPath, taskFileReadBase64, taskPathStat, taskRevealPath } from "@/lib/ipc";
+import { dirnamePosix, headingSlug, MARKDOWN_EXT_RE, resolveExternalHref, resolveTaskHref } from "@/lib/markdownPaths";
 import { navigateDirTab, openDirTab } from "@/lib/dirTabs";
 import { useApp } from "@/store/app";
+import { clipboardHtmlForRange } from "@/lib/markdownCopy";
 import { useUI } from "@/store/ui";
 import { TerminalExitedBanner } from "./TerminalExitedBanner";
 
@@ -139,6 +140,13 @@ export type MarkdownCtx = {
    *  listing the same way its own rows do, instead of recycling it away or
    *  stranding it. Absent for an ordinary markdown tab. */
   hostDirTabId?: string;
+  /** The file lives OUTSIDE every task root (an external tab) and
+   *  `filePath` is ABSOLUTE. Links resolve against its own directory and
+   *  open as external tabs through the same read-only, uncontained text read
+   *  that opened this one (`file_read_external`). Relative IMAGES are not
+   *  loaded: that would need an uncontained binary read, and the one
+   *  uncontained read termic has is deliberately text-only (docs/sandbox.md). */
+  external?: boolean;
 };
 
 // Relative-link targets that a text editor tab cannot render. Clicking one
@@ -305,6 +313,11 @@ export function hydrateTaskImages(
       img.removeAttribute("src");
     }
     if (!ctx) continue; // no task (Changelog dialog): stays src-less
+    if (ctx.external) {
+      // Outside the task: no contained read can serve it, see MarkdownCtx.
+      img.title = "Images beside a file outside the task are not loaded";
+      continue;
+    }
     const resolved = resolveTaskHref(baseDir, raw, memberDirs);
     if (!resolved) continue; // root-escaping / scheme URL: stays src-less
     img.dataset.mdResolved = resolved; // O(1) lookup key for applyCacheToMatchingImages
@@ -1108,6 +1121,7 @@ export function MarkdownPreview(
     if (/^https?:\/\//i.test(href) || /^mailto:/i.test(href)) { openPath(href); return; }
     if (href.startsWith("#")) { scrollToHeading(hostRef.current, href.slice(1)); return; }
     if (!ctx) return; // no task context (Changelog dialog): inert
+    if (ctx.external) { void openExternalLink(ctx, href); return; }
     const resolved = resolveTaskHref(dirnamePosix(ctx.filePath), href, ctx.memberDirs ?? []);
     if (!resolved) return; // root-escaping / other scheme: inert
     const hashIdx = href.indexOf("#");
@@ -1161,6 +1175,57 @@ export function MarkdownPreview(
       title: resolved.split("/").pop() || resolved,
       ...(fragment && MARKDOWN_EXT_RE.test(resolved) ? { revealHeading: fragment } : {}),
     });
+  }
+
+  /** A link inside an external document. Its target is an absolute path: a
+   *  file inside the task opens as an ordinary tab, anything else opens the
+   *  way ⌘-clicking an absolute path in a terminal does (read-only external
+   *  tab, if it reads as text). */
+  async function openExternalLink(c: MarkdownCtx, href: string) {
+    const abs = resolveExternalHref(c.filePath, href);
+    if (!abs) return;
+    const hashIdx = href.indexOf("#");
+    const fragment = hashIdx >= 0 ? href.slice(hashIdx + 1) : "";
+    if (abs === c.filePath) {
+      if (fragment) scrollToHeading(hostRef.current, fragment);
+      return;
+    }
+    const title = abs.split("/").pop() || abs;
+    const taskPath = useApp.getState().tasks.find(t => t.id === c.taskId)?.path;
+    if (taskPath && abs.startsWith(`${taskPath}/`)) {
+      const rel = abs.slice(taskPath.length + 1);
+      useApp.getState().openPreviewTab(c.taskId, {
+        type: "edit",
+        path: rel,
+        title,
+        ...(fragment && MARKDOWN_EXT_RE.test(rel) ? { revealHeading: fragment } : {}),
+      });
+      return;
+    }
+    try {
+      await fileReadExternal(abs);
+    } catch (err) {
+      useUI.getState().pushToast(`Couldn't open ${abs}: ${err}`, "error");
+      return;
+    }
+    useApp.getState().openPreviewTab(c.taskId, { type: "external", path: abs, title });
+  }
+
+  // ⌘C on a selection: rich HTML (links, emphasis, lists, tables, code) for
+  // Slack and docs, plain text for everything else. See lib/markdownCopy for
+  // why WebKit's own serialization is not used.
+  function onCopy(e: React.ClipboardEvent) {
+    const host = hostRef.current;
+    const sel = window.getSelection();
+    if (!host || !sel || sel.isCollapsed || sel.rangeCount === 0) return;
+    const html = Array.from({ length: sel.rangeCount }, (_, i) => sel.getRangeAt(i))
+      .filter(r => host.contains(r.commonAncestorContainer))
+      .map(r => clipboardHtmlForRange(r, host))
+      .join("");
+    if (!html) return;
+    e.preventDefault();
+    e.clipboardData.setData("text/html", html);
+    e.clipboardData.setData("text/plain", sel.toString());
   }
 
   function handleAlways() {
@@ -1220,7 +1285,9 @@ export function MarkdownPreview(
         // the click's own selection/caret is untouched.
         onMouseDown={() => containerRef.current?.focus({ preventScroll: true })}
       >
-        <div ref={hostRef} className="markdown-body px-8 py-6" onClick={onClick} />
+        {/* data-selectable: the app chrome is user-select:none, and a
+            rendered document is the one pane you read like a web page. */}
+        <div ref={hostRef} data-selectable className="markdown-body" onClick={onClick} onCopy={onCopy} />
       </div>
     </div>
   );

@@ -3201,6 +3201,10 @@ mod tests {
             ("path", "prints a path for shell substitution; callers get it from task_status"),
             ("help", "the CLI's own help; tools/list is the MCP equivalent"),
             ("prompts show", "folded into the prompts tool's optional selector, matching the wire"),
+            ("pad list", "scratchpads are notes for the human in the window; an MCP caller has its own scratch space"),
+            ("pad new", "scratchpads are notes for the human in the window; an MCP caller has its own scratch space"),
+            ("pad write", "scratchpads are notes for the human in the window; an MCP caller has its own scratch space"),
+            ("pad read", "scratchpads are notes for the human in the window; an MCP caller has its own scratch space"),
         ];
         for cmd in commands {
             let verb = cmd["name"].as_str().unwrap();

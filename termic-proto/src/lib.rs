@@ -64,7 +64,10 @@ use std::io::{self, BufRead, Read, Write};
 /// v12 (GH #287): `new` gains per-task agent arguments. They are persisted
 /// on the task and included in task summaries so callers can verify the
 /// launch they requested.
-pub const PROTOCOL_VERSION: u32 = 12;
+///
+/// v13: the `pad_*` verbs. An agent creates, writes, reads and lists its
+/// task's scratchpads, and an open pad shows the write live.
+pub const PROTOCOL_VERSION: u32 = 13;
 
 /// serde default for `QuitData::running`.
 pub(crate) fn default_true() -> bool { true }
@@ -422,6 +425,53 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cwd: Option<String>,
     },
+    /// List a task's scratchpads. cwd-aware when `task` absent.
+    PadList {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+    },
+    /// Create a scratchpad in a task, optionally titled and seeded. It opens
+    /// as an unfocused tab when the task is open in the window.
+    PadNew {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        content: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+    },
+    /// Replace (or append to) a scratchpad's text. `pad` is a pad id or its
+    /// exact title, case-insensitive. An open pad updates in place.
+    PadWrite {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        pad: String,
+        content: String,
+        #[serde(default, skip_serializing_if = "is_false")]
+        append: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+    },
+    /// Read a scratchpad's text, including edits still in an open editor.
+    PadRead {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        pad: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+    },
     /// Register a directory as a project (absolute path; the CLI
     /// canonicalizes before sending). `non_git` opts a plain folder in
     /// (the GUI's "add as plain folder" confirmation, as a flag).
@@ -641,6 +691,7 @@ pub enum ReplyData {
     Quit(QuitData),
     Archive(ArchiveData),
     Rename(RenameData),
+    Pad(PadData),
     ProjectList(ProjectListData),
     ProjectAdd(ProjectAddData),
     ProjectRemove(ProjectRemoveData),
@@ -898,6 +949,32 @@ pub struct RenameData {
     pub task: TaskSummary,
     /// What the task was called before, for "renamed X to Y" output.
     pub old_name: String,
+}
+
+/// One scratchpad, as `pad list` and every other pad verb report it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct PadInfo {
+    pub id: String,
+    /// "" for a pad with no title yet (the window shows "Untitled").
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub syntax: Option<String>,
+    /// Open as a tab in the window right now.
+    #[serde(default)]
+    pub open: bool,
+}
+
+/// Reply to every pad verb. `pads` is the whole list for `pad_list` and the
+/// one pad acted on otherwise; `content` is only set by `pad_read`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct PadData {
+    pub task_id: String,
+    pub pads: Vec<PadInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    /// `content` was clipped to fit the reply line.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -1647,6 +1724,23 @@ mod tests {
                 name: "retitled".into(),
                 cwd: Some("/tasks/web/x".into()),
             },
+            Command::PadList { task: None, project: None, cwd: Some("/tasks/web/x".into()) },
+            Command::PadNew {
+                task: Some("fix-auth".into()),
+                project: Some("web".into()),
+                title: Some("findings".into()),
+                content: Some("# notes\n".into()),
+                cwd: None,
+            },
+            Command::PadWrite {
+                task: None,
+                project: None,
+                pad: "findings".into(),
+                content: "more\n".into(),
+                append: true,
+                cwd: None,
+            },
+            Command::PadRead { task: Some("t1".into()), project: None, pad: "p1".into(), cwd: None },
             Command::ProjectAdd { path: "/repo/web".into(), non_git: false },
             Command::ProjectAdd { path: "/notes/plain".into(), non_git: true },
             Command::ProjectList,
@@ -1921,6 +2015,12 @@ mod tests {
                     tasks: 3,
                     default_agent: "claude".into(),
                 }],
+            }),
+            ReplyData::Pad(PadData {
+                task_id: "w1".into(),
+                pads: vec![PadInfo { id: "p1".into(), title: "findings".into(), syntax: None, open: true }],
+                content: Some("text".into()),
+                truncated: true,
             }),
             ReplyData::ProjectAdd(ProjectAddData { project: ProjectInfo::default() }),
             ReplyData::ProjectRemove(ProjectRemoveData { name: "web".into(), removed_tasks: 2 }),

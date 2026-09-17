@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { dirnamePosix, resolveTaskHref, headingSlug } from "./markdownPaths";
+import { dirnamePosix, resolveExternalHref, resolveTaskHref, headingSlug } from "./markdownPaths";
 
 describe("dirnamePosix", () => {
   it("returns the directory part", () => {
@@ -106,5 +106,33 @@ describe("headingSlug", () => {
   it("keeps Unicode letters instead of stripping them", () => {
     expect(headingSlug("Café Menu")).toBe("café-menu");
     expect(headingSlug("日本語 Heading")).toBe("日本語-heading");
+  });
+});
+
+describe("resolveExternalHref", () => {
+  const file = "/Users/alice/notes/plans/q3.md";
+
+  it("resolves relative links against the file's own directory", () => {
+    expect(resolveExternalHref(file, "retro.md")).toBe("/Users/alice/notes/plans/retro.md");
+    expect(resolveExternalHref(file, "./sub/a.md#top")).toBe("/Users/alice/notes/plans/sub/a.md");
+    expect(resolveExternalHref(file, "../README.md?x=1")).toBe("/Users/alice/notes/README.md");
+  });
+
+  it("treats a leading slash as filesystem-absolute", () => {
+    expect(resolveExternalHref(file, "/etc/hosts")).toBe("/etc/hosts");
+  });
+
+  it("stops .. at the filesystem root instead of failing", () => {
+    expect(resolveExternalHref("/a/b.md", "../../../c.md")).toBe("/c.md");
+  });
+
+  it("decodes percent-encoding", () => {
+    expect(resolveExternalHref(file, "my%20notes.md")).toBe("/Users/alice/notes/plans/my notes.md");
+  });
+
+  it("returns null for URLs and bare fragments", () => {
+    expect(resolveExternalHref(file, "https://example.com")).toBeNull();
+    expect(resolveExternalHref(file, "//example.com/a")).toBeNull();
+    expect(resolveExternalHref(file, "#usage")).toBeNull();
   });
 });

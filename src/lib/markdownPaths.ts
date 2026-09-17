@@ -66,6 +66,32 @@ export function resolveTaskHref(baseDir: string, href: string, memberDirs: reado
   return parts.length ? parts.join("/") : null;
 }
 
+/** Resolve a markdown href against a file OUTSIDE every task root (an
+ *  external tab, opened from an absolute path). Returns a normalized ABSOLUTE
+ *  path, or null for a URL scheme, a protocol-relative URL, or a bare
+ *  fragment. A leading `/` is a filesystem-absolute path here: there is no
+ *  repo root to be relative to. `..` stops at `/` rather than failing, like a
+ *  shell. Strips `?query` / `#fragment` and decodes percent-encoding. */
+export function resolveExternalHref(filePath: string, href: string): string | null {
+  if (/^[a-z][a-z0-9+.-]*:/i.test(href)) return null;
+  if (href.startsWith("//")) return null;
+  const stripped = href.split(/[?#]/, 1)[0];
+  if (!stripped) return null;
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(stripped);
+  } catch {
+    return null;
+  }
+  const parts: string[] = decoded.startsWith("/") ? [] : dirnamePosix(filePath).split("/");
+  for (const seg of decoded.split("/")) {
+    if (seg === "" || seg === ".") continue;
+    if (seg === "..") parts.pop();
+    else parts.push(seg);
+  }
+  return "/" + parts.filter(Boolean).join("/");
+}
+
 /** GitHub-style heading slug for `#anchor` matching: lowercase, collapse
  *  whitespace runs to a single dash, then drop everything but Unicode
  *  letters/numbers/dash/underscore.

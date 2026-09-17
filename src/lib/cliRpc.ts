@@ -56,6 +56,7 @@ import {
   type NewTaskMode,
 } from "@/lib/quickTask";
 import { slugify } from "@/lib/utils";
+import { padHandler } from "@/lib/scratchCli";
 import type { SandboxMode, Task, TerminalTab } from "@/lib/types";
 
 interface RpcRequest {
@@ -1118,6 +1119,7 @@ const handlers: Record<string, Handler> = {
   send_prompt: sendPromptHandler,
   archive_task: archiveTaskHandler,
   rename_task: renameTaskHandler,
+  pad: padHandler,
   project_add: projectAddHandler,
   project_remove: projectRemoveHandler,
 };

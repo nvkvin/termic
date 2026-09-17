@@ -78,9 +78,9 @@ export function buildAgentBriefing(opts: {
 
   return `You can talk to another coding agent working alongside you: the Termic task "${task.name}" (project ${project}, ${agent}), id ${task.id}, working in ${task.path}. Prompt it, and it prompts you back when it is done:
 
-  ${cli} send ${task.id} -p "<your prompt here: what you want it to do>. When done: ${cli} send $TERMIC_TASK_ID -p 'done: <what you did>'"
+  ${cli} send ${task.id} -p "[Agent message from <you>, task $TERMIC_TASK_ID] <your prompt here: what you want it to do>. When done: ${cli} send $TERMIC_TASK_ID -p '[Agent message from ${agent}, task ${task.id}] done: <what you did> -- ${agent}' -- <you>, task $TERMIC_TASK_ID"
 
-Keep the outer double quotes and leave $TERMIC_TASK_ID as written: your shell fills in your own address, which is how it knows where to reply.${caged}`;
+Keep the outer double quotes and leave $TERMIC_TASK_ID as written: your shell fills in your own address, which is how it knows where to reply. Replace <you> with your agent name: the header and signature tell the other agent the prompt came from you, not from the user.${caged}`;
 }
 
 /** Copy the briefing for `task` to the clipboard, resolving the CLI command

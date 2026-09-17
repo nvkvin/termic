@@ -32,6 +32,7 @@ import { attachHiddenScrollRestore } from "@/lib/hiddenScrollRestore";
 import { reviewCommentsExtension, dispatchSelectionComment } from "./reviewCommentsExt";
 import { inlineBlameExtension, invalidateBlame, refreshBlame, markBlameStale } from "./inlineBlameExt";
 import { bindingMatches } from "@/lib/shortcuts";
+import { registerLivePad } from "@/lib/scratchLive";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { usePrefs, resolveTheme } from "@/store/prefs";
@@ -187,6 +188,9 @@ export function EditorPane({ task, tab, active, onContent }: {
   // extension is not constructed at all, so nothing is fetched, no state
   // field exists, and the editor is byte-for-byte what it was before.
   const blameCompRef = useRef(new Compartment());
+  // Soft wrap (prefs.editorWordWrap), reconfigured in place like blame.
+  const wrapCompRef = useRef(new Compartment());
+  const wrapOnRef = useRef<boolean | null>(null);
   // Which value the compartment currently holds, so the toggle effect can skip
   // the run React fires on mount (the view was just built with this value, and
   // reconfiguring would tear the plugins down and rebuild them for nothing).
@@ -203,6 +207,8 @@ export function EditorPane({ task, tab, active, onContent }: {
   const lastFlushedRef = useRef<string | null>(null);
   const lastTitleRef = useRef<string | null>(null);
   const flushTimerRef = useRef<number | null>(null);
+  // Unregisters this pad from lib/scratchLive (the CLI's way into the buffer).
+  const unregisterPadRef = useRef<(() => void) | null>(null);
   const flushScratchRef = useRef<(() => void) | null>(null);
 
   // Per-task "files changed" tick. Bumped when an agent terminal
@@ -249,6 +255,7 @@ export function EditorPane({ task, tab, active, onContent }: {
   const editorFontSize = usePrefs(s => s.editorFontSize);
   const codeLigatures  = usePrefs(s => s.codeLigatures);
   const inlineBlame    = usePrefs(s => s.inlineBlame);
+  const editorWordWrap = usePrefs(s => s.editorWordWrap);
   // Syntax theme (atomone, tokyo-night, …), independently configurable per
   // app mode (#40): a dark-optimized theme can look wrong on a light app
   // surface, and vice versa. "auto" within each still follows the app
@@ -526,6 +533,7 @@ export function EditorPane({ task, tab, active, onContent }: {
                 }
               }),
               blameCompRef.current.of(buildBlame(blameOnRef.current ?? false)),
+              wrapCompRef.current.of((wrapOnRef.current = usePrefs.getState().editorWordWrap) ? EditorView.lineWrapping : []),
               langCompRef.current.of(lang ? [lang] : []),
               // ⌘-click always answers, even with no server running: it
               // offers to turn code intelligence on for a language something
@@ -542,6 +550,26 @@ export function EditorPane({ task, tab, active, onContent }: {
         });
         viewRef.current = view;
         elog("view created");
+        if (tab.type === "scratch") {
+          // An agent's `termic pad write` lands IN this buffer: the human sees
+          // it at once, Cmd+Z takes it back, and the immediate flush makes the
+          // file agree with the window.
+          unregisterPadRef.current = registerLivePad(task.id, tab.scratchId, {
+            text: () => view.state.doc.toString(),
+            write: (text, append) => {
+              const len = view.state.doc.length;
+              view.dispatch({
+                changes: append ? { from: len, insert: text } : { from: 0, to: len, insert: text },
+                userEvent: "input.termic",
+              });
+              if (flushTimerRef.current !== null) {
+                window.clearTimeout(flushTimerRef.current);
+                flushTimerRef.current = null;
+              }
+              flushScratch(view);
+            },
+          });
+        }
         // The first frame that actually carries a highlight token. If this is
         // hundreds of ms after "view created", the grammar is in place and
         // CodeMirror is still parsing; if the gap is zero, the flash someone
@@ -626,6 +654,8 @@ export function EditorPane({ task, tab, active, onContent }: {
       }
       flushScratchRef.current?.();
       flushScratchRef.current = null;
+      unregisterPadRef.current?.();
+      unregisterPadRef.current = null;
       detachScrollRestore?.();
       viewRef.current?.destroy();
       viewRef.current = null;
@@ -769,6 +799,16 @@ export function EditorPane({ task, tab, active, onContent }: {
     blameOnRef.current = inlineBlame;
     v.dispatch({ effects: blameCompRef.current.reconfigure(buildBlame(inlineBlame)) });
   }, [inlineBlame, buildBlame]);
+
+  // Same in-place reconfigure for word wrap: toggling it from the palette
+  // keeps the cursor, undo history and scroll position. The ref records what
+  // the view was built with, so a mount never dispatches a no-op transaction.
+  useEffect(() => {
+    const v = viewRef.current;
+    if (!v || wrapOnRef.current === editorWordWrap) return;
+    wrapOnRef.current = editorWordWrap;
+    v.dispatch({ effects: wrapCompRef.current.reconfigure(editorWordWrap ? EditorView.lineWrapping : []) });
+  }, [editorWordWrap]);
 
   // What this buffer is highlighted as, and the one place a language is
   // decided (a manual Set-syntax pick beats the derived answer). Declared

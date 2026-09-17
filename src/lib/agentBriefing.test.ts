@@ -89,7 +89,7 @@ describe("buildAgentBriefing", () => {
 
   it("names what goes in the prompt slot instead of an abstract placeholder", () => {
     expect(block).toContain("<your prompt here: what you want it to do>");
-    expect(block).toContain("'done: <what you did>'");
+    expect(block).toContain("done: <what you did> -- ");
   });
 
   it("puts the reply address in DOUBLE quotes so the sender's shell expands it", () => {
@@ -102,7 +102,16 @@ describe("buildAgentBriefing", () => {
     expect(arg.endsWith('"')).toBe(true);
     expect(arg).toContain("$TERMIC_TASK_ID");
     // ...and the inner -p is single-quoted, so it nests without escaping.
-    expect(arg).toContain("-p 'done:");
+    expect(arg).toContain("-p '[Agent message from");
+  });
+
+  it("signs both directions so neither agent mistakes a peer for the user", () => {
+    // Outbound: the sender's header and signature, its id filled by its shell.
+    const cmd = block.split("\n")[2];
+    expect(cmd).toContain('-p "[Agent message from <you>, task $TERMIC_TASK_ID]');
+    expect(cmd).toMatch(/-- <you>, task \$TERMIC_TASK_ID"$/);
+    // The reply: the receiving task signs as itself, with its real id.
+    expect(cmd).toContain("-p '[Agent message from codex, task task-abc123] done: <what you did> -- codex'");
   });
 
   it("never suggests --wait", () => {

@@ -558,13 +558,16 @@ export function TaskView({ task }: { task: Task }) {
                   )}
                   {t.type === "external" && (
                     <Suspense fallback={null}>
-                      {/* Source view only, never the markdown / SVG / binary
-                          preview shells (GH #240). Every one of them resolves
-                          sibling assets and links against the TASK root, which
-                          an out-of-task file has no relationship to, so they
-                          would render broken images and links that go nowhere.
-                          Read-only source is the honest thing to show. */}
-                      <EditorPane task={task} tab={t} active={tabActive} />
+                      {/* Markdown gets the preview shell; everything else is
+                          read-only source (GH #240). The SVG / binary shells
+                          stay off: they read their bytes through the task-
+                          contained IPC, which an out-of-task file cannot pass.
+                          The markdown preview resolves its links against the
+                          FILE's directory instead of the task root, and does
+                          not load relative images (see MarkdownCtx.external). */}
+                      {isMarkdownPath(t.path)
+                        ? <MarkdownPane task={task} tab={t} visible={visible} ownsFind={ownsFind} />
+                        : <EditorPane task={task} tab={t} active={tabActive} />}
                     </Suspense>
                   )}
                   {t.type === "diff"     && <Suspense fallback={null}><DiffPane task={task} tab={t} /></Suspense>}

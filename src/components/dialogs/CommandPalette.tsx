@@ -13,7 +13,7 @@ import {
   FolderCog, RefreshCw, ScrollText, Bug, SlidersHorizontal, Bot, BookText,
   Check, ChevronLeft, ListTodo, Bell, SquareTerminal, FolderPlus, History, Square,
   Play, Swords, Megaphone, Columns2, Rows2, Clock, UserPen, GitPullRequest, Activity, Code2,
-  NotepadText, Waypoints, CircleDot, UsersRound, Target, Moon, type LucideIcon } from "lucide-react";
+  NotepadText, Waypoints, CircleDot, UsersRound, Target, Moon, WrapText, type LucideIcon } from "lucide-react";
 import { useUI } from "@/store/ui";
 import { useProfiles } from "@/store/profiles";
 import { copyToClipboard } from "@/lib/clipboard";
@@ -101,6 +101,7 @@ export function CommandPalette() {
   const customThemes = usePrefs(s => s.customThemes);
   const binds = usePrefs(s => s.shortcuts);
   const inlineBlame = usePrefs(s => s.inlineBlame);
+  const editorWordWrap = usePrefs(s => s.editorWordWrap);
   const useBranchAsTaskName = usePrefs(s => s.useBranchAsTaskName);
 
   // Built-ins first, then the custom theme files — the submenu's order.
@@ -480,6 +481,12 @@ export function CommandPalette() {
       run: act(() => usePrefs.getState().toggleInlineBlame()),
     });
     cmds.push({
+      id: "toggle-word-wrap", section: "View", label: "Toggle word wrap",
+      suffix: editorWordWrap ? "On" : "Off", icon: WrapText,
+      keywords: "editor soft wrap long lines wordwrap horizontal scroll",
+      run: act(() => usePrefs.getState().toggleEditorWordWrap()),
+    });
+    cmds.push({
       id: "change-theme", section: "View", label: "Change theme…",
       suffix: themeLabel(themeMode), icon: Palette, keywords: "appearance color dark light",
       run: () => {
@@ -576,7 +583,7 @@ export function CommandPalette() {
     }
 
     return cmds;
-  }, [view, task, proj, themeMode, themeEntries, inlineBlame, useBranchAsTaskName, activeEditTab]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [view, task, proj, themeMode, themeEntries, inlineBlame, editorWordWrap, useBranchAsTaskName, activeEditTab]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Recents, re-read on every open so an hour spent with the palette closed
   // expires them (the list is only ever consulted at build time). Empty query

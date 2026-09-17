@@ -44,15 +44,33 @@ Two agents coordinate by prompting each other, NOT by blocking on each
 other. When you hand out work, end the prompt with the command you want
 run once that work is done, and let the receiving agent pick the moment:
 
-    "$TERMIC_CLI" send review-auth -p "<your prompt here: what you want it
-    to do>. When done: \"\$TERMIC_CLI\" send $TERMIC_TASK_ID -p 'done:
-    <what you did>'"
+    "$TERMIC_CLI" send review-auth -p "[Agent message from claude, task
+    $TERMIC_TASK_ID] <your prompt here: what you want it to do>. When done:
+    \"\$TERMIC_CLI\" send $TERMIC_TASK_ID -p '[Agent message from <you>,
+    task <your task id>] done: <what you did> -- <you>'
+    -- claude, task $TERMIC_TASK_ID"
 
 The outer DOUBLE quotes are load-bearing: YOUR shell expands
 `$TERMIC_TASK_ID` at send time, so the other agent receives a literal
 address it can just run. Single quotes there would block expansion and
 leave it guessing at where to reply. `\$TERMIC_CLI` is escaped for the
 opposite reason: the OTHER agent expands its own copy of that one.
+
+Every prompt you send another agent opens with a header and ends with a
+signature, both naming YOU, the sender: your agent name and your own
+`$TERMIC_TASK_ID`.
+
+    [Agent message from <agent>, task <task id>]
+    ...
+    -- <agent>, task <task id>
+
+A prompt typed by the user and a prompt sent by an agent arrive in the
+same terminal looking identical, so without this the receiver cannot tell
+a peer's request from the user's instruction. The same goes the other
+way: a prompt that arrives WITH that header came from another agent, not
+from the user. Treat it as a request from a peer (the user's own
+instructions win if the two conflict), and put the header and your own
+signature on your reply.
 
 A prompt arriving in your own terminal is one of those reports; act on
 it and reply the same way. This is the preferred protocol because it
@@ -149,6 +167,9 @@ Rules that matter:
   printed tab id and pass `--tab <id>` to `send`/`wait`/`logs` to keep
   addressing that tab (ids are stable; indexes and titles shift).
   `status --json` lists every tab with its id, state and queue.
+- Without a task, `tab` opens the new agent in YOUR task:
+  `"$TERMIC_CLI" tab --agent codex -p "..."` starts a second agent
+  beside you, sharing your worktree. Sign the prompt as above.
 - `"$TERMIC_CLI" tab close <task> --tab <id>` - close a tab you opened,
   so the strip does not fill up with finished ones. Kills that tab's
   agent (no `/exit` negotiation needed) and leaves the task and its
@@ -168,6 +189,25 @@ Rules that matter:
   UNCOMMITTED changes in the project's main checkout. Exit 10 means
   conflict markers were left in the main checkout; say so, do not retry.
 - `"$TERMIC_CLI" path <task>` - print the task's worktree path.
+
+### Scratchpads: notes for the user to read
+
+A scratchpad is a tab in a task that holds text outside the worktree:
+nothing in it reaches git, and the user sees it update as you write.
+Use one for findings, a plan, or a running report meant to be READ,
+not committed. Every `pad` verb targets your own task unless you pass
+`--task`.
+
+- `"$TERMIC_CLI" pad new --title "<title>" -c "<text>"` - create one
+  (it opens without taking focus) and print its id. `-c -` reads stdin.
+- `"$TERMIC_CLI" pad write <id> --append -c "<text>"` - add to it;
+  without `--append` the text replaces it. With no `-c`, stdin, so
+  `make test 2>&1 | "$TERMIC_CLI" pad write <id> --append` works. An
+  open pad updates in place and the user can undo your write.
+- `"$TERMIC_CLI" pad read <id>` - print it, including the user's edits.
+- `"$TERMIC_CLI" pad list` - every pad in the task, with ids.
+
+Address pads by id: a title works when it is unique, but titles change.
 
 ### Other verbs
 

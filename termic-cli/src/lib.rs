@@ -397,8 +397,19 @@ a finished job) and you can do nothing else while it blocks. Instead end \
 every prompt you send with the command you want run when that work is done, \
 and let the receiving agent choose the moment:
 
-  termic send <task> -p \"<your prompt here: what you want it to do>. When \
-done: termic send $TERMIC_TASK_ID -p 'done: <what you did>'\"
+  termic send <task> -p \"[Agent message from claude, task $TERMIC_TASK_ID] \
+<your prompt here: what you want it to do>. When done: termic send \
+$TERMIC_TASK_ID -p '[Agent message from <you>, task <your task id>] done: \
+<what you did> -- <you>' -- claude, task $TERMIC_TASK_ID\"
+
+EVERY PROMPT ONE AGENT SENDS ANOTHER opens with the header \
+`[Agent message from <agent>, task <task id>]` and ends with the signature \
+`-- <agent>, task <task id>`, naming the SENDER (you): your agent name and \
+your own $TERMIC_TASK_ID. The receiver cannot otherwise tell a peer's prompt \
+from the user typing. A prompt that arrives WITH that header came from \
+another agent, not from the user: treat it as a request from a peer (the \
+user's own instructions win if the two conflict), and put the same header \
+and your own signature on your reply.
 
 The outer DOUBLE quotes are load-bearing: YOUR shell expands \
 $TERMIC_TASK_ID at send time, so the other agent is handed a literal \
@@ -713,6 +724,11 @@ Settings, or not installed, listing the ids that would work. The GUI just \
 hides those; a CLI caller has no menu to look at. With no kind flag you get \
 another tab of whatever the task already runs.
 
+Without <TASK>, opens the tab in your own task ($TERMIC_TASK_ID, injected into \
+every agent shell), then falls back to the current directory. So from inside \
+a task, `termic tab --agent codex -p \"review my diff\"` starts a second agent \
+beside you.
+
 The new tab is NOT focused: a shell command should not yank the window you \
 are working in.
 
@@ -755,7 +771,8 @@ never delivered."
         /// Close a tab instead of opening one.
         #[command(subcommand)]
         close: Option<TabCmd>,
-        /// Task name, task id, or qualified project/name.
+        /// Task name, task id, or qualified project/name. Omitted:
+        /// $TERMIC_TASK_ID, then the current directory.
         task: Option<String>,
         /// Project name, to disambiguate.
         #[arg(long, requires = "task")]
@@ -890,6 +907,10 @@ TTY without --yes), 4 app not running, 5 CLI disabled, 6 refused, \
     #[command(subcommand)]
     Project(ProjectCmd),
 
+    /// Scratchpads in a task: notes an agent writes for the human to read.
+    #[command(subcommand)]
+    Pad(PadCmd),
+
     /// Print help; `--json` prints the whole surface machine-readably.
     #[command(
         after_help = "With --json, one object on stdout: {app, version, protocol, exit_codes, \
@@ -986,6 +1007,112 @@ the selector, the default tab without --yes), 4 app not running, \
         /// Permit closing the task's DEFAULT tab.
         #[arg(short, long)]
         yes: bool,
+    },
+}
+
+/// Which task a pad verb acts on. Shared by every `pad` subcommand.
+#[derive(clap::Args, Debug, Clone, Default)]
+pub struct PadTarget {
+    /// Task name, task id, or qualified project/name. Omitted: your own
+    /// task ($TERMIC_TASK_ID), then the current directory.
+    #[arg(long)]
+    pub task: Option<String>,
+    /// Project name, to disambiguate. Requires --task.
+    #[arg(long, requires = "task")]
+    pub project: Option<String>,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum PadCmd {
+    /// List the task's scratchpads.
+    #[command(
+        after_help = "Prints one row per pad: id, title, and whether it is open in the window. \
+With --output-format json, one object: {\"task_id\", \"pads\": [{\"id\", \"title\", \
+\"syntax\", \"open\"}]}.
+
+Exit codes: 0 listed, 1 error (unknown or ambiguous task), 4 app not running, \
+5 CLI disabled, 6 refused, 8 connection lost."
+    )]
+    List {
+        #[command(flatten)]
+        target: PadTarget,
+    },
+    /// Create a scratchpad, optionally titled and seeded with text.
+    #[command(
+        after_help = "A scratchpad is a note that lives with the task but outside the worktree: \
+nothing you put there shows up in git, and the human sees it as a tab. Use \
+one for findings, a plan, or a report meant to be READ rather than \
+committed. The pad opens as a tab without taking focus.
+
+Prints the new pad's id on stdout. That id is the stable selector: titles \
+are editable, and an untitled pad is named after its first line.
+
+-c/--content seeds the text; `-c -` reads stdin. --title names the pad and \
+keeps that name however the text changes.
+
+With --output-format json, one object: {\"task_id\", \"pads\": [{\"id\", \
+\"title\", \"syntax\", \"open\"}]}.
+
+Exit codes: 0 created, 1 error (unknown task, content too large), 4 app not \
+running, 5 CLI disabled, 6 refused, 8 connection lost."
+    )]
+    New {
+        #[command(flatten)]
+        target: PadTarget,
+        /// A fixed title for the tab.
+        #[arg(long)]
+        title: Option<String>,
+        /// Initial text. `-` reads stdin.
+        #[arg(short, long)]
+        content: Option<String>,
+    },
+    /// Replace a scratchpad's text, or append to it.
+    #[command(
+        after_help = "<PAD> is the pad's id (from `pad new` or `pad list`) or its exact title, \
+case-insensitive. A title shared by two pads is an error listing their ids.
+
+The text comes from -c/--content, or from stdin when -c is omitted or `-`, \
+so `make test 2>&1 | termic pad write results --append` works. If the pad is \
+open in the window, it updates in place and the human sees the change \
+immediately; the write is undoable there with Cmd+Z.
+
+With --output-format json, one object: {\"task_id\", \"pads\": [the pad]}.
+
+Exit codes: 0 written, 1 error (unknown or ambiguous pad or task, content \
+too large), 4 app not running, 5 CLI disabled, 6 refused, 8 connection lost."
+    )]
+    Write {
+        /// Pad id or exact title.
+        pad: String,
+        #[command(flatten)]
+        target: PadTarget,
+        /// The text. `-` (or omitting it) reads stdin.
+        #[arg(short, long)]
+        content: Option<String>,
+        /// Add to the end instead of replacing.
+        #[arg(long)]
+        append: bool,
+    },
+    /// Print a scratchpad's text on stdout (pipe-friendly).
+    #[command(
+        after_help = "<PAD> is the pad's id or its exact title, case-insensitive. Reads what \
+the window shows, including edits the human has not paused on yet. Prints \
+the text and nothing else, so it pipes.
+
+A pad too large for the reply line arrives trimmed: a warning goes to stderr \
+and the json carries \"truncated\": true.
+
+With --output-format json, one object: {\"task_id\", \"pads\": [the pad], \
+\"content\", \"truncated\" (only when trimmed)}.
+
+Exit codes: 0 printed, 1 error (unknown or ambiguous pad or task), 4 app not \
+running, 5 CLI disabled, 6 refused, 8 connection lost."
+    )]
+    Read {
+        /// Pad id or exact title.
+        pad: String,
+        #[command(flatten)]
+        target: PadTarget,
     },
 }
 
@@ -1185,6 +1312,15 @@ outside.",
         Cmd::New { prompt: Some(p), .. }
         | Cmd::Send { prompt: Some(p), .. }
         | Cmd::Tab { prompt: Some(p), .. } => Some(resolve_prompt(p, has_library)?),
+        _ => None,
+    };
+    // Pad text, from stdin before the socket for the same reason. `pad write`
+    // with no -c reads stdin; an explicit literal is taken as given.
+    let pad_content = match &cli.cmd {
+        Cmd::Pad(PadCmd::New { content: Some(c), .. }) => Some(resolve_pad_content(c)?),
+        Cmd::Pad(PadCmd::Write { content, .. }) => {
+            Some(resolve_pad_content(content.as_deref().unwrap_or("-"))?)
+        }
         _ => None,
     };
 
@@ -1405,7 +1541,12 @@ outside.",
             // usage typo never auto-launches the app.)
             let timeout_ms = timeout.as_deref().map(parse_duration_ms).transpose()?;
             let wire = proto::Command::Tab {
-                task: task.clone(),
+                // Without <TASK>, the caller's own task, like `rename`: an
+                // agent opening a helper beside itself should not have to
+                // spell its own id, and cwd alone breaks after a `cd`.
+                task: task.clone().or_else(|| {
+                    std::env::var("TERMIC_TASK_ID").ok().filter(|s| !s.is_empty())
+                }),
                 project: project.clone(),
                 kind,
                 prompt: prompt.clone(),
@@ -1465,6 +1606,7 @@ outside.",
             render(&cli.cmd, format, data).map(Output::ok)
         }
         Cmd::Project(p) => execute_project(&mut conn, &token, format, p, &paths),
+        Cmd::Pad(p) => execute_pad(&mut conn, &token, format, p, pad_content),
         // The Phase 0 read verbs: one request, one reply.
         Cmd::List { .. } | Cmd::Status { .. } | Cmd::Open { .. } => {
             let cwd = std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned());
@@ -1900,6 +2042,94 @@ fn execute_quit(
         return Err(CliError::new(exit_code::ERROR, "unexpected reply to quit"));
     };
     Ok(Output::ok(final_stdout(format, &output::quit_text(&q), &q)))
+}
+
+/// Pad text from a literal or `-` (stdin), bounded like a prompt. Empty is
+/// allowed: clearing a pad is a legitimate write.
+fn resolve_pad_content(c: &str) -> Result<String, CliError> {
+    if c != "-" {
+        prompt_size_ok(c)?;
+        return Ok(c.to_string());
+    }
+    let mut buf: Vec<u8> = Vec::new();
+    std::io::stdin()
+        .lock()
+        .take(PROMPT_MAX_BYTES as u64 + 1)
+        .read_to_end(&mut buf)
+        .map_err(|e| CliError::new(exit_code::ERROR, format!("could not read the pad text from stdin ({e})")))?;
+    if buf.len() > PROMPT_MAX_BYTES {
+        return Err(CliError::new(
+            exit_code::ERROR,
+            format!("the pad text is too large (limit {} KB)", PROMPT_MAX_BYTES / 1024),
+        ));
+    }
+    let text = String::from_utf8(buf)
+        .map_err(|_| CliError::new(exit_code::ERROR, "the pad text on stdin is not UTF-8"))?;
+    prompt_size_ok(&text)?;
+    Ok(text)
+}
+
+/// The task a pad verb targets: explicit, else the caller's own task.
+fn pad_task(t: &PadTarget) -> Option<String> {
+    t.task.clone().or_else(|| std::env::var("TERMIC_TASK_ID").ok().filter(|s| !s.is_empty()))
+}
+
+fn execute_pad(
+    conn: &mut client::Conn,
+    token: &str,
+    format: OutputFormat,
+    cmd: &PadCmd,
+    content: Option<String>,
+) -> Result<Output, CliError> {
+    let cwd = std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned());
+    let wire = match cmd {
+        PadCmd::List { target } => proto::Command::PadList {
+            task: pad_task(target),
+            project: target.project.clone(),
+            cwd,
+        },
+        PadCmd::New { target, title, .. } => proto::Command::PadNew {
+            task: pad_task(target),
+            project: target.project.clone(),
+            title: title.clone(),
+            content,
+            cwd,
+        },
+        PadCmd::Write { pad, target, append, .. } => proto::Command::PadWrite {
+            task: pad_task(target),
+            project: target.project.clone(),
+            pad: pad.clone(),
+            content: content.unwrap_or_default(),
+            append: *append,
+            cwd,
+        },
+        PadCmd::Read { pad, target } => proto::Command::PadRead {
+            task: pad_task(target),
+            project: target.project.clone(),
+            pad: pad.clone(),
+            cwd,
+        },
+    };
+    let data = client::request(conn, wire, token)?;
+    let proto::ReplyData::Pad(d) = data else {
+        return Err(CliError::new(exit_code::ERROR, "unexpected reply to pad"));
+    };
+    let text = match cmd {
+        PadCmd::List { .. } => output::pad_list_text(&d.pads),
+        PadCmd::New { .. } => d.pads.first().map(|p| p.id.clone()).unwrap_or_default(),
+        PadCmd::Write { .. } => d
+            .pads
+            .first()
+            .map(|p| format!("wrote pad {}", p.id))
+            .unwrap_or_default(),
+        PadCmd::Read { .. } => {
+            if d.truncated && format == OutputFormat::Text {
+                eprintln!("termic: the pad was truncated to fit the reply; read the rest in Termic");
+            }
+            d.content.clone().unwrap_or_default()
+        }
+    };
+    Ok(Output::ok(final_stdout(format, &text, &d)))
 }
 
 fn execute_project(
@@ -2718,6 +2948,43 @@ mod tests {
     }
 
     #[test]
+    fn pad_parse_rules() {
+        let new = Cli::try_parse_from(["termic", "pad", "new", "--title", "findings", "-c", "# notes"]).unwrap();
+        let Cmd::Pad(PadCmd::New { target, title, content }) = &new.cmd else { panic!("not pad new") };
+        assert_eq!(target.task, None);
+        assert_eq!(title.as_deref(), Some("findings"));
+        assert_eq!(content.as_deref(), Some("# notes"));
+
+        // No -c on write means stdin, resolved before the socket.
+        let w = Cli::try_parse_from(["termic", "pad", "write", "findings", "--append", "--task", "t1"]).unwrap();
+        let Cmd::Pad(PadCmd::Write { pad, target, content, append }) = &w.cmd else { panic!("not pad write") };
+        assert_eq!(pad, "findings");
+        assert_eq!(target.task.as_deref(), Some("t1"));
+        assert_eq!(content, &None);
+        assert!(*append);
+
+        let r = Cli::try_parse_from(["termic", "pad", "read", "p1"]).unwrap();
+        assert!(matches!(&r.cmd, Cmd::Pad(PadCmd::Read { pad, .. }) if pad == "p1"));
+        assert!(Cli::try_parse_from(["termic", "pad", "list"]).is_ok());
+
+        // A pad selector is required for write/read; --project needs --task.
+        assert!(Cli::try_parse_from(["termic", "pad", "read"]).is_err());
+        assert!(Cli::try_parse_from(["termic", "pad", "list", "--project", "web"]).is_err());
+        // `pad` alone is not a verb.
+        assert!(Cli::try_parse_from(["termic", "pad"]).is_err());
+    }
+
+    #[test]
+    fn pad_list_text_marks_closed_pads() {
+        let pads = vec![
+            proto::PadInfo { id: "a".into(), title: "findings".into(), syntax: None, open: true },
+            proto::PadInfo { id: "b".into(), title: String::new(), syntax: None, open: false },
+        ];
+        assert_eq!(output::pad_list_text(&pads), "a  findings\nb  Untitled  (not open)");
+        assert_eq!(output::pad_list_text(&[]), "no scratchpads");
+    }
+
+    #[test]
     fn rename_positional_rules() {
         // One positional is the NAME (task falls back to $TERMIC_TASK_ID
         // then cwd); two are TASK + NAME. allow_missing_positional does
@@ -2829,6 +3096,7 @@ mod tests {
             "apply", "path", "wait", "archive", "tab", "agents", "quit", "project add",
             "project list",
             "project remove", "help", "prompts", "prompts show",
+            "pad list", "pad new", "pad write", "pad read",
         ] {
             assert!(names.contains(&expected), "missing {expected} in {names:?}");
         }

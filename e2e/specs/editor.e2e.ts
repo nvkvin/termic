@@ -1,5 +1,6 @@
 import { execSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { archiveTask, cliRpc, ensureActiveTask, openTask, requireTermicApi, snap, waitForAgentReady, waitForAppShell, waitVisible } from "../helpers";
 
@@ -123,6 +124,91 @@ describe("editor open", () => {
         ),
       { timeout: 8_000, timeoutMsg: "split view did not show both panes" },
     );
+  });
+
+  it("lets the rendered markdown be selected like a web page", async () => {
+    // The app chrome is user-select:none. The preview is a document, and
+    // selecting a paragraph of it to paste elsewhere is the point.
+    const selectable = await browser.execute(() => {
+      const h = [...document.querySelectorAll(".markdown-body h1")]
+        .find((el) => el.getBoundingClientRect().width > 0) as HTMLElement | undefined;
+      if (!h) return "no heading";
+      const cs = getComputedStyle(h);
+      return cs.webkitUserSelect || cs.userSelect;
+    });
+    expect(selectable).toBe("text");
+  });
+
+  it("copies a selection as clean rich text, links and all", async () => {
+    // What reaches the clipboard: the document's structure with none of the
+    // theme's inline colours (see lib/markdownCopy.ts).
+    const out = await browser.execute(() => {
+      const host = [...document.querySelectorAll(".markdown-body")]
+        .find((el) => el.getBoundingClientRect().width > 0) as HTMLElement | undefined;
+      if (!host) return null;
+      const probe = document.createElement("p");
+      probe.innerHTML = 'See <strong>the <a href="https://example.com/x">docs</a></strong>';
+      host.appendChild(probe);
+      const range = document.createRange();
+      range.selectNodeContents(probe);
+      const sel = window.getSelection()!;
+      sel.removeAllRanges();
+      sel.addRange(range);
+      const dt = new DataTransfer();
+      probe.dispatchEvent(new ClipboardEvent("copy", { clipboardData: dt, bubbles: true, cancelable: true }));
+      probe.remove();
+      sel.removeAllRanges();
+      return { html: dt.getData("text/html"), text: dt.getData("text/plain") };
+    });
+    expect(out).not.toBeNull();
+    expect(out!.html).toBe('See <strong>the <a href="https://example.com/x">docs</a></strong>');
+    expect(out!.text).toBe("See the docs");
+  });
+
+  it("sets the preview in GitHub's type: 16px, 1.5 leading, a 980px measure", async () => {
+    const m = await browser.execute(() => {
+      const host = [...document.querySelectorAll(".markdown-body")]
+        .find((el) => el.getBoundingClientRect().width > 0) as HTMLElement;
+      const cs = getComputedStyle(host);
+      return { size: cs.fontSize, lh: cs.lineHeight, max: cs.maxWidth };
+    });
+    expect(m).toEqual({ size: "16px", lh: "24px", max: "980px" });
+  });
+
+  it("previews a markdown file outside the task, and follows its relative links", async () => {
+    // ⌘-clicking an absolute path opens an EXTERNAL tab. A markdown one gets
+    // the same preview shell, with links resolved against its own directory.
+    const dir = mkdtempSync(path.join(tmpdir(), "termic-e2e-extmd-"));
+    const main = path.join(dir, "notes.md");
+    writeFileSync(main, "# External notes\n\nSee [the other one](other.md).\n");
+    writeFileSync(path.join(dir, "other.md"), "# Other notes\n");
+    await browser.execute((id, p) => {
+      window.__termic!.useApp.getState().openPreviewTab(id, { type: "external", path: p, title: "notes.md" });
+    }, taskId, main);
+    const tabOf = (p: string) => browser.execute((id, q) =>
+      (window.__termic!.useApp.getState().tabs[id] ?? []).find((t: any) => t.type === "external" && t.path === q)?.id ?? null,
+    taskId, p) as Promise<string | null>;
+    await browser.waitUntil(async () => !!(await tabOf(main)), { timeout: 8_000, timeoutMsg: "external tab never opened" });
+    await browser.execute((id, tabId) => {
+      window.__termic!.useApp.getState().patchTab(id, tabId, { mdView: "preview" });
+    }, taskId, (await tabOf(main))!);
+    const shownHeading = (text: string) => browser.execute((id, t) =>
+      [...document.querySelectorAll(`[data-task-id="${id}"] .markdown-body h1`)]
+        .some((h) => h.getBoundingClientRect().width > 0 && h.textContent?.includes(t)), taskId, text);
+    await browser.waitUntil(() => shownHeading("External notes"), {
+      timeout: 10_000, timeoutMsg: "the external markdown never rendered as a preview",
+    });
+    await snap("external-markdown-preview");
+
+    await browser.execute((id) => {
+      const a = [...document.querySelectorAll(`[data-task-id="${id}"] .markdown-body a`)]
+        .find((el) => el.getBoundingClientRect().width > 0 && el.textContent === "the other one") as HTMLElement;
+      a.click();
+    }, taskId);
+    await browser.waitUntil(async () => !!(await tabOf(path.join(dir, "other.md"))), {
+      timeout: 8_000, timeoutMsg: "a relative link in an external document did not open its sibling",
+    });
+    rmSync(dir, { recursive: true, force: true });
   });
 });
 
@@ -559,6 +645,39 @@ describe("code editor", () => {
       { timeout: 8_000, timeoutMsg: "the syntax palette stayed open after a pick" },
     );
     await snap("code-editor-set-syntax.png");
+  });
+
+  it("soft-wraps long lines when word wrap is on, in place, and back", async () => {
+    // A pref with no toolbar control: Settings and the palette flip it. The
+    // compartment is reconfigured in place, so the buffer is never rebuilt.
+    await openPlain("long-line.txt", `start ${"word ".repeat(400)}end\n`, "start");
+    const wrapped = () => browser.execute((id) => {
+      const c = [...document.querySelectorAll(`[data-task-id="${id}"] .cm-content`)]
+        .find((el) => el.getBoundingClientRect().width > 0);
+      return c?.classList.contains("cm-lineWrapping") ?? null;
+    }, taskId);
+    const setWrap = (v: boolean) => browser.execute((on) => window.__termic!.usePrefs.getState().setEditorWordWrap(on), v);
+    try {
+      await setWrap(false);
+      expect(await wrapped()).toBe(false);
+      await setWrap(true);
+      await browser.waitUntil(async () => (await wrapped()) === true, {
+        timeout: 5000, timeoutMsg: "word wrap never reached the open editor",
+      });
+      // Wrapped means no horizontal scroll left to do.
+      const overflow = await browser.execute((id) => {
+        const sc = [...document.querySelectorAll(`[data-task-id="${id}"] .cm-scroller`)]
+          .find((el) => el.getBoundingClientRect().width > 0) as HTMLElement;
+        return sc.scrollWidth - sc.clientWidth;
+      }, taskId);
+      expect(overflow).toBeLessThanOrEqual(1);
+      await setWrap(false);
+      await browser.waitUntil(async () => (await wrapped()) === false, {
+        timeout: 5000, timeoutMsg: "turning word wrap off did not unwrap the editor",
+      });
+    } finally {
+      await setWrap(false);
+    }
   });
 
   // Issue #161. The gutter is `position: sticky` (z-index 200) inside the

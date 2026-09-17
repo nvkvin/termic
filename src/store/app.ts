@@ -2617,8 +2617,8 @@ export const useApp = create<AppState>((set, get) => ({
     const revealPatch = {
       // `external` (GH #240) carries a reveal target too — a clicked
       // `path:line:col` outside the task jumps the same way an in-task one
-      // does. It has no heading fragment: markdown links are resolved
-      // against the task, never against an arbitrary absolute path.
+      // does. It has no heading fragment: a `file.md#heading` link inside an
+      // external preview opens its target without scrolling to the heading.
       revealAt: data.type === "edit" || data.type === "external" ? data.revealAt : undefined,
       revealHeading: data.type === "edit" ? data.revealHeading : undefined,
       remoteImagesUnblocked: undefined as boolean | undefined,

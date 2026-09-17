@@ -45,6 +45,7 @@ const LS_TERMINAL_SIZE = "terminalFontSize";
 const LS_EDITOR_SIZE   = "editorFontSize";
 const LS_LIGATURES     = "codeLigatures";
 const LS_INLINE_BLAME  = "inlineBlame";
+const LS_EDITOR_WORD_WRAP = "editorWordWrap";
 const LS_CODE_NAV      = "codeIntelligence";
 const LS_CODE_DIAGS    = "codeIntelDiagnostics";
 const LS_CODE_SERVERS  = "codeIntelServers";
@@ -645,6 +646,11 @@ interface PrefsState {
    *  Deliberately not a whole-file blame column either: see inlineBlameExt.ts
    *  for why every-line annotation is the expensive shape. */
   inlineBlame: boolean;
+  /** Soft-wrap long lines in the editor instead of scrolling sideways. Off by
+   *  default, like VS Code's `editor.wordWrap`. Display only: the file on disk
+   *  is untouched. No toolbar control, on purpose: Settings and the command
+   *  palette's "Toggle word wrap" are the two ways in. */
+  editorWordWrap: boolean;
   /** Whether the editor OFFERS code intelligence (GH #174). ON by default: the
    *  offer costs one IPC call per editor open and nothing else, while burying
    *  it behind a settings toggle meant nobody found the feature. It never
@@ -798,6 +804,8 @@ interface PrefsState {
   nudgeUiScale:       (dir: 1 | -1) => void;
   setCodeLigatures:   (v: boolean) => void;
   setInlineBlame:     (v: boolean) => void;
+  setEditorWordWrap:  (v: boolean) => void;
+  toggleEditorWordWrap: () => void;
   setCodeIntelligence:  (v: boolean) => void;
   setCodeIntelDiagnostics: (v: boolean) => void;
   /** Pick the server for a language, or `null` to go back to termic's order. */
@@ -912,6 +920,7 @@ export const APPEARANCE_DEFAULTS = {
   uiScale:               100,
   codeLigatures:         true,
   inlineBlame:           false,
+  editorWordWrap:        false,
   codeIntelligence:        true,
   codeIntelDiagnostics:    false,
   codeIntelServers:        {},
@@ -942,6 +951,7 @@ const initialEditorSize   = lsGetNum(LS_EDITOR_SIZE, APPEARANCE_DEFAULTS.editorF
 const initialUiScale      = clampUiScale(lsGetNum(LS_UI_SCALE, APPEARANCE_DEFAULTS.uiScale));
 const initialLigatures    = lsGetBool(LS_LIGATURES, APPEARANCE_DEFAULTS.codeLigatures);
 const initialInlineBlame  = lsGetBool(LS_INLINE_BLAME, APPEARANCE_DEFAULTS.inlineBlame);
+const initialWordWrap     = lsGetBool(LS_EDITOR_WORD_WRAP, APPEARANCE_DEFAULTS.editorWordWrap);
 const initialCodeNav      = lsGetBool(LS_CODE_NAV, APPEARANCE_DEFAULTS.codeIntelligence);
 const initialCodeDiags    = lsGetBool(LS_CODE_DIAGS, APPEARANCE_DEFAULTS.codeIntelDiagnostics);
 /** A corrupt blob falls back to "no preference", which is the default order:
@@ -1077,6 +1087,7 @@ export const usePrefs = create<PrefsState>(set => ({
   uiScale: initialUiScale,
   codeLigatures: initialLigatures,
   inlineBlame: initialInlineBlame,
+  editorWordWrap: initialWordWrap,
   codeIntelligence: initialCodeNav,
   codeIntelDiagnostics: initialCodeDiags,
   codeIntelServers: initialCodeServers,
@@ -1183,6 +1194,14 @@ export const usePrefs = create<PrefsState>(set => ({
     try { localStorage.setItem(LS_INLINE_BLAME, v ? "1" : "0"); } catch {}
     set({ inlineBlame: v });
   },
+  setEditorWordWrap: (v) => {
+    if (usePrefs.getState().editorWordWrap === v) return;
+    try { localStorage.setItem(LS_EDITOR_WORD_WRAP, v ? "1" : "0"); } catch {}
+    set({ editorWordWrap: v });
+  },
+  toggleEditorWordWrap: () => {
+    usePrefs.getState().setEditorWordWrap(!usePrefs.getState().editorWordWrap);
+  },
   setConfirmBeforeCodeIntel: (v) => {
     if (usePrefs.getState().confirmBeforeCodeIntel === v) return;
     try { localStorage.setItem(LS_CONFIRM_CODE_NAV, v ? "1" : "0"); } catch {}
@@ -1247,6 +1266,7 @@ export const usePrefs = create<PrefsState>(set => ({
     s.setUiScale(d.uiScale);
     s.setCodeLigatures(d.codeLigatures);
     s.setInlineBlame(d.inlineBlame);
+    s.setEditorWordWrap(d.editorWordWrap);
     s.setCodeIntelligence(d.codeIntelligence);
     s.setCodeIntelDiagnostics(d.codeIntelDiagnostics);
     s.setShowAllInstalledFonts(d.showAllInstalledFonts);

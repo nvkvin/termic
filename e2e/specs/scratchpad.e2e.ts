@@ -1,7 +1,7 @@
 import { rmSync } from "node:fs";
 import path from "node:path";
 import {
-  archiveTask, ensureActiveTask, openTask, requireTermicApi, snap, waitForAppShell, waitVisible,
+  archiveTask, cliRpc, ensureActiveTask, openTask, requireTermicApi, snap, waitForAppShell, waitVisible,
 } from "../helpers";
 
 /** The seeded repo every spec shares (scripts/e2e-seed.mjs). */
@@ -380,5 +380,84 @@ describe("scratchpads", () => {
       (id) => window.__termic!.ipc.scratchList(id), taskId,
     ) as any[];
     expect(listed.some(r => r.id === pad.scratchId)).toBe(false);
+  });
+});
+
+// `termic pad` over the real control socket: an agent writes notes the human
+// reads. The pad opens without taking focus, and a write to an OPEN pad lands
+// in its editor at once rather than behind it on disk.
+describe("scratchpads from the CLI", () => {
+  let taskId!: string;
+  after(async () => {
+    if (taskId) await archiveTask(taskId);
+  });
+
+  // The pad is the active tab when this is read, so the laid-out editor in
+  // this task is its editor.
+  const editorText = (_padTabId: string) => browser.execute((id) => {
+    const ed = [...document.querySelectorAll(`[data-task-id="${id}"] .cm-editor`)]
+      .find((el) => el.getBoundingClientRect().width > 0) as (HTMLElement & { __cmView?: any }) | undefined;
+    return ed?.__cmView?.state.doc.toString() ?? null;
+  }, taskId) as Promise<string | null>;
+
+  it("creates a titled pad without stealing focus, and lists it", async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    taskId = await openTask("e2e-scratchpad-cli");
+    const activeBefore = await browser.execute((id) => window.__termic!.useApp.getState().activeTab[id], taskId);
+
+    const r = await cliRpc({ cmd: "pad_new", task: taskId, title: "Findings", content: "# Findings\n" });
+    expect(r.ok).toBe(true);
+    expect(r.data.kind).toBe("pad");
+    const padId = r.data.pads[0].id as string;
+    expect(r.data.pads[0]).toMatchObject({ title: "Findings", open: true });
+
+    await browser.waitUntil(async () => (await pads(taskId)).some((p: any) => p.scratchId === padId), {
+      timeout: 10_000, timeoutMsg: "pad_new never opened a tab",
+    });
+    const activeAfter = await browser.execute((id) => window.__termic!.useApp.getState().activeTab[id], taskId);
+    expect(activeAfter).toBe(activeBefore);
+
+    const l = await cliRpc({ cmd: "pad_list", task: taskId });
+    expect(l.data.pads.map((p: any) => p.id)).toContain(padId);
+  });
+
+  it("writes into the OPEN pad live, and reads back the human's edits", async () => {
+    const [pad] = (await pads(taskId)).filter((p: any) => p.title === "Findings");
+    await browser.execute((id, tid) => window.__termic!.useApp.getState().setActiveTabId(id, tid), taskId, pad.id);
+    await browser.waitUntil(async () => (await editorText(pad.id)) === "# Findings\n", {
+      timeout: 10_000, timeoutMsg: "the pad's editor never loaded the seeded text",
+    });
+
+    const w = await cliRpc({ cmd: "pad_write", task: taskId, pad: "findings", content: "- first result\n", append: true });
+    expect(w.ok).toBe(true);
+    await browser.waitUntil(async () => (await editorText(pad.id)) === "# Findings\n- first result\n", {
+      timeout: 5_000, timeoutMsg: "an append to an open pad did not show in its editor",
+    });
+    await snap("scratchpad-cli-live-write.png");
+
+    // The human types; a read sees it before any flush could have run.
+    await browser.execute((id, t) => {
+      const ed = [...document.querySelectorAll(`[data-task-id="${id}"] .cm-editor`)]
+        .find((el) => el.getBoundingClientRect().width > 0) as (HTMLElement & { __cmView?: any });
+      const view = ed.__cmView;
+      view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: t } });
+    }, taskId, "# Findings\n- first result\n- my note\n");
+    const rd = await cliRpc({ cmd: "pad_read", task: taskId, pad: pad.scratchId });
+    expect(rd.data.content).toBe("# Findings\n- first result\n- my note\n");
+
+    // A replace is on disk too, for whoever reads the closed pad later.
+    await cliRpc({ cmd: "pad_write", task: taskId, pad: pad.scratchId, content: "replaced\n" });
+    await browser.waitUntil(async () => (await editorText(pad.id)) === "replaced\n", {
+      timeout: 5_000, timeoutMsg: "a replace did not reach the open editor",
+    });
+    const onDisk = await browser.execute((id, sid) => window.__termic!.ipc.scratchRead(id, sid), taskId, pad.scratchId);
+    expect(onDisk).toBe("replaced\n");
+  });
+
+  it("refuses an unknown pad by name", async () => {
+    const r = await cliRpc({ cmd: "pad_read", task: taskId, pad: "no-such-pad" });
+    expect(r.ok).toBe(false);
+    expect(r.error.message).toContain("no-such-pad");
   });
 });

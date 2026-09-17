@@ -23,7 +23,7 @@ function openScratchIds(taskId: string): Set<string> {
   );
 }
 
-function scratchTab(rec: { id: string; title?: string; syntax?: string }): ScratchTab {
+export function scratchTab(rec: { id: string; title?: string; syntax?: string }): ScratchTab {
   return {
     id: crypto.randomUUID(),
     type: "scratch",

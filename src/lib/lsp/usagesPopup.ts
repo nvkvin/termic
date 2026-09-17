@@ -42,6 +42,53 @@ export const setUsages = StateEffect.define<
  *  popup, and the count still tells the truth about how many there are. */
 export const MAX_ROWS = 60;
 
+/** The popup's size once someone has dragged its corner. Remembered across
+ *  popups (and restarts, per viewer) because the list that was too small for
+ *  one symbol is too small for the next: a 26-character file column reads the
+ *  same way every time. Null until the first drag, which keeps the natural,
+ *  content-fitted size for people who never resize it. */
+export interface UsagesSize { width: number; height: number }
+
+export const USAGES_MIN_WIDTH = 320;
+export const USAGES_MIN_HEIGHT = 120;
+/** Gap kept between a dragged edge and the window edge. */
+const VIEWPORT_MARGIN = 8;
+const LS_USAGES_SIZE = "usagesPopupSize";
+
+/** Clamp a requested size to the minimum and to the room between the popup's
+ *  top-left corner and the window's bottom-right. The corner is what stays
+ *  put during a drag, so that room is the only room there is. */
+export function clampUsagesSize(
+  want: UsagesSize,
+  room: UsagesSize,
+): UsagesSize {
+  const clamp = (v: number, min: number, max: number) =>
+    Math.round(Math.max(min, Math.min(Math.max(min, max), v)));
+  return {
+    width: clamp(want.width, USAGES_MIN_WIDTH, room.width),
+    height: clamp(want.height, USAGES_MIN_HEIGHT, room.height),
+  };
+}
+
+let savedSize: UsagesSize | null | undefined;
+
+function readSavedSize(): UsagesSize | null {
+  if (savedSize !== undefined) return savedSize;
+  savedSize = null;
+  try {
+    const raw = JSON.parse(localStorage.getItem(LS_USAGES_SIZE) ?? "null");
+    if (raw && Number.isFinite(raw.width) && Number.isFinite(raw.height)) {
+      savedSize = { width: raw.width, height: raw.height };
+    }
+  } catch { /* no storage, or junk in it: natural size */ }
+  return savedSize;
+}
+
+function writeSavedSize(size: UsagesSize): void {
+  savedSize = size;
+  try { localStorage.setItem(LS_USAGES_SIZE, JSON.stringify(size)); } catch { /* per-session only */ }
+}
+
 interface UsagesState {
   pos: number;
   symbol: string;
@@ -137,10 +184,55 @@ function buildTooltip(state: UsagesState): Tooltip {
       const footer = dom.appendChild(document.createElement("div"));
       footer.className = "cm-lsp-usages-footer";
 
+      // Resizable from the bottom-right corner, the one corner that moves
+      // nothing else: the tooltip is anchored by its top-left, so the header
+      // and the arrow stay on the symbol while the list grows toward the
+      // reader. A drawn grip rather than CSS `resize`, whose native handle is
+      // a few pixels wide and cannot say where the size went.
+      const saved = readSavedSize();
+      if (saved) applySize(dom, saved, false);
+      const grip = dom.appendChild(document.createElement("div"));
+      grip.className = "cm-lsp-usages-grip";
+      // Mouse events on window, like the app's other resize handles: the move
+      // keeps tracking when the pointer outruns the grip, and the e2e drag
+      // helper drives exactly this shape.
+      grip.addEventListener("mousedown", (e) => {
+        if (e.button !== 0) return;
+        // Keep the editor's focus (and so the keyboard navigation) where it
+        // is, and keep the editor from starting a selection under the list.
+        e.preventDefault();
+        e.stopPropagation();
+        const start = dom.getBoundingClientRect();
+        const room = {
+          width: window.innerWidth - start.left - VIEWPORT_MARGIN,
+          height: window.innerHeight - start.top - VIEWPORT_MARGIN,
+        };
+        const x0 = e.clientX;
+        const y0 = e.clientY;
+        let last: UsagesSize = { width: start.width, height: start.height };
+        dom.classList.add("cm-lsp-usages-resizing");
+        const move = (ev: MouseEvent) => {
+          last = clampUsagesSize(
+            { width: start.width + ev.clientX - x0, height: start.height + ev.clientY - y0 },
+            room,
+          );
+          applySize(dom, last, true);
+        };
+        const end = () => {
+          window.removeEventListener("mousemove", move);
+          window.removeEventListener("mouseup", end);
+          dom.classList.remove("cm-lsp-usages-resizing");
+          writeSavedSize(last);
+        };
+        window.addEventListener("mousemove", move);
+        window.addEventListener("mouseup", end);
+      });
+
       const rowEls: HTMLElement[] = [];
       const select = (i: number) => {
         rowEls.forEach((el, j) => el.classList.toggle("cm-lsp-usages-active", i === j));
         footer.textContent = state.rows[i]?.path ?? "";
+        footer.title = footer.textContent;
         rowEls[i]?.scrollIntoView({ block: "nearest" });
       };
 
@@ -148,6 +240,9 @@ function buildTooltip(state: UsagesState): Tooltip {
         const entry = list.appendChild(document.createElement("div"));
         entry.className = "cm-lsp-usages-row";
         entry.dataset.index = String(i);
+        // The label is short by design and the footer ellipsizes a deep path
+        // from the right, so the full path has to be reachable somewhere.
+        entry.title = `${row.path}:${row.line}`;
 
         // file · line · the code, with the match in bold. One row per usage
         // rather than a file header above a group: a symbol's usages are read
@@ -192,6 +287,17 @@ function buildTooltip(state: UsagesState): Tooltip {
       };
     },
   };
+}
+
+/** Size the popup. Width is always fixed. Height is fixed only while the
+ *  corner is being dragged, so the box follows the pointer; a popup opened at
+ *  a remembered size takes it as a CAP, so three usages do not sit in a box
+ *  sized for forty. */
+function applySize(dom: HTMLElement, size: UsagesSize, dragging: boolean): void {
+  dom.style.width = `${size.width}px`;
+  dom.style.maxWidth = "none";
+  dom.style.height = dragging ? `${size.height}px` : "";
+  dom.style.maxHeight = `${size.height}px`;
 }
 
 /** Open a usage. Same path as go-to-definition: the workspace decides which
@@ -265,10 +371,31 @@ const usagesTheme = EditorView.theme({
   ".cm-lsp-usages": {
     display: "flex",
     flexDirection: "column",
-    maxHeight: "350px",
-    maxWidth: "600px",
+    maxHeight: "400px",
+    maxWidth: "720px",
     overflow: "hidden",
     borderRadius: "6px",
+    position: "relative",
+  },
+  ".cm-lsp-usages-grip": {
+    position: "absolute",
+    right: "0",
+    bottom: "0",
+    width: "14px",
+    height: "14px",
+    cursor: "nwse-resize",
+    // Two diagonal strokes, the conventional corner grip, drawn in the dim
+    // foreground so it reads in every theme without a hex colour.
+    backgroundImage:
+      "linear-gradient(135deg, transparent 0 55%, var(--color-fg-dim) 55% 62%, transparent 62% 75%, var(--color-fg-dim) 75% 82%, transparent 82%)",
+    opacity: "0.6",
+  },
+  ".cm-lsp-usages-grip:hover, .cm-lsp-usages-resizing .cm-lsp-usages-grip": {
+    opacity: "1",
+  },
+  ".cm-lsp-usages-resizing, .cm-lsp-usages-resizing *": {
+    cursor: "nwse-resize !important",
+    userSelect: "none",
   },
   ".cm-lsp-usages-head": {
     padding: "8px 12px",
@@ -291,6 +418,9 @@ const usagesTheme = EditorView.theme({
     overflowY: "auto",
     padding: "4px 0",
     flex: "1 1 auto",
+    // A flex child's min-height defaults to its content, which would stop the
+    // list shrinking below its rows when the popup is dragged smaller.
+    minHeight: "0",
   },
   ".cm-lsp-usages-row": {
     display: "flex",
@@ -317,7 +447,9 @@ const usagesTheme = EditorView.theme({
     // shrinkable rather than fixed, so a long one gives way to the code column
     // instead of pushing it off the row.
     flexShrink: 1,
-    maxWidth: "26ch",
+    // A share of the row, not a fixed 26ch, so widening the popup widens the
+    // file column too; at the default width this lands close to 26ch.
+    maxWidth: "40%",
     overflow: "hidden",
     textOverflow: "ellipsis",
     whiteSpace: "nowrap",
@@ -352,6 +484,8 @@ const usagesTheme = EditorView.theme({
     overflow: "hidden",
     textOverflow: "ellipsis",
     flexShrink: 0,
+    // Clear of the resize grip in the corner.
+    paddingRight: "22px",
   },
   ".cm-lsp-usages-symbol-mark": {
     backgroundColor: "var(--color-sel)",

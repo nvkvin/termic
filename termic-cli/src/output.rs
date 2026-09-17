@@ -1161,3 +1161,17 @@ commits:
         }
     }
 }
+
+/// `pad list` text: one row per pad, id first so it can be copied.
+pub fn pad_list_text(pads: &[termic_proto::PadInfo]) -> String {
+    if pads.is_empty() {
+        return "no scratchpads".to_string();
+    }
+    pads.iter()
+        .map(|p| {
+            let title = if p.title.is_empty() { "Untitled" } else { p.title.as_str() };
+            format!("{}  {}{}", p.id, title, if p.open { "" } else { "  (not open)" })
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}

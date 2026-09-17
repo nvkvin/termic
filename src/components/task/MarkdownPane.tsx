@@ -6,7 +6,7 @@
 
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import type { EditorView } from "@codemirror/view";
-import type { EditTab, ScratchTab, Task } from "@/lib/types";
+import type { EditTab, ExternalTab, ScratchTab, Task } from "@/lib/types";
 import { EditorPane } from "./EditorPane";
 import { SourcePreviewShell, type SourceView } from "./SourcePreviewShell";
 import { useApp } from "@/store/app";
@@ -24,8 +24,10 @@ export function MarkdownPane(
      *  the task root and there is no `file.md#heading` reveal to consume;
      *  everything else — the toolbar, the split divider, the live-buffer
      *  preview — is identical, because the preview is fed by the editor
-     *  buffer rather than by disk. */
-    tab: EditTab | ScratchTab;
+     *  buffer rather than by disk.
+     *  Or an EXTERNAL `.md` (an absolute path outside the task, read-only):
+     *  its links resolve against its own directory, see MarkdownCtx.external. */
+    tab: EditTab | ScratchTab | ExternalTab;
     /** Laid out (not a `display:none` background tab in this task). */
     visible: boolean;
     /** Find belongs to this tab. True for one tab app-wide, see TaskView. */
@@ -66,8 +68,12 @@ export function MarkdownPane(
   // revealHeading consumption) from ever acting on the previous document.
   // A pad is never recycled onto another document, but it still needs a
   // stable label here, so the key is the source rather than the path.
-  const srcKey = tab.type === "edit" ? tab.path : `scratch:${tab.scratchId}`;
-  const filePath = tab.type === "edit" ? tab.path : "";
+  const srcKey = tab.type === "edit" ? tab.path
+    : tab.type === "external" ? `external:${tab.path}`
+    : `scratch:${tab.scratchId}`;
+  // Task-relative for an edit tab, ABSOLUTE for an external one (the ctx's
+  // `external` flag says which), "" for a pad.
+  const filePath = tab.type === "scratch" ? "" : tab.path;
   const [buf, setBuf] = useState({ path: srcKey, text: "" });
   const text = buf.path === srcKey ? buf.text : "";
   const debounceRef = useRef<number | null>(null);
@@ -113,6 +119,8 @@ export function MarkdownPane(
   // re-run (and, for the main render effect, rebuild innerHTML) on every
   // single re-render regardless of whether composition actually changed.
   const memberDirs = useMemo(() => task.composition?.map(m => m.dir_name), [task.composition]);
+  const external = tab.type === "external";
+  const ctx = { taskId: task.id, filePath, epoch: fsRev, memberDirs, external };
 
   return (
     <SourcePreviewShell
@@ -124,7 +132,7 @@ export function MarkdownPane(
           <MarkdownPreview
             text={text}
             themeDark={themeDark}
-            ctx={{ taskId: task.id, filePath, epoch: fsRev, memberDirs }}
+            ctx={ctx}
             revealHeading={revealHeading}
             onRevealConsumed={() => useApp.getState().patchTab(task.id, tab.id, { revealHeading: undefined })}
             // TaskView's flags are about the tab; `showPreview` is the md

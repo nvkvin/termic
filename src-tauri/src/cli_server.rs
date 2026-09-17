@@ -852,6 +852,22 @@ pub(crate) fn dispatch_authenticated(
         Command::Rename { task, project, name, cwd } => {
             handle_rename(&req.id, host, task.as_deref(), project.as_deref(), cwd.as_deref(), name)
         }
+        Command::PadList { task, project, cwd } => handle_pad(
+            &req.id, host, task.as_deref(), project.as_deref(), cwd.as_deref(),
+            serde_json::json!({ "op": "list" }),
+        ),
+        Command::PadNew { task, project, title, content, cwd } => handle_pad(
+            &req.id, host, task.as_deref(), project.as_deref(), cwd.as_deref(),
+            serde_json::json!({ "op": "new", "title": title, "content": content }),
+        ),
+        Command::PadWrite { task, project, pad, content, append, cwd } => handle_pad(
+            &req.id, host, task.as_deref(), project.as_deref(), cwd.as_deref(),
+            serde_json::json!({ "op": "write", "pad": pad, "content": content, "append": append }),
+        ),
+        Command::PadRead { task, project, pad, cwd } => handle_pad(
+            &req.id, host, task.as_deref(), project.as_deref(), cwd.as_deref(),
+            serde_json::json!({ "op": "read", "pad": pad }),
+        ),
         Command::ProjectAdd { path, non_git } => {
             handle_project_add(&req.id, host, path, *non_git)
         }
@@ -3058,6 +3074,57 @@ fn handle_rename(
         id,
         ReplyData::Rename(proto::RenameData { task: renamed, old_name: t.name }),
     )
+}
+
+// ───────────────────────────── scratchpads ───────────────────────────
+
+/// Every pad verb: resolve the task here (the same rules every task verb
+/// follows), then hand the op to the webview. The webview owns pads because
+/// an OPEN pad's truth is its editor buffer, not the file behind it: a write
+/// has to land in that buffer to show live, and a read has to see typing
+/// that has not been flushed yet.
+fn handle_pad(
+    id: &str,
+    host: &dyn CliHost,
+    task: Option<&str>,
+    project: Option<&str>,
+    cwd: Option<&str>,
+    mut op: serde_json::Value,
+) -> Reply {
+    let (projects, tasks) = host.projects_tasks();
+    let t = match resolve_task_arg(&projects, &tasks, task, project, cwd) {
+        Ok(t) => t.clone(),
+        Err(e) => return Reply { id: id.into(), ok: false, data: None, error: Some(e) },
+    };
+    if t.archived {
+        return Reply::err(id, ErrorCode::BadRequest, format!("task {} is archived", t.name));
+    }
+    op["taskId"] = serde_json::Value::String(t.id.clone());
+    let value = match host.rpc("pad", op, PROJECT_RPC_TIMEOUT) {
+        Ok(v) => v,
+        // The webview's message names the problem (unknown pad, a title two
+        // pads share), so it passes through as a bad request.
+        Err(e) => return Reply::err(id, ErrorCode::BadRequest, &e),
+    };
+    let pads: Vec<proto::PadInfo> = value
+        .get("pads")
+        .and_then(|p| serde_json::from_value(p.clone()).ok())
+        .unwrap_or_default();
+    // Reply lines cap at MAX_LINE_BYTES post-escape, as for prompt bodies.
+    // No marker text in the content: it pipes into agents.
+    let (content, truncated) = match value.get("content").and_then(|c| c.as_str()) {
+        Some(c) => {
+            const PAD_BUDGET: usize = 850 * 1024;
+            let (kept, cut) = proto::json_budget_prefix(c, PAD_BUDGET);
+            (Some(kept.to_string()), cut)
+        }
+        None => (None, false),
+    };
+    let pads = pads
+        .into_iter()
+        .map(|p| proto::PadInfo { title: clip_title(&p.title), ..p })
+        .collect();
+    Reply::ok(id, ReplyData::Pad(proto::PadData { task_id: t.id, pads, content, truncated }))
 }
 
 // ───────────────────────────── projects ──────────────────────────────
@@ -6406,6 +6473,67 @@ mod tests {
             *host.ops.lock().unwrap(),
             vec!["detach:w3:archived", "kill:w3", "rpc:archive_task"]
         );
+    }
+
+    #[test]
+    fn pad_verbs_resolve_the_task_and_route_the_op_to_the_webview() {
+        let host = StubHost::default();
+        host.script_rpc(
+            "pad",
+            Ok(serde_json::json!({ "pads": [{ "id": "p1", "title": "findings", "open": true }] })),
+        );
+        let reply = handle(
+            &req(
+                Command::PadWrite {
+                    task: Some("solo".into()),
+                    project: None,
+                    pad: "findings".into(),
+                    content: "more".into(),
+                    append: true,
+                    cwd: None,
+                },
+                Some("tok"),
+            ),
+            &host,
+        );
+        assert!(reply.ok, "{reply:?}");
+        let Some(ReplyData::Pad(d)) = reply.data else { panic!("expected pad, got {reply:?}") };
+        assert_eq!(d.task_id, "w3");
+        assert_eq!(d.pads[0].id, "p1");
+        assert!(d.content.is_none());
+        let calls = host.rpc_calls.lock().unwrap();
+        assert_eq!(calls[0].0, "pad");
+        assert_eq!(calls[0].1["op"], "write");
+        assert_eq!(calls[0].1["taskId"], "w3");
+        assert_eq!(calls[0].1["pad"], "findings");
+        assert_eq!(calls[0].1["append"], true);
+    }
+
+    #[test]
+    fn pad_read_clips_an_oversized_pad_and_says_so() {
+        let host = StubHost::default();
+        let big = "x".repeat(900 * 1024);
+        host.script_rpc("pad", Ok(serde_json::json!({ "pads": [{ "id": "p1", "title": "" }], "content": big })));
+        let reply = handle(
+            &req(Command::PadRead { task: Some("solo".into()), project: None, pad: "p1".into(), cwd: None }, Some("tok")),
+            &host,
+        );
+        let Some(ReplyData::Pad(d)) = reply.data else { panic!("expected pad, got {reply:?}") };
+        assert!(d.truncated);
+        assert!(d.content.unwrap().len() < 900 * 1024);
+    }
+
+    #[test]
+    fn pad_errors_from_the_webview_pass_through() {
+        let host = StubHost::default();
+        host.script_rpc("pad", Err("no pad named \"nope\"".into()));
+        let reply = handle(
+            &req(Command::PadRead { task: Some("solo".into()), project: None, pad: "nope".into(), cwd: None }, Some("tok")),
+            &host,
+        );
+        let err = reply.error.expect("error");
+        assert_eq!(err.code, ErrorCode::BadRequest);
+        assert!(err.message.contains("nope"), "{}", err.message);
     }
 
     fn rename_cmd(task: Option<&str>, project: Option<&str>, name: &str) -> Command {

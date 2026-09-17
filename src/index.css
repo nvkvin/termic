@@ -676,58 +676,103 @@ html.termic-mod-held .xterm .xterm-cursor-pointer { cursor: pointer; }
   background-color: var(--color-accent-soft);
 }
 
-/* Rendered Markdown preview (MarkdownPreview.tsx). All colors pull from the
-   @theme vars so the preview tracks the app palette under any theme. Body
-   text inherits the UI font (Inter); code/diagrams use the mono font. */
+/* Rendered Markdown preview (MarkdownPreview.tsx). GitHub's own markdown
+   stylesheet (Primer's `.markdown-body`), metric for metric: its system font
+   at 16px/1.5, its 16px block rhythm, its heading scale, and a 980px measure
+   centered in the pane. The preview used to set Inter at 14px/1.65 across the
+   full pane width, which on a wide window made 250-character lines of small,
+   tightly-drawn text: readable, and tiring. What is NOT GitHub's is the
+   colour: every value maps onto a theme token (fg.default -> --color-fg,
+   fg.muted -> --color-fg-dim, borderColor.default/muted -> --color-border /
+   --color-border-soft, canvas.subtle -> --color-bg-1, links -> the theme's
+   blue), so the document sits on the app's surface under every theme. */
 .markdown-body {
+  box-sizing: border-box;
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 32px clamp(16px, 4vw, 45px);
   color: var(--color-fg);
-  font-size: 14px;
-  line-height: 1.65;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial,
+               sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+  font-size: 16px;
+  line-height: 1.5;
   word-wrap: break-word;
 }
-.markdown-body > :first-child { margin-top: 0; }
-.markdown-body > :last-child  { margin-bottom: 0; }
+.markdown-body > :first-child { margin-top: 0 !important; }
+.markdown-body > :last-child  { margin-bottom: 0 !important; }
 .markdown-body h1,
 .markdown-body h2,
 .markdown-body h3,
 .markdown-body h4,
 .markdown-body h5,
 .markdown-body h6 {
-  margin: 1.5em 0 0.6em;
+  margin-top: 24px;
+  margin-bottom: 16px;
   font-weight: 600;
   line-height: 1.25;
   color: var(--color-fg);
 }
-.markdown-body h1 { font-size: 1.7em; padding-bottom: 0.3em; border-bottom: 1px solid var(--color-border-soft); }
-.markdown-body h2 { font-size: 1.4em; padding-bottom: 0.3em; border-bottom: 1px solid var(--color-border-soft); }
-.markdown-body h3 { font-size: 1.2em; }
-.markdown-body h4 { font-size: 1.05em; }
+.markdown-body h1 { font-size: 2em; padding-bottom: 0.3em; border-bottom: 1px solid var(--color-border-soft); }
+.markdown-body h2 { font-size: 1.5em; padding-bottom: 0.3em; border-bottom: 1px solid var(--color-border-soft); }
+.markdown-body h3 { font-size: 1.25em; }
+.markdown-body h4 { font-size: 1em; }
+.markdown-body h5 { font-size: 0.875em; }
+.markdown-body h6 { font-size: 0.85em; color: var(--color-fg-dim); }
 .markdown-body p,
+.markdown-body blockquote,
 .markdown-body ul,
 .markdown-body ol,
-.markdown-body blockquote,
+.markdown-body dl,
 .markdown-body table,
-.markdown-body pre { margin: 0 0 1em; }
-.markdown-body ul, .markdown-body ol { padding-left: 1.6em; }
+.markdown-body pre,
+.markdown-body details { margin-top: 0; margin-bottom: 16px; }
+.markdown-body ul, .markdown-body ol { padding-left: 2em; }
 .markdown-body ul { list-style: disc; }
 .markdown-body ol { list-style: decimal; }
-.markdown-body li { margin: 0.25em 0; }
-.markdown-body li::marker { color: var(--color-fg-faint); }
-.markdown-body li > ul, .markdown-body li > ol { margin: 0.25em 0; }
-.markdown-body a { color: var(--color-accent); text-decoration: none; cursor: pointer; }
+.markdown-body ul ul, .markdown-body ol ul { list-style: circle; }
+.markdown-body ul ul ul, .markdown-body ol ol ul { list-style: square; }
+.markdown-body ol ol, .markdown-body ul ol { list-style: lower-roman; }
+.markdown-body ul ul, .markdown-body ul ol, .markdown-body ol ol, .markdown-body ol ul { margin-top: 0; margin-bottom: 0; }
+.markdown-body li + li { margin-top: 0.25em; }
+.markdown-body li > p { margin-top: 16px; }
+.markdown-body dl { padding: 0; }
+.markdown-body dl dt { margin-top: 16px; padding: 0; font-size: 1em; font-style: italic; font-weight: 600; }
+.markdown-body dl dd { margin-bottom: 16px; padding: 0 16px; }
+.markdown-body a { color: var(--color-palette-blue); text-decoration: none; cursor: pointer; }
 .markdown-body a:hover { text-decoration: underline; }
-.markdown-body strong { font-weight: 600; }
+.markdown-body strong, .markdown-body b { font-weight: 600; }
 .markdown-body blockquote {
-  padding: 0.2em 1em;
+  margin-left: 0;
+  margin-right: 0;
+  padding: 0 1em;
   color: var(--color-fg-dim);
-  border-left: 3px solid var(--color-border);
+  border-left: 0.25em solid var(--color-border);
 }
+.markdown-body blockquote > :first-child { margin-top: 0; }
+.markdown-body blockquote > :last-child { margin-bottom: 0; }
 .markdown-body hr {
-  height: 1px;
+  box-sizing: content-box;
+  height: 0.25em;
+  padding: 0;
+  margin: 24px 0;
   border: 0;
-  margin: 1.5em 0;
-  background: var(--color-border-soft);
+  background: var(--color-border);
+  overflow: hidden;
 }
+.markdown-body kbd {
+  display: inline-block;
+  padding: 3px 5px;
+  font: 11px ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  line-height: 10px;
+  color: var(--color-fg);
+  vertical-align: middle;
+  background: var(--color-bg-1);
+  border: solid 1px var(--color-border-soft);
+  border-bottom-color: var(--color-border-soft);
+  border-radius: 6px;
+  box-shadow: inset 0 -1px 0 var(--color-border-soft);
+}
+.markdown-body details summary { cursor: pointer; }
 /* Find-in-preview matches. The preview wraps hits in <mark> rather than using
    the CSS Custom Highlight API, which paints the wrong text in WKWebView (see
    docs/gotchas.md), so these are plain element rules. `color` and `background`
@@ -746,40 +791,68 @@ html.termic-mod-held .xterm .xterm-cursor-pointer { cursor: pointer; }
   background-color: var(--color-accent);
   color: var(--color-accent-fg);
 }
-/* Inline code + fenced blocks. */
-.markdown-body code {
-  font-family: var(--font-mono);
-  font-size: 0.88em;
-  padding: 0.15em 0.4em;
-  border-radius: 4px;
-  background: var(--color-bg-2);
+/* Inline code + fenced blocks, GitHub metrics. Monospace is GitHub's system
+   stack rather than the editor's --font-mono, for the same reason as the body
+   font: this is a document, and it should read like the one on GitHub. The
+   inline-code wash is GitHub's neutral.muted (a 20% grey), derived from the
+   theme's faint foreground so it tints correctly on light and dark alike. */
+.markdown-body code,
+.markdown-body tt,
+.markdown-body pre {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+}
+.markdown-body code,
+.markdown-body tt {
+  padding: 0.2em 0.4em;
+  margin: 0;
+  font-size: 85%;
+  white-space: break-spaces;
+  background: color-mix(in srgb, var(--color-fg-faint) 20%, transparent);
+  border-radius: 6px;
 }
 .markdown-body pre {
-  font-family: var(--font-mono);
-  font-size: 0.86em;
-  line-height: 1.5;
-  padding: 0.9em 1em;
+  padding: 16px;
   overflow: auto;
-  border-radius: 8px;
+  font-size: 85%;
+  line-height: 1.45;
+  color: var(--color-fg);
   background: var(--color-bg-1);
-  border: 1px solid var(--color-border-soft);
+  border-radius: 6px;
+  word-wrap: normal;
 }
-.markdown-body pre code {
+.markdown-body pre code,
+.markdown-body pre tt {
+  display: inline;
+  max-width: auto;
   padding: 0;
+  margin: 0;
+  overflow: visible;
+  font-size: 100%;
+  line-height: inherit;
+  word-wrap: normal;
+  white-space: pre;
   background: transparent;
-  font-size: inherit;
+  border: 0;
 }
 .markdown-body table {
+  border-spacing: 0;
   border-collapse: collapse;
   display: block;
+  width: max-content;
+  max-width: 100%;
   overflow: auto;
 }
+.markdown-body th { font-weight: 600; }
 .markdown-body th, .markdown-body td {
-  padding: 0.4em 0.8em;
-  border: 1px solid var(--color-border-soft);
+  padding: 6px 13px;
+  border: 1px solid var(--color-border);
 }
-.markdown-body th { background: var(--color-bg-1); font-weight: 600; }
-.markdown-body img { max-width: 100%; }
+.markdown-body tr {
+  background: var(--color-bg);
+  border-top: 1px solid var(--color-border-soft);
+}
+.markdown-body tr:nth-child(2n) { background: var(--color-bg-1); }
+.markdown-body img { max-width: 100%; box-sizing: content-box; }
 /* Mermaid diagram host — centered, with a clear error fallback. */
 .markdown-body .mermaid-block {
   display: flex;

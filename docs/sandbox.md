@@ -132,6 +132,11 @@ is accepted, bounded three ways:
 - **Text only, capped.** The same 2 MB ceiling as the task read, plus a
   UTF-8 requirement, so it is a text channel rather than a way to pull bytes
   out of arbitrary binaries.
+- **Text only in the preview too.** An external `.md` renders in the
+  markdown preview, whose links open further external tabs through this
+  same read. Relative IMAGES beside it are not loaded: that would need an
+  uncontained binary read, and adding one would widen this gap rather than
+  reuse it.
 - **Nowhere to send it.** The pinned CSP (`connect-src`, see
   `src/lib/cspGuard.test.ts`) means an attacker who could invoke it has no
   egress for the result.

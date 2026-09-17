@@ -1623,6 +1623,10 @@ export interface ExternalTab extends BaseTab {
   syntax?: string;
   /** Syntax resolved from the path (content sniff second), as on EditTab. */
   syntaxAuto?: string;
+  /** Markdown source / split / preview, as on EditTab. Session-only. */
+  mdView?: "source" | "preview" | "split";
+  /** Per-document remote-image override, as on EditTab. Session-only. */
+  remoteImagesUnblocked?: boolean;
 }
 
 export type Tab = TerminalTab | DiffTab | EditTab | DirTab | ScratchTab | ExternalTab;

@@ -2,7 +2,7 @@ import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, w
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  archiveTask, ensureActiveTask, openTask, requireTermicApi, snap, waitForAppShell, waitVisible, waitGone,
+  archiveTask, ensureActiveTask, mouseDrag, openTask, requireTermicApi, snap, waitForAppShell, waitVisible, waitGone,
 } from "../helpers";
 
 // Code intelligence (GH #174), driven end to end against a real language server
@@ -1015,6 +1015,90 @@ describe("code intelligence", () => {
       document.querySelectorAll(`[data-task-id="${id}"] .cm-lsp-usages-row`).length, taskId) as number;
     expect(rows).toBe(0);
     rmSync(path.join(root, "lonely.ts"), { force: true });
+  });
+
+  it("resizes the usages list from its corner and remembers the size", async () => {
+    // A long relative path and a long line of code cannot both fit in the
+    // default box, and the list is useless while both are ellipsized. So the
+    // corner drags, the next popup opens at that size, and every row carries
+    // its full path as a tooltip for the label that still does not fit.
+    await browser.execute(() => { try { localStorage.removeItem("usagesPopupSize"); } catch { /* */ } });
+    await armGrant(root, taskId);
+    await openSettled(taskId, "navme.ts", "TypeScript");
+    const popup = `[data-task-id="${taskId}"] .cm-lsp-usages`;
+    const closePopup = async () => {
+      await browser.execute((id) => {
+        document.querySelector(`[data-task-id="${id}"] .cm-content`)!.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      }, taskId);
+      await waitGone(popup, 5_000);
+    };
+    const box = () => browser.execute((sel) => {
+      const r = document.querySelector(sel)!.getBoundingClientRect();
+      return { width: Math.round(r.width), height: Math.round(r.height) };
+    }, popup) as Promise<{ width: number; height: number }>;
+
+    await modClickWord(taskId, "answer");
+    await waitVisible(popup, 15_000);
+
+    // Rows: the tooltip is the absolute path and line, not the short label.
+    const titles = await browser.execute((sel) =>
+      [...document.querySelectorAll(`${sel} .cm-lsp-usages-row`)].map(el => (el as HTMLElement).title), popup) as string[];
+    expect(titles.length).toBe(3);
+    for (const t of titles) expect(t).toMatch(/^\/.*navme\.ts:\d+$/);
+    expect(titles[2]).toContain("/nested/navme.ts:");
+    const footerTitle = await browser.execute((sel) =>
+      (document.querySelector(`${sel} .cm-lsp-usages-footer`) as HTMLElement).title, popup) as string;
+    expect(footerTitle).toMatch(/^\/.*navme\.ts$/);
+
+    // Height assertions are relative to the room actually below the popup.
+    // CodeMirror already shrinks a tooltip to the space under its anchor, and
+    // the CI runner's window is short enough that the popup opens flush with
+    // its bottom edge: "drag 60px taller" then has nowhere to go and is
+    // correctly clamped. So shrink first (always possible above the minimum),
+    // then grow back by less than was taken, which must fit.
+    const roomBelow = () => browser.execute((sel) =>
+      Math.round(window.innerHeight - document.querySelector(sel)!.getBoundingClientRect().top - 8), popup) as Promise<number>;
+    // Whatever holds focus before the drag must still hold it after: the grip
+    // prevents the mousedown default. (The synthetic ⌘-click that opened the
+    // popup does not focus the editor on every runner, so "the editor has
+    // focus" would test the harness, not the grip.)
+    const focusMark = () => browser.execute(() => {
+      const ae = document.activeElement as HTMLElement | null;
+      return ae ? `${ae.tagName}.${ae.className}` : "none";
+    }) as Promise<string>;
+    const focusBefore = await focusMark();
+    const before = await box();
+    await mouseDrag(`${popup} .cm-lsp-usages-grip`, 120, -30);
+    const after = await box();
+    expect(after.width).toBe(before.width + 120);
+    expect(after.height).toBe(Math.max(120, before.height - 30));
+    const grown = Math.min(after.height + 20, await roomBelow());
+    await mouseDrag(`${popup} .cm-lsp-usages-grip`, 0, 20);
+    expect((await box()).height).toBe(Math.max(120, grown));
+    await snap("usages-resized");
+
+    // Dragging did not move focus, so the list's keyboard stays where it was.
+    expect(await focusMark()).toBe(focusBefore);
+
+    // Smaller than the minimum clamps instead of collapsing the list.
+    await mouseDrag(`${popup} .cm-lsp-usages-grip`, -2000, -2000);
+    const tiny = await box();
+    expect(tiny.width).toBe(320);
+    await mouseDrag(`${popup} .cm-lsp-usages-grip`, after.width - tiny.width, 0);
+    const widened = await box();
+    expect(widened.width).toBe(after.width);
+
+    // The next popup opens at the remembered width. Height is a cap, so three
+    // rows keep their natural height rather than filling a tall box.
+    await closePopup();
+    await modClickWord(taskId, "answer");
+    await waitVisible(popup, 15_000);
+    const reopened = await box();
+    expect(reopened.width).toBe(after.width);
+    expect(reopened.height).toBeLessThanOrEqual(before.height + 1);
+    await closePopup();
+    await browser.execute(() => { try { localStorage.removeItem("usagesPopupSize"); } catch { /* */ } });
   });
 
   it("answers a modified click even with no server running", async () => {

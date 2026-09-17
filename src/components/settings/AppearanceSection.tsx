@@ -64,6 +64,8 @@ export function AppearanceSection() {
   const setUiScale = usePrefs(s => s.setUiScale);
   const codeLigatures = usePrefs(s => s.codeLigatures);
   const inlineBlame = usePrefs(s => s.inlineBlame);
+  const editorWordWrap = usePrefs(s => s.editorWordWrap);
+  const setEditorWordWrap = usePrefs(s => s.setEditorWordWrap);
   const codeIntelligence = usePrefs(s => s.codeIntelligence);
   const codeIntelDiagnostics = usePrefs(s => s.codeIntelDiagnostics);
   const setCodeIntelDiagnostics = usePrefs(s => s.setCodeIntelDiagnostics);
@@ -115,6 +117,7 @@ export function AppearanceSection() {
     uiScale               === APPEARANCE_DEFAULTS.uiScale &&
     codeLigatures         === APPEARANCE_DEFAULTS.codeLigatures &&
     inlineBlame           === APPEARANCE_DEFAULTS.inlineBlame &&
+    editorWordWrap        === APPEARANCE_DEFAULTS.editorWordWrap &&
     codeIntelligence        === APPEARANCE_DEFAULTS.codeIntelligence &&
     codeIntelDiagnostics    === APPEARANCE_DEFAULTS.codeIntelDiagnostics &&
     showAllInstalledFonts === APPEARANCE_DEFAULTS.showAllInstalledFonts;
@@ -292,6 +295,13 @@ export function AppearanceSection() {
         hint="Render font ligatures like `=>`, `!==`, `>=` as combined glyphs in the editor."
         value={codeLigatures}
         onChange={setCodeLigatures}
+      />
+
+      <Toggle
+        label="Word wrap"
+        hint="Wrap long lines to the width of the editor instead of scrolling sideways. Also in the command palette."
+        value={editorWordWrap}
+        onChange={setEditorWordWrap}
       />
 
       <Toggle
