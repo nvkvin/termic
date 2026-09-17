@@ -999,7 +999,14 @@ goal usually arrives from the New Task dialog's multi-line prompt box, and
 
 **"Park task" / "Unpark task"** (`data-testid="task-menu-park"`) follows
 `parked_at`. Park opens `ParkTaskDialog` for the optional free-text reason;
-unpark is immediate, because there is nothing to ask. **The park clears
+unpark is immediate, because there is nothing to ask. Because that one row
+flips to Unpark as soon as `parked_at` is set, a parked task gets a second row,
+**"Edit park reason…"** (`data-testid="task-menu-edit-park-reason"`), which
+re-opens the same dialog pre-filled. Saving from there leaves the task parked
+and does NOT move `parked_at`, since the stamp answers "since when" and
+clarifying why is the usual reason to open it twice. The dialog says "Edit park
+reason" and "Save reason" in that mode, and hides the "Also stop the task"
+checkbox: editing a note must not kill the agents. **The park clears
 itself**: the next prompt into any terminal of the task runs `markStarted`,
 which wipes `parked_at` and `park_reason` together, so a parked task you start
 working on again is not left lying about its own state. That is the third

@@ -2873,6 +2873,22 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                 <Moon className={cn("h-4 w-4", isParked(w) && "text-[var(--color-accent)]")} />
                 <span>{parkMenuLabel(w)}</span>
               </DropdownItem>
+              {/* The reason is editable WITHOUT unparking, which is the whole
+                  point of `task_set_parked` refusing to move `parked_at` on a
+                  re-park: the stamp is what "parked 3 days ago" renders from,
+                  and clarifying why is the usual reason to call it twice.
+                  Without this row that path is unreachable, because the row
+                  above flips to Unpark the moment `parked_at` is set. */}
+              {isParked(w) && (
+                <DropdownItem
+                  className="items-center [&>svg]:mt-0"
+                  data-testid="task-menu-edit-park-reason"
+                  onSelect={() => useUI.getState().openParkTask(w.id)}
+                >
+                  <Pencil className="h-4 w-4" />
+                  <span>Edit park reason…</span>
+                </DropdownItem>
+              )}
               {/* Stop without archiving (GH #119): kill the agents, free
                   the memory, keep the session. Opening the task again
                   respawns with resume — same lifecycle as restarting

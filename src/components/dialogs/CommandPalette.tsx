@@ -34,7 +34,7 @@ import { effectiveLanguageId, languageLabel } from "@/lib/languages";
 import { effectiveSandboxMode, isSandboxEnforced } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { taskLabel } from "@/lib/taskLabel";
-import { canStartWithGoal, isParked, parkMenuLabel, taskGoalText } from "@/lib/taskNotes";
+import { canStartWithGoal, isParked, parkMenuLabel, parkReasonText, taskGoalText } from "@/lib/taskNotes";
 import { seedPromptWhenReady, SETUP_SPAWN_DEADLINE_MS } from "@/lib/seedPrompt";
 
 // New-issue page for the project repo. Opened via the OS browser (open_path).
@@ -322,6 +322,18 @@ export function CommandPalette() {
           else useUI.getState().openParkTask(task.id);
         }),
       });
+      if (isParked(task)) {
+        cmds.push({
+          // Editing the reason must not unpark, and must not restamp. The row
+          // above becomes Unpark once parked, so this is the only way back
+          // into the dialog on a task that is already down.
+          id: "edit-park-reason", section: "Task",
+          label: "Edit park reason…",
+          hint: parkReasonText(task) || undefined, icon: Pencil,
+          keywords: "parked blocked waiting why reason note",
+          run: act(() => useUI.getState().openParkTask(task.id)),
+        });
+      }
       cmds.push({
         // Ends every PTY in the task but keeps the task itself (GH #119).
         // Also the only way to release a mounted task's terminals, which is

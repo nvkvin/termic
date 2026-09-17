@@ -14,6 +14,13 @@
 // UNPARKING has no dialog and is not routed through here: it is a single menu
 // click with nothing to ask.
 //
+// RE-ENTERED on an already-parked task (the menu's "Edit park reason", which
+// exists because the park row itself flips to Unpark once `parked_at` is set)
+// this dialog edits the reason instead. Saving then leaves the task parked and
+// does NOT move `parked_at`, which is `task_set_parked`'s own rule: the stamp
+// is what "parked 3 days ago" renders from, and clarifying why is the usual
+// reason to call it a second time.
+//
 // PARK AND STOP STAY SEPARATE ACTIONS. The checkbox below fires `stopTask` as
 // a second call after the park, because they answer different questions: stop
 // is a resource action (GH #119, kill the PTYs and keep the session) and must
@@ -62,24 +69,42 @@ export function ParkTaskDialog() {
     // user asked for: an eviction that somehow threw must not take the park
     // with it.
     setTaskParked(taskId, true, reason);
-    if (alsoStop && isMounted) stopTask(taskId);
+    // `!editing` is load-bearing, not belt-and-braces: the checkbox is hidden
+    // while editing but `alsoStop` still holds its `true` default, so without
+    // this, saving a reason on a mounted task would silently kill its agents.
+    if (!editing && alsoStop && isMounted) stopTask(taskId);
     close();
   }
 
   const label = task ? taskLabel(task, useBranchAsTaskName) : "this task";
+  // Re-entered on an ALREADY-parked task, this dialog is editing the reason,
+  // not parking. Saying "Park" on a task that is already down would read as a
+  // no-op, and the stamp deliberately does not move (`task_set_parked`), so
+  // the wording has to match what actually happens.
+  const editing = !!task?.parked_at;
 
   return (
     <AppDialog
       open={open}
       onOpenChange={(v) => (v ? null : close())}
-      title="Park task"
+      title={editing ? "Edit park reason" : "Park task"}
       className="max-w-lg"
     >
       <p className="mb-4 text-[12.5px] leading-snug text-[var(--color-fg-dim)]">
-        Marks <span className="font-mono">{label}</span> as deliberately put
-        down, so it sits under Parked on the dashboard instead of looking like
-        work in flight. It un-parks itself: the next prompt you send into any
-        of its terminals clears this, along with the reason.
+        {editing ? (
+          <>
+            Why <span className="font-mono">{label}</span> is parked. Saving
+            leaves it parked and does not change how long it has been down.
+          </>
+        ) : (
+          <>
+            Marks <span className="font-mono">{label}</span> as deliberately
+            put down, so it sits under Parked on the dashboard instead of
+            looking like work in flight. It un-parks itself: the next prompt
+            you send into any of its terminals clears this, along with the
+            reason.
+          </>
+        )}
       </p>
 
       <label className="block text-[13.5px]">
@@ -104,7 +129,7 @@ export function ParkTaskDialog() {
       {/* Only when there is something to stop. Parking a task whose agents
           are already gone has nothing to free, and a permanently visible
           checkbox that usually does nothing is worse than no checkbox. */}
-      {isMounted && (
+      {isMounted && !editing && (
         <label className="mt-4 flex items-start gap-2 text-[12.5px]">
           {/* Testid on the control, not the label: `Checkbox` is a styled
               button, so a wrapping label toggles nothing when clicked. */}
@@ -128,7 +153,7 @@ export function ParkTaskDialog() {
       <div className="mt-5 flex justify-end gap-2">
         <Button variant="ghost" onClick={close}>Cancel</Button>
         <Button variant="primary" onClick={park} data-testid="park-confirm">
-          <Moon className="h-4 w-4" /> Park
+          <Moon className="h-4 w-4" /> {editing ? "Save reason" : "Park"}
         </Button>
       </div>
     </AppDialog>
