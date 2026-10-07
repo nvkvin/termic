@@ -3682,6 +3682,199 @@ describe("svg source/preview toggle", () => {
   });
 });
 
+// An agent's report is usually one self-contained .html file. It gets the
+// same source / preview / split shell as markdown and SVG, rendered in an
+// `<iframe sandbox="" srcdoc>`. That frame is the security boundary (an
+// untrusted document must never run script in the app's origin, which can
+// call every Tauri command), so these cases pin it from the only side a test
+// can see, the parent. The frame's origin is opaque, so neither the app nor
+// WebDriver (whose frame switching goes through contentDocument) can look
+// inside it: that is the property, not a gap in the spec. What renders inside
+// was measured with a standalone WKWebView probe; see docs/sandbox.md
+// ("HTML preview").
+describe("html preview", () => {
+  let taskId!: string;
+  let tabId!: string;
+  let remoteImagesBefore = false;
+  const HTML = "e2e-report.html";
+  // The remote image sits in a rule that matches nothing, so the banner has a
+  // reference to report and the webview never fetches it, blocked or not.
+  const HTML_SRC = "<!DOCTYPE html><html><head><title>Report</title>"
+    + "<style>h1{color:#2f81f7}.never-matched{background:url(https://example.com/x.png)}</style>"
+    + "</head><body><h1>e2e report</h1><p>café</p></body></html>";
+  const SCRIPT_MARK = "termic-e2e-script-ran";
+
+  /** The visible preview frame of THIS task, read from the parent. */
+  const frame = () => browser.execute((id) => {
+    const root = document.querySelector(`[data-task-id="${id}"]`);
+    const f = Array.from(root?.querySelectorAll("[data-testid='html-preview']") ?? [])
+      .find((n) => n.getBoundingClientRect().width > 0) as HTMLIFrameElement | undefined;
+    if (!f) return null;
+    const srcdoc = f.getAttribute("srcdoc") ?? "";
+    return {
+      sandbox: f.getAttribute("sandbox"),
+      srcdoc,
+      // The narrowing policy the pane prepends, or null if it is not first.
+      policy: /^<meta http-equiv="Content-Security-Policy" content="([^"]*)">/.exec(srcdoc)?.[1] ?? null,
+      opaque: f.contentDocument === null,
+    };
+  }, taskId);
+
+  const mode = () => browser.execute((id) => {
+    const root = document.querySelector(`[data-task-id="${id}"]`);
+    const el = Array.from(root?.querySelectorAll("[data-testid='source-preview-shell']") ?? [])
+      .find((n) => n.getBoundingClientRect().width > 0);
+    return el?.getAttribute("data-view") ?? null;
+  }, taskId);
+
+  const editorShown = () => browser.execute((id) => {
+    const root = document.querySelector(`[data-task-id="${id}"]`);
+    return Array.from(root?.querySelectorAll(".cm-editor") ?? [])
+      .some((n) => n.getBoundingClientRect().width > 0);
+  }, taskId);
+
+  const clickMode = (m: string) => browser.execute((id, want) => {
+    const root = document.querySelector(`[data-task-id="${id}"]`);
+    const btn = Array.from(root?.querySelectorAll(`[data-view-btn="${want}"]`) ?? [])
+      .find((n) => n.getBoundingClientRect().width > 0) as HTMLElement | undefined;
+    btn?.click();
+  }, taskId, m);
+
+  /** The visible "Show images" button of this task's blocked-images banner. */
+  const showImagesButton = () => browser.execute((id) => {
+    const root = document.querySelector(`[data-task-id="${id}"]`);
+    return Array.from(root?.querySelectorAll("button") ?? [])
+      .some((b) => b.textContent?.trim() === "Show images" && b.getBoundingClientRect().width > 0);
+  }, taskId);
+
+  const messages = () => browser.execute(() =>
+    (window as unknown as { __htmlE2e?: { msgs: string[] } }).__htmlE2e?.msgs ?? []);
+
+  before(async () => {
+    await waitForAppShell();
+    await requireTermicApi();
+    remoteImagesBefore = await browser.execute(() => {
+      const p = window.__termic!.usePrefs.getState();
+      const was = p.loadRemoteImages;
+      // Both are the defaults on a fresh profile; set them so a previous run
+      // or spec cannot decide what this one sees.
+      p.setLoadRemoteImages(false);
+      p.setHtmlDefaultView("preview");
+      return was;
+    });
+    writeFileSync(path.join(fixture, HTML), HTML_SRC);
+    taskId = await openTask("e2e-html");
+    tabId = await browser.execute((id, p) => {
+      const app = window.__termic!.useApp.getState();
+      app.openPreviewTab(id, { type: "edit", path: p, title: p });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const tab = app.tabs[id].find((t: any) => t.type === "edit" && t.path === p);
+      app.persistTab(id, tab.id);
+      return tab.id;
+    }, taskId, HTML);
+  });
+
+  after(async () => {
+    await browser.execute((was) => window.__termic!.usePrefs.getState().setLoadRemoteImages(was), remoteImagesBefore);
+    if (taskId) await archiveTask(taskId);
+    try {
+      execSync(`git -C "${fixture}" clean -fd`);
+    } catch {
+      /* nothing */
+    }
+  });
+
+  it("opens on the rendered page, in a frame the app cannot reach into", async () => {
+    await browser.waitUntil(async () => (await frame())?.srcdoc.includes("e2e report") === true,
+      { timeout: 15_000, timeoutMsg: "the html preview never rendered" });
+    const f = (await frame())!;
+    expect(await mode()).toBe("preview");
+    expect(await editorShown()).toBe(false);
+    // Exactly empty. Every token re-enables something, and allow-scripts with
+    // allow-same-origin together would hand the document the IPC bridge.
+    expect(f.sandbox).toBe("");
+    // Opaque origin: the parent gets no document, so neither does the frame
+    // get this one.
+    expect(f.opaque).toBe(true);
+    // The narrowing policy is the FIRST thing in the srcdoc (a CSP meta that
+    // lands in <body> is ignored), and remote images are off by default.
+    expect(f.policy).toContain("default-src 'none'");
+    expect(f.policy).toMatch(/img-src data:(;|$)/);
+    await snap("html-preview");
+  });
+
+  it("never lets a script in the document reach the app", async () => {
+    await browser.execute((id, tid) => {
+      const w = window as unknown as { __htmlE2e?: { msgs: string[]; loads: number } };
+      const state = { msgs: [] as string[], loads: 0 };
+      w.__htmlE2e = state;
+      window.addEventListener("message", (e) => { state.msgs.push(String(e.data)); });
+      const pane = document.querySelector(`[data-task-id="${id}"] [data-main-tab-id="${tid}"]`)!;
+      pane.querySelector("[data-testid='html-preview']")!.addEventListener("load", () => { state.loads++; });
+    }, taskId, tabId);
+    // An unsaved edit through CodeMirror's own view API (the svg spec explains
+    // why not synthetic input). The editor is mounted but hidden in preview
+    // mode, so it is found by tab, not by visibility.
+    await browser.execute((id, tid, mark) => {
+      const el = document.querySelector(`[data-task-id="${id}"] [data-main-tab-id="${tid}"] .cm-editor`) as unknown as { __cmView?: any } | null;
+      const view = el?.__cmView;
+      if (!view) throw new Error("CodeMirror e2e hook missing (build with make e2e)");
+      view.dispatch({ changes: { from: view.state.doc.length, insert: `<script>parent.postMessage("${mark}", "*")</script>` } });
+    }, taskId, tabId, SCRIPT_MARK);
+    // The new srcdoc carries the script and the frame finished loading it, so
+    // anything its script posted during parsing is already queued.
+    await browser.waitUntil(async () => {
+      const f = await frame();
+      const loads = await browser.execute(() =>
+        (window as unknown as { __htmlE2e?: { loads: number } }).__htmlE2e?.loads ?? 0);
+      return !!f && f.srcdoc.includes(SCRIPT_MARK) && loads > 0;
+    }, { timeout: 10_000, timeoutMsg: "the preview never reloaded with the edited document" });
+    // Messages to this window are delivered in order, so a sentinel posted now
+    // lands after anything the document's script could have sent.
+    await browser.execute(() => window.postMessage("termic-e2e-sentinel", "*"));
+    await browser.waitUntil(async () => (await messages()).includes("termic-e2e-sentinel"),
+      { timeout: 10_000, timeoutMsg: "the sentinel message never arrived" });
+    expect(await messages()).not.toContain(SCRIPT_MARK);
+    // Fed from the live buffer: nothing was saved.
+    expect(await browser.execute((id, p) => window.__termic!.ipc.taskFileRead(id, p), taskId, HTML))
+      .not.toContain(SCRIPT_MARK);
+  });
+
+  it("blocks remote images until they are unblocked for this document", async () => {
+    await browser.waitUntil(async () => await showImagesButton(),
+      { timeout: 10_000, timeoutMsg: "no blocked-images banner for a document with a remote image" });
+    expect((await frame())!.policy).not.toContain("https:");
+    await browser.execute((id) => {
+      const root = document.querySelector(`[data-task-id="${id}"]`);
+      (Array.from(root?.querySelectorAll("button") ?? [])
+        .find((b) => b.textContent?.trim() === "Show images" && b.getBoundingClientRect().width > 0) as HTMLElement | undefined)
+        ?.click();
+    }, taskId);
+    await browser.waitUntil(async () => (await frame())?.policy?.includes("img-src data: https:") === true,
+      { timeout: 10_000, timeoutMsg: "Show images never allowed https: images in the preview's policy" });
+    expect(await showImagesButton()).toBe(false);
+    // For this document only: the global pref is untouched.
+    expect(await browser.execute(() => window.__termic!.usePrefs.getState().loadRemoteImages)).toBe(false);
+  });
+
+  it("switches between source, split and preview, and remembers the last mode", async () => {
+    await clickMode("source");
+    await browser.waitUntil(async () => await editorShown() && await mode() === "source",
+      { timeout: 10_000, timeoutMsg: "the source pane never appeared" });
+    expect(await browser.execute(() => localStorage.getItem("htmlDefaultView"))).toBe("source");
+
+    await clickMode("split");
+    await browser.waitUntil(async () => await editorShown() && (await frame()) !== null,
+      { timeout: 10_000, timeoutMsg: "split never showed both panes" });
+    expect(await mode()).toBe("split");
+
+    await clickMode("preview");
+    await browser.waitUntil(async () => await mode() === "preview" && !(await editorShown()),
+      { timeout: 10_000, timeoutMsg: "never returned to the preview" });
+    expect(await browser.execute(() => localStorage.getItem("htmlDefaultView"))).toBe("preview");
+  });
+});
+
 // A file the editor cannot show is a WRONG-VIEWER state, not a failure: it
 // gets a calm centered notice offering "Open in default app" and "Reveal in
 // Finder" rather than red text with no way out. Two files qualify, binary

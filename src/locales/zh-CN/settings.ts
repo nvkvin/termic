@@ -97,8 +97,8 @@ export default {
       hint: "当终端要求输入 sudo 密码时，提供为 sudo 开启 Touch ID 的选项。接受后会在一个可查看内容的标签页中运行一段短脚本，将 pam_tid.so 添加到 /etc/pam.d/sudo_local。",
     },
     remoteImages: {
-      label: "在 Markdown 预览中加载远程图片",
-      hint: "默认关闭：Markdown 预览会拦截外部站点的图片，这样打开不可信的文件（某个依赖的 README、抓取的网页）时不会悄悄发出网络请求。预览中的按文档按钮仍可为单个文件加载图片。",
+      label: "在 Markdown 和 HTML 预览中加载远程图片",
+      hint: "默认关闭：Markdown 和 HTML 预览会拦截外部站点的图片，这样打开不可信的文件（某个依赖的 README、智能体生成的报告、抓取的网页）时不会悄悄发出网络请求。预览中的按文档按钮仍可为单个文件加载图片。",
     },
   },
 

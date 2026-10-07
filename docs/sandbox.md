@@ -128,6 +128,100 @@ gate, not a CSP tweak, per the note below.
 **Before widening the CSP again, remember it is app-wide.** `connect-src` or
 `script-src` would be materially worse than `img-src` is.
 
+## HTML preview: the iframe is the boundary
+
+`.html` / `.htm` tabs render in `HtmlPane.tsx` as
+`<iframe sandbox="" srcdoc>`, fed from the editor's live buffer. The
+document is untrusted (an agent's report, a page inside a dependency, a
+file a prompt-injected agent wrote on purpose), and the webview can call
+every Tauri command, so script running in the app's origin is code
+execution on the machine. Nothing sanitizes the markup; isolation does the
+work, which is also how VS Code webviews, GitHub's raw files
+(`CSP: default-src 'none'; style-src 'unsafe-inline'; sandbox`) and
+Claude.ai artifacts do it. JupyterLab's "Trust HTML" mode is the shape NOT
+to copy: it adds `allow-scripts` to an `allow-same-origin` frame, which is
+same-origin with scripts.
+
+The gates, in the order a hostile document meets them:
+
+1. **`sandbox=""`**: opaque origin, no scripts, forms, popups or top-level
+   navigation. Measured: without the attribute a srcdoc frame shares the
+   app's origin and reaches its globals, `__TAURI_INTERNALS__` included.
+   `allow-scripts` together with `allow-same-origin` would undo it.
+2. **The inherited CSP.** A srcdoc document inherits the app's policy, so
+   `script-src 'self'` blocks inline and external script independently of
+   the sandbox. A consequence worth knowing before anyone asks for it:
+   scripts CANNOT be enabled for this preview without loosening the policy
+   of the whole app, because a document's own `<meta>` CSP only narrows.
+3. **Tauri, if a script ever did run.** It can post to WebKit's native
+   message handlers (measured). Tauri injects its IPC bridge and per-launch
+   invoke key into the main frame only (`for_main_frame_only` in tauri
+   2.11.1 `manager/webview.rs`, the fix for GHSA-57fm-592m-34r7), wry
+   reports the frame's URL as `about:srcdoc`, and `is_local_url` does not
+   count that as local, so app commands are refused. The `ipc:` fetch path
+   rejects the `Origin: null` an opaque frame sends. Read from source, not
+   measured.
+
+`lib/htmlPreview.ts` then prepends a narrowing policy
+(`default-src 'none'; style-src 'unsafe-inline'; img-src data:` plus
+`data:` fonts and media), a no-referrer meta and `<base href="about:srcdoc">`.
+That closes the CSP-governed egress the inherited policy leaves:
+`img-src https:` would let a remote image or CSS `url()` fire a GET on
+render, the #65 hole again. `https:` joins `img-src` only through the same
+`loadRemoteImages` pref and per-tab "Show images" override the markdown
+preview uses. One residual is NOT covered: `<link rel="dns-prefetch">` and
+`rel="preconnect"` are resource hints outside CSP, and a hostname can carry
+data (the #65 shape over DNS instead of a GET). Whether WebKit acts on them
+inside a sandboxed srcdoc is unmeasured.
+
+**Placement is the trap.** WebKit ignores a CSP `<meta>` that lands in
+`<body>`, including one written into `<head>` after anything that
+implicitly opens the body (measured). Raw-prepending it as the first token
+always lands it in the head, and nothing a document writes later can undo
+it: its own CSP only narrows further, and the FIRST `<base>` wins. The
+parser then drops the document's `<!DOCTYPE>`, which costs nothing because
+a srcdoc document is always in standards mode (measured `CSS1Compat`).
+
+**Do not swap srcdoc for a custom scheme** (a `taskhtml:` shaped like
+`taskpdf:`) without redoing this analysis. It would make relative CSS and
+images resolve, but `is_local_url` treats ANY registered scheme as local,
+so a frame there that reached the message handler would be the app as far
+as the ACL is concerned, and only the invoke key would stand in the way. It
+also needs `frame-src` widened: `frame-src 'none'` blocks a custom-scheme
+frame (measured) but does not apply to srcdoc (`about:` URLs are exempt).
+Running a document's scripts for real means a second webview with no
+capability, not a looser frame.
+
+**`tauri dev` is weaker.** The dev page comes straight from Vite, and
+Tauri only proxies the dev server on mobile (`PROXY_DEV_SERVER`), so no CSP
+reaches the dev webview and gate 2 does not exist there. The `make e2e`
+binary serves `frontendDist` over `tauri://` with the policy, so that is
+where `e2e/specs/editor.e2e.ts` ("html preview") pins this. Read from
+source, not measured. Linux is a separate audit: Tauri documents that it
+cannot tell an iframe's IPC request from the window's there.
+
+What the probe measured (a standalone WKWebView with the app's exact CSP
+served as a header from a fake `tauri://localhost`; a second run with
+`'unsafe-inline'` in `script-src` and a scheme in `frame-src` is the
+control):
+
+| Case | App CSP | Control |
+| --- | --- | --- |
+| `sandbox=""` srcdoc, inline `<style>` | renders | renders |
+| `allow-scripts` srcdoc, inline `<script>` | blocked | runs |
+| `allow-scripts` srcdoc, external `<script src>` | not fetched | not fetched |
+| srcdoc remote image, no narrowing meta | fetched | fetched |
+| same, narrowing meta first | not fetched | not fetched |
+| narrowing meta inside `<body>` | ignored | |
+| frame `src` on a custom scheme | blocked | loads |
+| link click out of the frame | no request | navigates |
+| `target=_blank` / `target=_top` link | blocked | blocked |
+| `#anchor` link, no `<base>` | dead | dead |
+| `#anchor` link, `<base href="about:srcdoc">` | scrolls | scrolls |
+| relative `<img>` / `<link>`, no `<base>` | fetched from `tauri://localhost` | same |
+| sandboxed frame script sees `window.webkit.messageHandlers` | (no script) | yes, can post |
+| scroll across `display:none` on the host (same-origin frame, so the parent could read it) | kept | kept |
+
 ## Known gap: one uncontained file read (`file_read_external`)
 
 Every other renderer → filesystem read is bounded by a task root

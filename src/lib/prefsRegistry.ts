@@ -65,6 +65,7 @@ export const PREF_KEYS: readonly PrefKey[] = [
   { key: "profileSidebarWash", scoped: false, class: "sync" },
   { key: "markdownDefaultView", scoped: false, class: "local", reason: "last-used view, rewritten by every toggle in a markdown tab" },
   { key: "svgDefaultView", scoped: false, class: "local", reason: "last-used view, rewritten by every toggle in an SVG tab" },
+  { key: "htmlDefaultView", scoped: false, class: "local", reason: "last-used view, rewritten by every toggle in an HTML tab" },
 
   // ── Terminal ──
   { key: "terminalFont", scoped: false, class: "sync" },

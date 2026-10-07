@@ -79,7 +79,7 @@ export default {
     imagesBlocked: "Images from external sites are blocked in this preview.",
     showImages: "Show images",
     always: "Always",
-    imagesNowLoad: "Remote images now load in every markdown preview.",
+    imagesNowLoad: "Remote images now load in every markdown and HTML preview.",
     settings: "Settings",
     findPlaceholder: "Find in preview",
     prevMatch: "Previous match (Shift+Enter)",
@@ -89,6 +89,10 @@ export default {
 
   previewPane: {
     emptyResponse: "empty response",
+  },
+
+  htmlPane: {
+    unavailable: "This file can't be previewed. Switch to Editor to see why.",
   },
 
   sourcePreview: {

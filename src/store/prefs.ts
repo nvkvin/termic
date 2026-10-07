@@ -114,6 +114,7 @@ const LS_DOUBLE_SHIFT_MODE = "doubleShiftMode";
 const LS_CTRL_TAB_MODE = "ctrlTabMode";
 const LS_MD_VIEW       = "markdownDefaultView";
 const LS_SVG_VIEW      = "svgDefaultView";
+const LS_HTML_VIEW     = "htmlDefaultView";
 const LS_LOAD_REMOTE_IMAGES = "loadRemoteImages";
 const LS_SIDEBAR_HOVER_REVEAL = "sidebarHoverReveal";
 const LS_PROFILE_SIDEBAR_WASH = "profileSidebarWash";
@@ -876,6 +877,10 @@ interface PrefsState {
    *  picture, so this defaults to "preview" even for someone whose markdown
    *  default is "source". */
   svgDefaultView: MarkdownView;
+  /** Same three modes for HTML tabs, its own pref for the reason SVG has one:
+   *  an agent's HTML report is something you open to read, so this defaults
+   *  to "preview" whatever the markdown default is. */
+  htmlDefaultView: MarkdownView;
   /** Prefix prepended to auto-generated worktree branch names in the New
    *  task dialog (e.g. "feature" → "feature/my-task"). Empty means no
    *  prefix. The user can still freely edit the branch field per task. */
@@ -1002,6 +1007,7 @@ interface PrefsState {
   setCtrlTabMode: (v: CtrlTabMode) => void;
   setMarkdownDefaultView: (v: MarkdownView) => void;
   setSvgDefaultView: (v: MarkdownView) => void;
+  setHtmlDefaultView: (v: MarkdownView) => void;
   setBranchPrefix: (v: string) => void;
   setOpenWithApp: (p: OpenWithPick) => void;
   setQueueMinIntervalMs: (ms: number) => void;
@@ -1261,6 +1267,10 @@ function readStoredPrefs() {
     const raw = lsGet(LS_SVG_VIEW, "preview");
     return raw === "source" || raw === "split" ? raw : "preview";
   })();
+  const initialHtmlView: MarkdownView = (() => {
+    const raw = lsGet(LS_HTML_VIEW, "preview");
+    return raw === "source" || raw === "split" ? raw : "preview";
+  })();
   const initialBranchPrefix = lsGet(LS_BRANCH_PREFIX, "feature");
   // Decoded here rather than in a selector: parsing per read would mint a fresh
   // object on every store notification and re-render the title bar on writes
@@ -1341,6 +1351,7 @@ function readStoredPrefs() {
     ctrlTabMode: initialCtrlTabMode,
     markdownDefaultView: initialMarkdownView,
     svgDefaultView: initialSvgView,
+    htmlDefaultView: initialHtmlView,
     branchPrefix: initialBranchPrefix,
     openWithApp: initialOpenWith,
     queueMinIntervalMs: initialQueueMinInterval,
@@ -1751,6 +1762,10 @@ export const usePrefs = create<PrefsState>(set => ({
   setSvgDefaultView: (v) => {
     try { localStorage.setItem(LS_SVG_VIEW, v); } catch {}
     set({ svgDefaultView: v });
+  },
+  setHtmlDefaultView: (v) => {
+    try { localStorage.setItem(LS_HTML_VIEW, v); } catch {}
+    set({ htmlDefaultView: v });
   },
   setBranchPrefix: (v) => {
     // Store as-typed (normalization happens at the use site in

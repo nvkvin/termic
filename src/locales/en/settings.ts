@@ -98,8 +98,8 @@ export default {
       hint: "When a terminal asks for your sudo password, offer to turn on Touch ID for sudo. Accepting runs a short script, in a tab where you can read it, that adds pam_tid.so to /etc/pam.d/sudo_local.",
     },
     remoteImages: {
-      label: "Load remote images in markdown preview",
-      hint: "Off by default: images hosted on external sites are blocked in the markdown preview, so opening an untrusted file (a dependency's README, a fetched page) can't silently fire a network request. A per-document button in the preview can still load them for just that file.",
+      label: "Load remote images in markdown and HTML previews",
+      hint: "Off by default: images hosted on external sites are blocked in the markdown and HTML previews, so opening an untrusted file (a dependency's README, an agent's report, a fetched page) can't silently fire a network request. A per-document button in the preview can still load them for just that file.",
     },
   },
 

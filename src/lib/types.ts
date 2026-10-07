@@ -1719,9 +1719,10 @@ export interface EditTab extends BaseTab {
    *  opens another file; MarkdownPane consumes and clears it (like
    *  `revealAt`) so re-renders don't re-jump the scroll. */
   revealHeading?: string;
-  /** View mode for markdown files (.md/.markdown/.mdx). "source" is the
-   *  raw CodeMirror editor, "preview" the rendered HTML, "split" both
-   *  side-by-side. Undefined → "source". Ignored for non-markdown files. */
+  /** View mode for files with a rendered form: markdown (.md/.markdown/.mdx),
+   *  SVG and HTML. "source" is the raw CodeMirror editor, "preview" the
+   *  rendered form, "split" both side-by-side. Undefined → that kind's
+   *  default-view pref. Ignored for every other file. */
   mdView?: "source" | "preview" | "split";
   /** Manual "Set syntax" pick (a CodeMirror registry NAME, e.g. "JSON" — see
    *  lib/languages) — beats the extension, so a `.txt` full of JSON can be
@@ -1736,7 +1737,7 @@ export interface EditTab extends BaseTab {
    *  why the pane owns this rather than the main chunk re-deriving it. */
   syntaxAuto?: string;
   /** Per-tab override: true unblocks remote (http/https) images in this
-   *  document's markdown preview for the current session, without
+   *  document's markdown or HTML preview for the current session, without
    *  touching the global `loadRemoteImages` pref. Undefined falls back to
    *  the pref (see docs/sandbox.md, "Known gap: the webview is outside
    *  the cage", and MarkdownPreview.tsx). Session-only, like mdView. */

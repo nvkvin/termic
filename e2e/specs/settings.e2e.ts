@@ -870,7 +870,7 @@ describe("settings rail", () => {
     await browser.execute(() =>
       window.__termic!.useApp.getState().openSettings("general", undefined, "load-remote-images"),
     );
-    await waitForText("Load remote images in markdown preview");
+    await waitForText("Load remote images in markdown and HTML previews");
     const found = await browser.execute(
       () => !!document.getElementById("setting-load-remote-images"),
     );

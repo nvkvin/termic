@@ -1300,6 +1300,38 @@ docs/sandbox.md "Known gap".
 Appearance and the palette's "Toggle word wrap". No toolbar control, by
 choice. It is its own compartment in `EditorPane`, reconfigured in place.
 
+## HTML preview
+
+`.html` / `.htm` files, in the task or external, get the same source /
+split / preview shell (`HtmlPane.tsx`), opening on the preview
+(`prefs.htmlDefaultView`, its own pref like SVG's, since a report is
+something you open to read). The page renders in a sandboxed iframe on
+`--color-html-canvas`, white in every theme: a document that sets no
+background expects a browser's page, and its default black text on the
+app's dark surface is unreadable. Security and the measurements behind it
+are in docs/sandbox.md, "HTML preview: the iframe is the boundary".
+
+What a v1 deliberately does not do, and why:
+
+- **No JavaScript.** A Chart.js or D3 chart drawn at runtime renders blank;
+  inline SVG renders. Allowing scripts is not a flag flip (sandbox.md).
+- **Links do nothing** except in-page `#anchors`. Leaving the frame is
+  blocked by the sandbox and `frame-src 'none'`. Relative images and
+  stylesheets do not load.
+- **Shortcuts stop while the frame has focus.** termic's shortcuts are
+  `keydown` listeners on the main window, and key events inside a
+  cross-origin frame never reach it. Opening a file never puts focus there (the
+  iframe has no `tabindex`, so `SourcePreviewShell` focuses the wrapper);
+  clicking into the page to select text does, until you click back out.
+  Wheel scrolling does not.
+- **⌘F does not search the page**: the app cannot read an opaque frame.
+- **Scroll resets on every change.** A new srcdoc is a new document, and
+  the parent cannot read the frame's position to restore it. In split view
+  that is every debounced edit; in preview it is an agent's rewrite. A
+  hidden tab keeps its place (`display:none` does not unload a frame).
+- **Over 2 MB or not UTF-8**, the editor cannot load the file, so the
+  preview has nothing to render and says so after 1.5s.
+
 ## Editor path bar (breadcrumb + syntax)
 
 The bar under the tab strip, for `edit` and `diff` tabs with a path (`EditorBreadcrumb` in `components/task/TaskView.tsx`). Each path segment is a click target: a folder reveals/expands that folder in the tree, the filename reveals the file, and every segment right-clicks to a copy menu. On the right: copy path, open the containing folder in Finder, locate in the tree.

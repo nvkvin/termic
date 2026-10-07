@@ -44,6 +44,7 @@ import { useUI } from "@/store/ui";
 import { MARKDOWN, effectiveLanguageId, languageLabel } from "@/lib/languages";
 import { dirnamePosix, MARKDOWN_EXT_RE } from "@/lib/markdownPaths";
 import { isSvgPath, keepsDisplayWhenHidden, previewKindForPath } from "@/lib/previewPaths";
+import { isHtmlPath } from "@/lib/htmlPreview";
 import { restoreScratchTabs } from "@/lib/scratchTabs";
 import { CodeIntelChip } from "./CodeIntelChip";
 import { FILE_MANAGER } from "@/lib/openExternal";
@@ -52,6 +53,7 @@ const EditorPane = lazy(() => import("./EditorPane").then(m => ({ default: m.Edi
 const DiffPane   = lazy(() => import("./DiffPane").then(m => ({ default: m.DiffPane })));
 const MarkdownPane = lazy(() => import("./MarkdownPane").then(m => ({ default: m.MarkdownPane })));
 const SvgPane = lazy(() => import("./SvgPane").then(m => ({ default: m.SvgPane })));
+const HtmlPane = lazy(() => import("./HtmlPane").then(m => ({ default: m.HtmlPane })));
 const PreviewPane  = lazy(() => import("./PreviewPane").then(m => ({ default: m.PreviewPane })));
 const DirListingPane = lazy(() => import("./DirListingPane").then(m => ({ default: m.DirListingPane })));
 // Lightweight extension check so we don't import the (lazy) MarkdownPane
@@ -541,11 +543,13 @@ export function TaskView({ task }: { task: Task }) {
                     <Suspense fallback={null}>
                       {isSvgPath(t.path)
                         ? <SvgPane task={task} tab={t} active={tabActive} />
-                        : previewKindForPath(t.path)
-                          ? <PreviewPane task={task} tab={t} />
-                          : isMarkdownPath(t.path)
-                            ? <MarkdownPane task={task} tab={t} visible={visible} ownsFind={ownsFind} active={tabActive} />
-                            : <EditorPane task={task} tab={t} active={tabActive} />}
+                        : isHtmlPath(t.path)
+                          ? <HtmlPane task={task} tab={t} active={tabActive} />
+                          : previewKindForPath(t.path)
+                            ? <PreviewPane task={task} tab={t} />
+                            : isMarkdownPath(t.path)
+                              ? <MarkdownPane task={task} tab={t} visible={visible} ownsFind={ownsFind} active={tabActive} />
+                              : <EditorPane task={task} tab={t} active={tabActive} />}
                     </Suspense>
                   )}
                   {t.type === "scratch"  && (
@@ -564,16 +568,20 @@ export function TaskView({ task }: { task: Task }) {
                   )}
                   {t.type === "external" && (
                     <Suspense fallback={null}>
-                      {/* Markdown gets the preview shell; everything else is
-                          read-only source (GH #240). The SVG / binary shells
-                          stay off: they read their bytes through the task-
-                          contained IPC, which an out-of-task file cannot pass.
-                          The markdown preview resolves its links against the
-                          FILE's directory instead of the task root, and does
-                          not load relative images (see MarkdownCtx.external). */}
+                      {/* Markdown and HTML get the preview shell; everything
+                          else is read-only source (GH #240). The SVG / binary
+                          shells stay off: they read their bytes through the
+                          task-contained IPC, which an out-of-task file cannot
+                          pass. The markdown preview resolves its links against
+                          the FILE's directory instead of the task root, and
+                          does not load relative images (see
+                          MarkdownCtx.external). The HTML preview reads nothing
+                          itself, only the editor's buffer. */}
                       {isMarkdownPath(t.path)
                         ? <MarkdownPane task={task} tab={t} visible={visible} ownsFind={ownsFind} active={tabActive} />
-                        : <EditorPane task={task} tab={t} active={tabActive} />}
+                        : isHtmlPath(t.path)
+                          ? <HtmlPane task={task} tab={t} active={tabActive} />
+                          : <EditorPane task={task} tab={t} active={tabActive} />}
                     </Suspense>
                   )}
                   {t.type === "diff"     && <Suspense fallback={null}><DiffPane task={task} tab={t} /></Suspense>}

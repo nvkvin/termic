@@ -78,7 +78,7 @@ export default {
     imagesBlocked: "此预览中来自外部站点的图片已被拦截。",
     showImages: "显示图片",
     always: "始终允许",
-    imagesNowLoad: "现在所有 markdown 预览都会加载远程图片。",
+    imagesNowLoad: "现在所有 markdown 和 HTML 预览都会加载远程图片。",
     settings: "设置",
     findPlaceholder: "在预览中查找",
     prevMatch: "上一个匹配 (Shift+Enter)",
@@ -88,6 +88,10 @@ export default {
 
   previewPane: {
     emptyResponse: "空响应",
+  },
+
+  htmlPane: {
+    unavailable: "无法预览此文件。切换到编辑器查看原因。",
   },
 
   sourcePreview: {

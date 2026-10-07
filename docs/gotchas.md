@@ -1134,3 +1134,24 @@ Anything that reacts to the activation synchronously (a store subscription on
 The schedule watcher opened a run's report tab that way: the tab existed, the
 agent tab was in front. Deferring the open to the next task fixed it, and the
 watcher test that replays the click's two calls pins it.
+
+## A srcdoc iframe takes the PARENT's base URL and CSP
+
+An `<iframe srcdoc>` document has no URL of its own (`about:srcdoc`), so it
+resolves relative URLs against the EMBEDDING page and runs under the
+embedding page's Content Security Policy. In termic that page is
+`tauri://localhost/`, which surprises in three ways, all measured in
+WKWebView while building the HTML preview:
+
+- `href="#section"` points at `tauri://localhost/#section`, a navigation
+  the CSP blocks, so a report's table of contents does nothing.
+- `<img src="chart.png">` is fetched from the APP's bundle, not from beside
+  the file.
+- `script-src 'self'` applies inside, so even `sandbox="allow-scripts"`
+  runs no inline script. `frame-src 'none'` does NOT apply to srcdoc.
+
+`<base href="about:srcdoc">` as the first token fixes the first two
+(fragments scroll, relative URLs fetch nothing). A CSP `<meta>` written into
+the srcdoc can narrow the inherited policy but never widen it, and WebKit
+ignores one that lands in `<body>`. See `lib/htmlPreview.ts` and
+docs/sandbox.md, "HTML preview: the iframe is the boundary".
