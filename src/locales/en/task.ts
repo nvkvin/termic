@@ -64,6 +64,7 @@ export default {
     locateTip: "Locate in file tree",
     revealTip: "Reveal {{rel}} in file tree",
     openInFileManagerTip: "Open in file manager",
+    openInBrowserTip: "Open in default browser",
     newShellTabTip: "New shell tab",
     expandTerminalTip: "Expand terminal",
     collapseTerminalTip: "Collapse terminal",

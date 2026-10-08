@@ -45,7 +45,7 @@ function ToolbarButton({ mode, active, onClick, children }: {
 }
 
 export function SourcePreviewShell(
-  { view, setView, editor, preview, active = false }: {
+  { view, setView, editor, preview, actions, active = false }: {
     view: SourceView;
     /** This tab is the one in front. Source and split views focus the editor
      *  themselves (the caller passes `active` into it); preview-only focuses
@@ -59,6 +59,8 @@ export function SourcePreviewShell(
      *  flags are passed through because a preview kept mounted off screen
      *  still needs to know it is not visible (find ownership, scroll sync). */
     preview: (s: { showPreview: boolean; showEditor: boolean }) => React.ReactNode;
+    /** Extra actions on the toolbar (e.g. Open in browser). */
+    actions?: React.ReactNode;
   },
 ) {
   const { t } = useTranslation("panels");
@@ -99,6 +101,8 @@ export function SourcePreviewShell(
     <div className="flex h-full flex-col bg-[var(--color-bg)]" data-testid="source-preview-shell" data-view={view}>
       {/* Mode toolbar — right-aligned, matches the bottom-split strip geometry. */}
       <div className="flex h-8 shrink-0 items-center justify-end gap-0.5 border-b border-[var(--color-border-soft)] px-2">
+        {actions}
+        {actions && <div className="mx-1 h-3.5 w-px bg-[var(--color-border-soft)]" />}
         <ToolbarButton mode="source"  active={view === "source"}  onClick={() => setView("source")}><FileCode2 className="h-3.5 w-3.5" />{t("sourcePreview.editor")}</ToolbarButton>
         <ToolbarButton mode="preview" active={view === "preview"} onClick={() => setView("preview")}><Eye className="h-3.5 w-3.5" />{t("sourcePreview.preview")}</ToolbarButton>
         <ToolbarButton mode="split"   active={view === "split"}   onClick={() => setView("split")}><Columns2 className="h-3.5 w-3.5" />{t("sourcePreview.split")}</ToolbarButton>

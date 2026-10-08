@@ -92,6 +92,8 @@ export default {
 
   htmlPane: {
     unavailable: "无法预览此文件。切换到编辑器查看原因。",
+    openInBrowser: "在浏览器中打开",
+    openInBrowserTip: "在默认浏览器中打开",
   },
 
   sourcePreview: {

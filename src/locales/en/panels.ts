@@ -93,6 +93,8 @@ export default {
 
   htmlPane: {
     unavailable: "This file can't be previewed. Switch to Editor to see why.",
+    openInBrowser: "Open in browser",
+    openInBrowserTip: "Open in default browser",
   },
 
   sourcePreview: {

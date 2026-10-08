@@ -61,6 +61,7 @@ export default {
     locateTip: "在文件树中定位",
     revealTip: "在文件树中显示 {{rel}}",
     openInFileManagerTip: "在文件管理器中打开",
+    openInBrowserTip: "在默认浏览器中打开",
     newShellTabTip: "新建 Shell 标签",
     expandTerminalTip: "展开终端",
     collapseTerminalTip: "收起终端",

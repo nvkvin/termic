@@ -67,3 +67,6 @@ export function htmlPreviewSrcdoc(text: string, remoteImages: boolean): string {
 export function hasRemoteImages(text: string): boolean {
   return /(?:\bsrc(?:set)?\s*=\s*["']?|\burl\(\s*["']?)\s*https:\/\//i.test(text);
 }
+
+/** Open an HTML file in the user's configured browser (or OS default). */
+export { openFileInBrowser as openHtmlInBrowser } from "@/lib/previewBrowser";

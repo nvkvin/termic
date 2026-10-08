@@ -1,5 +1,11 @@
-import { describe, it, expect } from "vitest";
-import { hasRemoteImages, htmlPreviewCsp, htmlPreviewSrcdoc, isHtmlPath } from "@/lib/htmlPreview";
+import { describe, it, expect, vi } from "vitest";
+
+vi.mock("@/lib/ipc", () => ({
+  openExternalUrl: vi.fn(async () => ({ used: "default", reason: null })),
+}));
+
+import { hasRemoteImages, htmlPreviewCsp, htmlPreviewSrcdoc, isHtmlPath, openHtmlInBrowser } from "@/lib/htmlPreview";
+import { openExternalUrl } from "@/lib/ipc";
 
 describe("isHtmlPath", () => {
   it("matches .html and .htm in any case, at any depth", () => {
@@ -89,5 +95,23 @@ describe("hasRemoteImages", () => {
     expect(hasRemoteImages('<img src="data:image/png;base64,AAAA">')).toBe(false);
     expect(hasRemoteImages('<img src="chart.png">')).toBe(false);
     expect(hasRemoteImages('<img src="http://example.com/a.png">')).toBe(false);
+  });
+});
+
+describe("openHtmlInBrowser", () => {
+  it("resolves an in-task HTML file to a file:// URI and opens it", async () => {
+    vi.mocked(openExternalUrl).mockClear();
+    const task = { path: "/Users/alice/project", project_id: "p1" };
+    await openHtmlInBrowser(task, "reports/index.html");
+    expect(openExternalUrl).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(openExternalUrl).mock.calls[0][0]).toBe("file:///Users/alice/project/reports/index.html");
+  });
+
+  it("resolves an external HTML file using the absolute path directly", async () => {
+    vi.mocked(openExternalUrl).mockClear();
+    const task = { path: "/Users/alice/project", project_id: "p1" };
+    await openHtmlInBrowser(task, "/tmp/artifacts/report.html", true);
+    expect(openExternalUrl).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(openExternalUrl).mock.calls[0][0]).toBe("file:///tmp/artifacts/report.html");
   });
 });

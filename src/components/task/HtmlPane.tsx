@@ -36,9 +36,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { EditorView } from "@codemirror/view";
-import { Check, ImageOff } from "lucide-react";
+import { Check, Globe, ImageOff } from "lucide-react";
 import type { EditTab, ExternalTab, Task } from "@/lib/types";
-import { hasRemoteImages, htmlPreviewSrcdoc } from "@/lib/htmlPreview";
+import { hasRemoteImages, htmlPreviewSrcdoc, openHtmlInBrowser } from "@/lib/htmlPreview";
 import { useApp } from "@/store/app";
 import { usePrefs } from "@/store/prefs";
 import { EditorPane } from "./EditorPane";
@@ -111,6 +111,17 @@ export function HtmlPane(
       view={view}
       setView={setView}
       active={active}
+      actions={(
+        <button
+          data-testid="html-open-browser-btn"
+          onClick={() => void openHtmlInBrowser(task, tab.path, tab.type === "external")}
+          title={t("htmlPane.openInBrowserTip")}
+          className="inline-flex h-6 items-center gap-1.5 rounded px-2 text-[12px] font-medium text-[var(--color-fg-dim)] transition-colors hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
+        >
+          <Globe className="h-3.5 w-3.5" />
+          <span>{t("htmlPane.openInBrowser")}</span>
+        </button>
+      )}
       editor={<EditorPane task={task} tab={tab} onContent={onContent} active={active && view !== "preview"} />}
       preview={() => (
         <div tabIndex={-1} className="flex h-full flex-col bg-[var(--color-bg)] outline-none">

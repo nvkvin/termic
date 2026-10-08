@@ -3881,6 +3881,20 @@ describe("html preview", () => {
       { timeout: 10_000, timeoutMsg: "never returned to the preview" });
     expect(await browser.execute(() => localStorage.getItem("htmlDefaultView"))).toBe("preview");
   });
+
+  it("provides an open-in-browser button in the header and in the preview toolbar", async () => {
+    const hasHeaderBtn = await browser.execute((id) => {
+      const root = document.querySelector(`[data-task-id="${id}"]`);
+      return !!root?.querySelector('[data-testid="breadcrumb-open-browser"]');
+    }, taskId);
+    expect(hasHeaderBtn).toBe(true);
+
+    const hasToolbarBtn = await browser.execute((id) => {
+      const root = document.querySelector(`[data-task-id="${id}"]`);
+      return !!root?.querySelector('[data-testid="html-open-browser-btn"]');
+    }, taskId);
+    expect(hasToolbarBtn).toBe(true);
+  });
 });
 
 // A file the editor cannot show is a WRONG-VIEWER state, not a failure: it

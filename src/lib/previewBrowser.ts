@@ -24,8 +24,9 @@ import { openExternalUrl } from "@/lib/ipc";
 import { useUI } from "@/store/ui";
 import { i18n } from "@/lib/i18n";
 import { useApp } from "@/store/app";
-import type { Project } from "@/lib/types";
+import type { Project, Task } from "@/lib/types";
 import { IS_MAC } from "@/lib/shortcuts";
+import { absUnder, pathToFileUri } from "@/lib/osPath";
 
 /** The modifier that opens a terminal link, for help text. Cmd on macOS,
  *  Ctrl elsewhere - the terminal openers gate on `metaKey || ctrlKey`. */
@@ -207,4 +208,17 @@ export function browserCommandForTask(taskId: string | undefined): string {
   const task = taskId ? st.tasks.find(t => t.id === taskId) : undefined;
   const project = task ? st.projects.find(p => p.id === task.project_id) : undefined;
   return resolveBrowserCommand(st.previewBrowser, project?.preview_browser);
+}
+
+/** Open a local file (e.g. an HTML report) in the user's configured browser (or OS default). */
+export function openFileInBrowser(
+  task: Pick<Task, "path" | "project_id">,
+  filePath: string,
+  isExternal: boolean = false,
+): Promise<void> {
+  const abs = isExternal ? filePath : absUnder(task.path, filePath);
+  const uri = pathToFileUri(abs);
+  const st = useApp.getState();
+  const project = st.projects.find(p => p.id === task.project_id);
+  return openWebUrlForProject(uri, st.previewBrowser, project);
 }

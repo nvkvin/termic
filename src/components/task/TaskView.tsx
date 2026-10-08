@@ -29,7 +29,7 @@ import { RunPane } from "./RunPane";
 import { SplitNodeView } from "./SplitView";
 import { AuxTerminal } from "./AuxTerminal";
 import { MessageQueueButton } from "./MessageQueueButton";
-import { Plus, ChevronDown, ChevronUp, ChevronRight, LocateFixed, Copy, Check, FolderOpen } from "lucide-react";
+import { Plus, ChevronDown, ChevronUp, ChevronRight, LocateFixed, Copy, Check, FolderOpen, Globe } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { getAllLeaves, computeLeafBounds, focusedTabId } from "@/lib/splitTree";
 import type { PaneLeaf, Rect } from "@/lib/splitTree";
@@ -44,7 +44,7 @@ import { useUI } from "@/store/ui";
 import { MARKDOWN, effectiveLanguageId, languageLabel } from "@/lib/languages";
 import { dirnamePosix, MARKDOWN_EXT_RE } from "@/lib/markdownPaths";
 import { isSvgPath, keepsDisplayWhenHidden, previewKindForPath } from "@/lib/previewPaths";
-import { isHtmlPath } from "@/lib/htmlPreview";
+import { isHtmlPath, openHtmlInBrowser } from "@/lib/htmlPreview";
 import { restoreScratchTabs } from "@/lib/scratchTabs";
 import { CodeIntelChip } from "./CodeIntelChip";
 import { FILE_MANAGER } from "@/lib/openExternal";
@@ -123,6 +123,16 @@ function EditorBreadcrumb({ task }: { task: Task }) {
         >
           {languageLabel(effectiveLanguageId(tab))}
         </button>
+        {isHtmlPath(tab.path) && (
+          <button
+            data-testid="breadcrumb-open-browser"
+            onClick={() => void openHtmlInBrowser(task, tab.path, true)}
+            title={t("breadcrumb.openInBrowserTip")}
+            className="shrink-0 rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
+          >
+            <Globe className="h-3.5 w-3.5" />
+          </button>
+        )}
         <button
           onClick={() => void copyToClipboard(tab.path, "path")}
           title={t("breadcrumb.copyPathTip")}
@@ -209,6 +219,16 @@ function EditorBreadcrumb({ task }: { task: Task }) {
             className="shrink-0 rounded px-1.5 py-0.5 text-[11.5px] text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
           >
             {languageLabel(effectiveLanguageId(tab))}
+          </button>
+        )}
+        {tab.type === "edit" && isHtmlPath(tab.path) && (
+          <button
+            data-testid="breadcrumb-open-browser"
+            onClick={() => void openHtmlInBrowser(task, tab.path, false)}
+            title={t("breadcrumb.openInBrowserTip")}
+            className={iconBtn}
+          >
+            <Globe className="h-3.5 w-3.5" />
           </button>
         )}
         <button onClick={copyPath} title={t("breadcrumb.copyPathTip")} className={iconBtn}>
