@@ -12,7 +12,7 @@
 // their own flags. `key` is a normalized token: a lowercase letter ("l"),
 // punctuation ("[", "]", ","), an arrow ("ArrowUp"…), or the sentinel "1-9"
 // for the "jump to tab N" range (matches any digit 1-9 with the modifiers).
-import { IS_MAC, kbd } from "./platform";
+import { IS_LINUX, IS_MAC, kbd } from "./platform";
 
 export type Binding = {
   cmd: boolean;
@@ -179,7 +179,9 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     hint: `Open a new pane below the focused pane (horizontal divider). Also: ${kbd("⇧⌘D")} by default.`,
     defaultBinding: B("d", { cmd: true, shift: true }) },
   { id: "toggle-terminal", group: "Terminal", label: "Toggle terminal panel",
-    hint: "Show + focus the bottom split, or hide it and return to the agent",
+    hint: IS_LINUX
+      ? "Show + focus the bottom split, or hide it and return to the agent. From inside a terminal use Super+J: Ctrl+J there belongs to the shell."
+      : "Show + focus the bottom split, or hide it and return to the agent",
     defaultBinding: B("j", { cmd: true }) },
   // Copy / paste are LINUX/WINDOWS ONLY and handled locally in the terminal
   // panes (TerminalPane / AuxTerminal `attachCustomKeyEventHandler`), gated to
@@ -381,11 +383,85 @@ export const DEFAULT_BINDINGS: BindingMap = Object.fromEntries(
   SHORTCUT_DEFS.map(d => [d.id, d.defaultBinding]),
 ) as BindingMap;
 
+// ── Linux: the Super key ────────────────────────────────────────────────
+//
+// On macOS Cmd is `metaKey`, and on Windows so is the Win key, which is what
+// makes Win+J toggle the terminal from INSIDE a terminal: xterm leaves a meta
+// chord alone, where it keeps Ctrl+J for the shell (it is a line feed).
+//
+// WebKitGTK reports none of that. Measured with real X key events (WebKitGTK
+// 2.52): holding Super and pressing J delivers a keydown with `key: "j"`,
+// `metaKey: false`, and `getModifierState` false for "Super", "OS", "Meta"
+// and "Hyper" alike. The chord is indistinguishable from typing a j. What
+// DOES arrive is the Super key's own keydown and keyup (`key: "Super"`,
+// `code: "OSLeft"` / `"OSRight"`), so the held state is tracked here and
+// folded into `cmd` like the other two.
+//
+// The cost of tracking is a missed keyup: GNOME takes the focus for its
+// overview when Super is released alone, and the release can go with it. A
+// stuck flag would turn every typed j into a shortcut, so losing focus clears
+// it.
+let superHeld = false;
+
+function isSuperKey(e: KeyboardEvent): boolean {
+  return e.key === "Super" || e.key === "OS" || e.code === "OSLeft" || e.code === "OSRight"
+    || e.code === "MetaLeft" || e.code === "MetaRight";
+}
+
+if (IS_LINUX && typeof window !== "undefined") {
+  // Capture phase: xterm and CodeMirror stop some keys before they bubble.
+  window.addEventListener("keydown", e => { if (isSuperKey(e)) superHeld = true; }, true);
+  window.addEventListener("keyup", e => { if (isSuperKey(e)) superHeld = false; }, true);
+  window.addEventListener("blur", () => { superHeld = false; });
+  document.addEventListener("visibilitychange", () => { superHeld = false; });
+}
+
+/** Linux only: Super is down, so the key being pressed is an app shortcut
+ *  and not text. A terminal asks this to keep the letter out of the PTY. */
+export function superIsHeld(): boolean {
+  return IS_LINUX && superHeld;
+}
+
+/** Test seam: there is no way to hold a key between two synthetic events. */
+export function setSuperHeldForTests(v: boolean): void {
+  superHeld = v;
+}
+
+/** The app's "Cmd" for a live event: Cmd on macOS, Ctrl or the Win key on
+ *  Windows, Ctrl or Super on Linux. */
+export function eventCmd(e: KeyboardEvent): boolean {
+  return e.metaKey || e.ctrlKey || superIsHeld();
+}
+
+/** Tab, including Shift+Tab on Linux. X gives Shift+Tab its own keysym
+ *  (ISO_Left_Tab) and WebKitGTK reports it as `key: "Unidentified"`, so a
+ *  check on `key` alone never saw ⌃⇧⇥ there. `code` is the physical key. */
+export function isTabKey(e: KeyboardEvent): boolean {
+  return e.key === "Tab" || e.code === "Tab";
+}
+
+/** What Shift turns each punctuation key a binding can name into. A binding
+ *  says `⇧⌘[`; WebKitGTK (and Chromium on Windows) report the CHARACTER, so
+ *  the event says `{` and never matched. Measured with real keys on Linux:
+ *  Ctrl+Shift+[ arrived as key "{", and previous / next tab did nothing.
+ *  Letters need no entry, they are lower-cased below. */
+const UNSHIFTED: Record<string, string> = {
+  "{": "[", "}": "]", "<": ",", ">": ".", "+": "=", "_": "-", "?": "/", ":": ";", "\"": "'", "|": "\\", "~": "`",
+};
+
+/** A binding's key with Shift's effect on punctuation taken back out, so a
+ *  binding recorded as `{` + Shift and one written as `[` + Shift are the
+ *  same chord. */
+function baseKey(key: string, shift: boolean): string {
+  return shift ? UNSHIFTED[key] ?? key : key;
+}
+
 /** Normalize a live KeyboardEvent's key to the same token space as `Binding.key`. */
 export function eventKeyToken(e: KeyboardEvent): string {
   const k = e.key;
   if (/^[a-zA-Z]$/.test(k)) return k.toLowerCase();
-  return k; // ArrowUp / "[" / "]" / "," / digits …
+  if (k === "Unidentified" && e.code === "Tab") return "Tab";
+  return baseKey(k, e.shiftKey); // ArrowUp / "[" / "]" / "," / digits …
 }
 
 /** True when the event's modifiers + key satisfy the binding. The "1-9"
@@ -400,10 +476,10 @@ export function bindingMatches(e: KeyboardEvent, b: Binding | undefined): boolea
   // AltGr (German, Polish, French layouts) reports as Ctrl+Alt in Chromium,
   // so a key that types `@` or `{` would otherwise fire a Ctrl+Alt binding.
   if (typeof e.getModifierState === "function" && e.getModifierState("AltGraph")) return false;
-  const cmd = e.metaKey || e.ctrlKey;
+  const cmd = eventCmd(e);
   if (cmd !== b.cmd || e.shiftKey !== b.shift || e.altKey !== b.alt) return false;
   if (b.key === "1-9") return /^[1-9]$/.test(e.key);
-  return eventKeyToken(e) === b.key;
+  return eventKeyToken(e) === baseKey(b.key, b.shift);
 }
 
 /** Build a Binding from a recorded keydown. Returns null for a bare modifier
@@ -411,14 +487,15 @@ export function bindingMatches(e: KeyboardEvent, b: Binding | undefined): boolea
  *  "1-9" range sentinel (used by the jump-to-tab row). */
 export function bindingFromEvent(e: KeyboardEvent, digitMode = false): Binding | null {
   const k = e.key;
-  if (k === "Meta" || k === "Control" || k === "Shift" || k === "Alt" || k === "CapsLock") {
+  if (k === "Meta" || k === "Control" || k === "Shift" || k === "Alt" || k === "CapsLock" || isSuperKey(e)) {
     return null;
   }
   let key: string;
   if (/^[a-zA-Z]$/.test(k)) key = k.toLowerCase();
   else if (/^[0-9]$/.test(k)) key = digitMode ? "1-9" : k;
-  else key = k;
-  return { cmd: e.metaKey || e.ctrlKey, shift: e.shiftKey, alt: e.altKey, key };
+  // Recorded as the key, not the character Shift made of it: `⇧⌘[`, not `⇧⌘{`.
+  else key = baseKey(k, e.shiftKey);
+  return { cmd: eventCmd(e), shift: e.shiftKey, alt: e.altKey, key };
 }
 
 /**

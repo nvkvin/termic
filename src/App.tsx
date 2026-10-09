@@ -24,6 +24,7 @@ import { maybePromptDesktopEntry } from "@/lib/desktopEntryPrompt";
 import { cn } from "@/lib/utils";
 import { Sidebar } from "@/components/sidebar/Sidebar";
 import { UnifiedBar } from "@/components/UnifiedBar";
+import { WindowResizeEdges } from "@/components/WindowResizeEdges";
 import { MainArea } from "@/components/task/MainArea";
 import { RightPanel } from "@/components/task/RightPanel";
 import { RaceBoard } from "@/components/task/RaceBoard";
@@ -241,6 +242,7 @@ export function App() {
 
   return (
     <>
+      <WindowResizeEdges />
       <div className="flex h-screen w-screen flex-col">
         <UnifiedBar />
         {/* grid-template-columns transition animates sidebar/right-panel show/hide. */}

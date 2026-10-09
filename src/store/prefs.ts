@@ -105,7 +105,6 @@ const LS_BOARD_ARCHIVE_LIMIT = scoped("boardArchiveLimit");
 const LS_BOARD_PINNED_COLUMNS = scoped("boardPinnedColumns");
 const LS_SHOW_STATUS_SECTION = scoped("showStatusSection");
 const LS_STATUS_SECTION_COLLAPSED = scoped("statusSectionCollapsed");
-const LS_PROJECTS_SECTION_COLLAPSED = scoped("projectsSectionCollapsed");
 const LS_SHOW_BOARD = scoped("showBoard");
 const LS_SCHEDULED_NAV = scoped("scheduledNav");
 const LS_TASK_LOCATION_ICON = scoped("taskLocationIcon");
@@ -819,8 +818,6 @@ interface PrefsState {
   showStatusSection: boolean;
   /** Whether the sidebar's STATUS section is collapsed in place. */
   statusSectionCollapsed: boolean;
-  /** Whether the sidebar's PROJECTS section is collapsed in place. */
-  projectsSectionCollapsed: boolean;
   /** The Kanban entry in the sidebar's primary nav, the only way into the
    *  board. On by default; off hides the entry for people who never use it. */
   showBoard: boolean;
@@ -1011,7 +1008,6 @@ interface PrefsState {
   setBoardPinnedColumns: (cols: readonly BoardStateColumn[]) => void;
   setShowStatusSection: (v: boolean) => void;
   setStatusSectionCollapsed: (v: boolean) => void;
-  setProjectsSectionCollapsed: (v: boolean) => void;
   setShowBoard: (v: boolean) => void;
   setScheduledNav: (m: ScheduledNavMode) => void;
   setTaskLocationIcon: (m: TaskLocationIconMode) => void;
@@ -1278,7 +1274,6 @@ function readStoredPrefs() {
   const initialBoardPinnedColumns = parseBoardPinnedColumns(lsGet(LS_BOARD_PINNED_COLUMNS, ""));
   const initialShowStatusSection = lsGet(LS_SHOW_STATUS_SECTION, "") === "1";
   const initialStatusSectionCollapsed = lsGet(LS_STATUS_SECTION_COLLAPSED, "") === "1";
-  const initialProjectsSectionCollapsed = lsGet(LS_PROJECTS_SECTION_COLLAPSED, "") === "1";
   const initialShowBoard = lsGet(LS_SHOW_BOARD, "") !== "0";
   const initialScheduledNav = parseScheduledNav(lsGet(LS_SCHEDULED_NAV, ""));
   const initialTaskLocationIcon = parseTaskLocationIcon(lsGet(LS_TASK_LOCATION_ICON, ""));
@@ -1377,7 +1372,6 @@ function readStoredPrefs() {
     boardPinnedColumns: initialBoardPinnedColumns,
     showStatusSection: initialShowStatusSection,
     statusSectionCollapsed: initialStatusSectionCollapsed,
-    projectsSectionCollapsed: initialProjectsSectionCollapsed,
     showBoard: initialShowBoard,
     scheduledNav: initialScheduledNav,
     taskLocationIcon: initialTaskLocationIcon,
@@ -1756,11 +1750,6 @@ export const usePrefs = create<PrefsState>(set => ({
     if (s.statusSectionCollapsed === v) return s;
     try { localStorage.setItem(LS_STATUS_SECTION_COLLAPSED, v ? "1" : "0"); } catch {}
     return { statusSectionCollapsed: v };
-  }),
-  setProjectsSectionCollapsed: (v) => set(s => {
-    if (s.projectsSectionCollapsed === v) return s;
-    try { localStorage.setItem(LS_PROJECTS_SECTION_COLLAPSED, v ? "1" : "0"); } catch {}
-    return { projectsSectionCollapsed: v };
   }),
   setShowBoard: (v) => set(s => {
     if (s.showBoard === v) return s;

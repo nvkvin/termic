@@ -20,7 +20,7 @@ PR went up. See [Agent-written PRs](#agent-written-prs).
 ```sh
 git clone https://github.com/simion/termic
 cd termic
-make setup          # installs brew/rust/node, runs npm install + cargo check
+make setup          # installs rust/node (+ system packages on Linux), runs npm install + cargo check
 make dev            # vite HMR + Rust auto-rebuild
 ```
 
@@ -30,6 +30,12 @@ make dev            # vite HMR + Rust auto-rebuild
 
 - macOS 12+ (Apple Silicon supported; Intel works for dev, untested for release)
 - Homebrew (`make setup` uses it to install missing deps)
+- On Linux instead: apt, dnf or pacman. A stock desktop has no `make` yet, so
+  the first run is `bash scripts/setup-linux.sh`, which installs it along with
+  the WebKitGTK dev packages (the one step that asks for sudo), Rust and Node.
+  `WITH_E2E=1` adds what `make e2e` needs to run headless under Xvfb.
+  `make install` and `make beta` build an AppImage and put it in
+  `~/Applications` (`scripts/install-app-linux.sh`).
 - Rust toolchain ([rustup](https://rustup.rs/))
 - Node.js 20+
 

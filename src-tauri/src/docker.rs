@@ -2381,7 +2381,6 @@ mod tests {
         assert!(agent_config("devin", &[".config/devin".to_string()], true).is_none());
     }
 
-    #[test]
     /// The hook wiring has to be IN the container, not merely on the host
     /// process. `cmd.env(...)` sets the `docker run` CLI's environment and
     /// docker forwards none of it, so both gates in the hook script failed and
@@ -2402,6 +2401,7 @@ mod tests {
         assert!(!pty.starts_with("/dev/tty"), "a host pty path is meaningless in the cage");
     }
 
+    #[test]
     fn build_spec_names_the_container_per_pty_not_per_task() {
         // A task can host several agent tabs, each with its own container.
         // Keyed on task id alone, tab B's `--name` collided with tab A's live

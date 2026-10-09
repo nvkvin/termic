@@ -171,7 +171,9 @@ Each of these is a deliberate choice; the reasoning lives next to the code.
   up with no webview at all. Two builds that differ in their arguments
   cannot run side by side on one folder (`WEBVIEW2_USER_DATA_FOLDER` moves
   one of them; the e2e suite sets it).
-- **Keys.** Ctrl stands in for Cmd, and shortcut hints read `Ctrl+Alt+P`.
+- **Keys.** Ctrl stands in for Cmd, and so does the Windows key (the same
+  rule as Linux, see docs/shortcuts.md "What Cmd is on each platform").
+  Shortcut hints read `Ctrl+Alt+P`.
   In a terminal, plain Ctrl+letter goes to the shell (Ctrl+P is readline's,
   not the file finder), and Ctrl+V pastes, as in every Windows terminal.
   Ctrl+Shift+F in a terminal opens that terminal's find, as in Windows

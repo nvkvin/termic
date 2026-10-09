@@ -15,6 +15,8 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { useTranslation, Trans } from "react-i18next";
 import { Search, X, Zap } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { IS_LINUX } from "@/lib/platform";
+import { openWebUrl } from "@/lib/previewBrowser";
 import { useUI } from "@/store/ui";
 import { useApp } from "@/store/app";
 import { usePrefs } from "@/store/prefs";
@@ -437,7 +439,11 @@ export function FindInFilesDialog() {
               <button
                 type="button"
                 onMouseDown={e => e.preventDefault()}
-                onClick={() => { openUrl(RIPGREP_INSTALL_URL).catch(() => {}); }}
+                onClick={() => {
+                  // Linux: the Rust path, see TerminalPane's openLink.
+                  if (IS_LINUX) { void openWebUrl(RIPGREP_INSTALL_URL, ""); return; }
+                  openUrl(RIPGREP_INSTALL_URL).catch(() => {});
+                }}
                 title={t("findInFiles.rgHintTitle")}
                 data-testid="fif-rg-hint"
                 data-no-drag

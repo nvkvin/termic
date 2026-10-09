@@ -1102,6 +1102,53 @@ directories and anything owner-executable, 0644 for the rest) and FAILS the
 build if any entry is left unreadable or unexecutable for `other`, because the
 same class of defect arrives with any new bundled file.
 
+## An AppImage's environment is for the app, and every child inherits it
+
+An AppImage finds its bundled libraries through the environment. `AppRun` and
+the GTK hook export `LD_LIBRARY_PATH`, `GTK_PATH`, `GIO_EXTRA_MODULES`,
+`XDG_DATA_DIRS`, `PYTHONHOME` and a dozen more, all pointing into the mounted
+AppDir, and every process Termic spawns inherits them: each terminal, each
+script, each `git`, and the login-shell probe.
+
+On Ubuntu 25.10+ that was fatal rather than untidy. `env`, `ls` and `cat` there
+are the Rust coreutils, they link libsystemd, and with our `LD_LIBRARY_PATH`
+they load the older copy we bundle:
+
+```
+/usr/bin/env: /tmp/.mount_TermicXXXXXX/usr/lib/libsystemd.so.0: version `LIBSYSTEMD_254' not found
+```
+
+So every `#!/usr/bin/env bash` script died on its first line in a Termic
+terminal, and `shell_env`'s `$SHELL -ilc env` probe died the same way, which
+left the app on the fallback PATH for good.
+
+The variables cannot simply be unset at startup. The WebKit helper processes
+need `LD_LIBRARY_PATH` (their RUNPATH is `$ORIGIN`, which is their own
+directory, so without it `ldd` resolves them to the HOST's libwebkit), and GTK
+reads the others lazily. So the app keeps them and each CHILD loses them:
+`src-tauri/src/appimage_env.rs`, applied in `proc_ctl::command` and
+`pty_spawn`, the two places a child is built. The rule is by value (drop any
+entry inside an AppImage mount), not a list of names, so it does not go stale
+when the bundler exports one more.
+
+Three things to carry forward:
+
+- **Spawn through `proc_ctl::command`, never a bare `Command::new`.** It was
+  already the rule for Windows (no console flash); it is now also what keeps
+  the AppDir out of a child's environment.
+- **The first fix for this (#47) was a `/bin/sh` wrapper that unset three
+  variables and exec'd the binary renamed to `termic.bin`, and the rename broke
+  something unrelated.** GTK names a window after its executable, so
+  `WM_CLASS` became `termic.bin`, matched no desktop entry
+  (`StartupWMClass=Termic`), and GNOME's dock showed a generic cog instead of
+  the icon. `release.yml` now fails if `usr/bin/termic` is not an ELF.
+- **`openUrl` from `@tauri-apps/plugin-opener` is past both choke points.**
+  The plugin spawns `xdg-open` itself, with our environment, and `xdg-open` is
+  a shell script that calls `readlink`, `sed` and `head`: under the AppDir
+  environment none of them start, so a clicked link did nothing. On Linux
+  every link goes through `openWebUrl` (Rust, `spawn_os_open`) instead. Do
+  not add a new `openUrl` call without the `IS_LINUX` branch.
+
 ## `getComputedStyle` during a transition returns the value mid-flight
 
 An e2e probe read `getComputedStyle(tab).backgroundColor` to decide which of

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_BINDINGS, FIXED_SHORTCUTS, GROUP_ORDER, NON_CONFLICTING_GROUPS, SHORTCUT_DEFS,
-  bindingMatches, bindingSignature, bindingText, bindingToCmKey, bindingsEqual, isValidBinding, isReservedKey,
+  bindingFromEvent, bindingMatches, bindingSignature, bindingText, bindingToCmKey, bindingsEqual, isValidBinding, isReservedKey,
 } from "./shortcuts";
 
 // `SHORTCUT_DEFS` is the single source of truth for every bindable key, and it
@@ -221,6 +221,39 @@ describe("AltGr", () => {
   });
   it("still fires it from a real Ctrl+Alt", () => {
     expect(bindingMatches(ev({ ctrlKey: true, altKey: true }), ctrlAltP)).toBe(true);
+  });
+});
+
+describe("Shift and punctuation", () => {
+  // What WebKitGTK and Chromium deliver for Ctrl+Shift+[ : the character.
+  const ev = (key: string, o: Partial<KeyboardEvent> = {}) => ({
+    key, code: "", metaKey: false, ctrlKey: true, shiftKey: true, altKey: false,
+    getModifierState: () => false, ...o,
+  }) as unknown as KeyboardEvent;
+
+  it("matches the default previous / next tab chords when the event says { and }", () => {
+    expect(bindingMatches(ev("{"), DEFAULT_BINDINGS["tab-prev"])).toBe(true);
+    expect(bindingMatches(ev("}"), DEFAULT_BINDINGS["tab-next"])).toBe(true);
+    // And still when a platform reports the key itself.
+    expect(bindingMatches(ev("["), DEFAULT_BINDINGS["tab-prev"])).toBe(true);
+  });
+
+  it("does not confuse them with the unshifted chord", () => {
+    // Cmd+[ is Back. Without Shift, `{` cannot arrive, and `[` must not be tab-prev.
+    expect(bindingMatches(ev("[", { shiftKey: false }), DEFAULT_BINDINGS["tab-prev"])).toBe(false);
+    expect(bindingMatches(ev("[", { shiftKey: false }), DEFAULT_BINDINGS["nav-back"])).toBe(true);
+    expect(bindingMatches(ev("{"), DEFAULT_BINDINGS["nav-back"])).toBe(false);
+  });
+
+  it("still honours a binding that was recorded as the shifted character", () => {
+    // A rebind saved before this by a Linux or Windows user reads `{` + Shift.
+    const recorded = { key: "{", cmd: true, shift: true, alt: false };
+    expect(bindingMatches(ev("{"), recorded)).toBe(true);
+  });
+
+  it("records the key, not the character", () => {
+    expect(bindingFromEvent(ev("{"))).toEqual({ key: "[", cmd: true, shift: true, alt: false });
+    expect(bindingFromEvent(ev("+"))).toEqual({ key: "=", cmd: true, shift: true, alt: false });
   });
 });
 

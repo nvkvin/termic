@@ -50,8 +50,6 @@ export default {
   statusHeader: "状态",
   collapseStatusSection: "折叠状态区",
   expandStatusSection: "展开状态区",
-  collapseProjectsSection: "折叠项目区",
-  expandProjectsSection: "展开项目区",
   statusBucketCount_one: "{{count}} 个任务",
   statusBucketCount_other: "{{count}} 个任务",
   addProjectTip: "添加项目（仓库）",

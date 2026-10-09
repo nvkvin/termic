@@ -15,7 +15,11 @@ import { execFileSync } from "node:child_process";
 // invasive, flake-prone app-side port→datadir mapping. Stability wins.
 
 const repoRoot = path.dirname(fileURLToPath(import.meta.url));
-const appBinary = path.join(repoRoot, "src-tauri", "target", "debug", process.platform === "win32" ? "termic.exe" : "termic");
+// TERMIC_E2E_BINARY points the suite at a binary built somewhere else, which is
+// how it runs beside a live `make dev`: both write target/debug/termic, so
+// build the e2e one with CARGO_TARGET_DIR set and name the result here.
+const appBinary = process.env.TERMIC_E2E_BINARY
+  || path.join(repoRoot, "src-tauri", "target", "debug", process.platform === "win32" ? "termic.exe" : "termic");
 /** Exported so specs that need the control socket agree with the launcher. */
 export const dataDir = path.join(repoRoot, ".e2e", "profile");
 /** Where `TERMIC_E2E_TIMING=1` writes per-test durations. */
@@ -82,6 +86,20 @@ export const config: WebdriverIO.Config = {
     // `before` beside an installed build without `--disable-lcd-text`).
     if (process.platform === "win32") {
       process.env.WEBVIEW2_USER_DATA_FOLDER = path.join(dataDir, "webview2");
+    }
+    // Linux: the same hole, found the same way. WebKitGTK keeps localStorage
+    // under $XDG_DATA_HOME/<app identifier>, keyed by ORIGIN, and every built
+    // binary serves the app from the same origin. So a run read the
+    // developer's installed Termic's prefs (a right panel they had hidden
+    // failed every file-tree spec from the first one) and wrote its own back
+    // into the real app. Give the run its own XDG homes. Children inherit
+    // them, which is also what keeps a desktop-entry spec out of the real
+    // ~/.local/share/applications.
+    if (process.platform === "linux") {
+      process.env.XDG_DATA_HOME = path.join(dataDir, "xdg-data");
+      process.env.XDG_CACHE_HOME = path.join(dataDir, "xdg-cache");
+      mkdirSync(process.env.XDG_DATA_HOME, { recursive: true });
+      mkdirSync(process.env.XDG_CACHE_HOME, { recursive: true });
     }
     // Agent-hook installs write into an agent's own config dir. Point that at
     // the throwaway profile so a run can exercise install/remove without

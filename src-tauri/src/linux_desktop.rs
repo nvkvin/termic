@@ -126,7 +126,9 @@ pub fn desktop_entry(id: &str, name: &str, exec: &str, scheme: &str) -> String {
 /// problem and is deliberately not reported as one.
 fn refresh_caches(apps_dir: &Path, icons_root: &Path, id: &str, scheme: &str) {
     let run = |prog: &str, args: &[&str]| {
-        let _ = std::process::Command::new(prog)
+        // proc_ctl::command, not Command::new: these are the HOST's tools and
+        // must not load the AppImage's libraries (appimage_env.rs).
+        let _ = crate::proc_ctl::command(prog)
             .args(args)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())

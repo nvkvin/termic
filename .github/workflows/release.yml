@@ -497,26 +497,20 @@ jobs:
           grep -q '^export GDK_BACKEND=x11' "$GTK_HOOK"
           sed -i 's|^export GDK_BACKEND=x11|export GDK_BACKEND="${GDK_BACKEND:-x11}"|' "$GTK_HOOK"
 
-          # Issue #47: neutralize the bogus PYTHONHOME/PYTHONPATH/PERLLIB
-          # that AppRun.wrapped (AppImageKit's AppRun) exports on every
-          # launch. We bundle no Python or Perl, so those vars point into
-          # the AppDir's usr/ (which has neither) and break python3/perl in
-          # every shell Termic spawns. AppRun.wrapped sets them right before
-          # execvp'ing the Exec= target, AFTER the apprun-hooks run, so a
-          # hook can't undo them. Slip a thin wrapper in front of the real
-          # binary that unsets them, then exec the real one (APPDIR is
-          # exported by the GTK hook before AppRun execs AppRun.wrapped).
-          mv squashfs-root/usr/bin/termic squashfs-root/usr/bin/termic.bin
-          cat > squashfs-root/usr/bin/termic <<'WRAP'
-          #!/bin/sh
-          # Termic bundles no Python/Perl; AppRun.wrapped exports
-          # PYTHONHOME/PYTHONPATH/PERLLIB pointing at nonexistent dirs,
-          # which breaks python3 (and anything embedding it) in every
-          # shell Termic spawns. Drop them before launching the app.
-          unset PYTHONHOME PYTHONPATH PERLLIB
-          exec "${APPDIR:-$(dirname "$(readlink -f "$0")")}/usr/bin/termic.bin" "$@"
-          WRAP
-          chmod +x squashfs-root/usr/bin/termic
+          # Issue #47 (AppRun.wrapped exports PYTHONHOME/PYTHONPATH/PERLLIB
+          # into the AppDir, which broke python3/perl in every shell Termic
+          # spawns) is handled in the app now: src-tauri/src/appimage_env.rs
+          # strips every AppDir-pointing variable from each child it spawns,
+          # LD_LIBRARY_PATH included.
+          #
+          # It used to be a /bin/sh wrapper here that unset the three and
+          # exec'd the real binary renamed to `termic.bin`. Do NOT bring
+          # that back: GTK names the window after the executable, so the
+          # rename made WM_CLASS "termic.bin", which matches no desktop
+          # entry (StartupWMClass=Termic), and GNOME's dock showed a
+          # generic cog instead of the app icon. The binary must stay
+          # an ELF called `termic`. Fail loud if a bundler change wraps it.
+          head -c4 squashfs-root/usr/bin/termic | grep -q ELF
 
           # Rewrite every absolute symlink that points inside the build
           # AppDir to a relative one. Anything absolute pointing OUTSIDE

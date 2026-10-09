@@ -47,6 +47,15 @@ export const config: WebdriverIO.Config = {
   onPrepare() {
     mkdirSync(path.dirname(reportPath), { recursive: true });
     process.env.TERMIC_DATA_DIR = dataDir;
+    // Linux: WebKitGTK's localStorage lives under $XDG_DATA_HOME, shared with
+    // the developer's installed Termic unless the run gets its own. See the
+    // same block in wdio.conf.ts.
+    if (process.platform === "linux") {
+      process.env.XDG_DATA_HOME = path.join(dataDir, "xdg-data");
+      process.env.XDG_CACHE_HOME = path.join(dataDir, "xdg-cache");
+      mkdirSync(process.env.XDG_DATA_HOME, { recursive: true });
+      mkdirSync(process.env.XDG_CACHE_HOME, { recursive: true });
+    }
     // Workers inherit this, and both sides resolve the handoff file from it.
     process.env.TERMIC_PERF_NDJSON ??= path.join(repoRoot, ".perf", "rows.ndjson");
     resetCollector();

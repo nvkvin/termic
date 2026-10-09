@@ -56,6 +56,9 @@ mod config_sync;
 // machine they were written on. `appimage_path()` holds the one cfg, so every
 // other platform reports "unavailable" through the same path.
 mod linux_desktop;
+// The other half of being an AppImage: its bundled-library environment
+// (LD_LIBRARY_PATH, GTK_PATH, ...) must not reach the children we spawn.
+mod appimage_env;
 
 mod procmon_common;
 // macOS: real libproc/mach FFI. Linux: /proc. Windows: a ToolHelp snapshot.
@@ -4059,6 +4062,10 @@ fn pty_spawn(
         if agent_session_marker(&k) { continue }
         cmd.env(k, v);
     }
+    // MINUS a Linux AppImage's own library environment, which would make
+    // every system binary in the terminal load OUR bundled libraries (on
+    // Ubuntu 25.10+ that kills `env` and `ls`). See appimage_env.rs.
+    appimage_env::scrub_pty(&mut cmd);
     // Override the inherited PATH with the login-shell-resolved one.
     // GUI-launched .app bundles get a bare PATH from launchd; without
     // this, `claude` / `codex` / `gemini` installed in ~/.local/bin,
@@ -10136,7 +10143,12 @@ fn build_profile_window(app: &AppHandle, id: &ProfileId) -> tauri::Result<tauri:
     // (it drags, double-click maximizes, and WindowControls draws minimize /
     // maximize / close), so the native one was a second, empty bar above it.
     // A frameless window keeps its shadow and its resize edges on Windows.
-    #[cfg(windows)]
+    //
+    // Linux the same, and for a sharper reason: GTK's title bar is ~58px of
+    // nothing but the word "Termic" above a bar that already says where you
+    // are. tao and wry hit-test the window's edges themselves when it is
+    // undecorated, so it still resizes.
+    #[cfg(any(windows, target_os = "linux"))]
     {
         builder = builder.decorations(false);
     }
@@ -24230,6 +24242,8 @@ static SHOWN_ONCE: AtomicBool = AtomicBool::new(false);
 static CLOSE_PROMPT_ACKED: AtomicBool = AtomicBool::new(false);
 /// How long to wait for that ack. Generous: it only has to beat a human
 /// reaching for the mouse, and firing early would steal a dismissal.
+// Used by the macOS close-button handler and by tests everywhere.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const CLOSE_PROMPT_ACK_GRACE: Duration = Duration::from_secs(5);
 
 /// Paints the pixelated "T" mark (from icons/icon.svg, minus the squircle)
@@ -24795,6 +24809,7 @@ fn close_prompt_ack() {
 /// What the close button should do, given the stored setting. Split out and
 /// pure so the "unknown value must not quit" rule is unit-testable: a corrupt
 /// or future settings file falls back to ASKING, never to destroying agents.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub(crate) enum CloseAction {
     Ask,
@@ -24802,6 +24817,7 @@ pub(crate) enum CloseAction {
     Quit,
 }
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) fn close_action_from(setting: Option<&str>) -> CloseAction {
     match setting {
         Some("menubar") => CloseAction::MenuBar,
@@ -32641,7 +32657,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unresolvable_base_resolves_to_NOTHING_rather_than_to_head() {
+    fn an_unresolvable_base_resolves_to_nothing_rather_than_to_head() {
         // The swallowed failure is the bug, not the ref syntax. `resolve_base_ref`
         // still answers HEAD, because a STORED base legitimately falls back
         // (a local-only repo pinned to origin/main). The strict variant is what

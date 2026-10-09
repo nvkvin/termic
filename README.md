@@ -106,6 +106,9 @@ recommended path for most users — see [Linux (AppImage)](#linux-appimage)
 above. Build from source if you want to hack on it, ship a `.deb` /
 `.rpm` for your own distro packaging, or run an unreleased commit.
 
+`bash scripts/setup-linux.sh` (or `make setup` once make is installed) does
+all of the below on apt, dnf and pacman systems. By hand:
+
 Prerequisites — Debian / Ubuntu (24.04+ has WebKitGTK 4.1):
 
 ```sh

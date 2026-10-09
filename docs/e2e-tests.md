@@ -62,6 +62,35 @@ tree-shake `__termic` out.
 
 Tests run **on a real Mac only** — they launch a GUI window.
 
+On Linux the same commands work, on your own desktop or headless the way CI
+does it (`scripts/setup-linux.sh` with `WITH_E2E=1` installs Xvfb):
+
+```sh
+dbus-run-session -- xvfb-run -a -s "-screen 0 1440x900x24" npm run test:e2e
+```
+
+On a Wayland desktop also pass `env -u WAYLAND_DISPLAY GDK_BACKEND=x11`, or
+GTK ignores the virtual display and opens every window on your real one.
+
+The run gets its own `XDG_DATA_HOME` and `XDG_CACHE_HOME` under
+`.e2e/profile/` (`wdio.conf.ts`). `TERMIC_DATA_DIR` alone is not isolation on
+Linux: WebKitGTK keeps localStorage, which is every pref, under
+`$XDG_DATA_HOME/<app identifier>` keyed by origin, and every built binary
+shares one origin. Before this the suite read the prefs of the Termic
+installed on the same machine (a hidden right panel failed every file-tree
+spec) and wrote its own into it. CI never saw it because a runner has no
+installed Termic. Windows has the same hole and the same fix
+(`WEBVIEW2_USER_DATA_FOLDER`).
+
+`make e2e` and `make dev` both write `src-tauri/target/debug/termic`, so the
+two cannot run side by side. To run the suite beside a live dev app, build the
+e2e binary elsewhere and name it:
+
+```sh
+CARGO_TARGET_DIR=$PWD/src-tauri/target/e2e-build npm run e2e:build
+TERMIC_E2E_BINARY=$PWD/src-tauri/target/e2e-build/debug/termic npm run test:e2e
+```
+
 ## CI
 
 The suite runs on all three platforms for PRs and pushes to `main`: `e2e`

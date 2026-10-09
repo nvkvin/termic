@@ -39,7 +39,7 @@ import { focusMainTab, focusPaneTab } from "@/lib/tabFocus";
 import { jumpToNextWaiting } from "@/lib/waitingAgents";
 import { newScratchTab } from "@/lib/scratchTabs";
 import { dirHistoryTarget, goDirHistory } from "@/lib/dirTabs";
-import { bindingMatches, eventKeyToken, IS_MAC, SHORTCUT_DEFS, type ShortcutId } from "@/lib/shortcuts";
+import { bindingMatches, eventKeyToken, isTabKey, IS_MAC, SHORTCUT_DEFS, type ShortcutId } from "@/lib/shortcuts";
 import { isTerminalCloseCombo } from "@/lib/terminalFind";
 import { visualProjectOrder } from "@/lib/projectGroups";
 import type { TerminalTab } from "@/lib/types";
@@ -808,7 +808,7 @@ function useCtrlTabWalk() {
     function onKeyDown(e: KeyboardEvent) {
       const state = walk.current;
       // ⌥⌃⇥ is somebody else's chord, and ⌘⇥ never reaches the webview.
-      if (e.key === "Tab" && e.ctrlKey && !e.metaKey && !e.altKey) {
+      if (isTabKey(e) && e.ctrlKey && !e.metaKey && !e.altKey) {
         if (!state.active && standDown()) return;
         // Claimed even when there is nowhere to go. The alternative is that
         // ⌃⇥ silently types a tab into whatever agent has focus, depending on
@@ -837,7 +837,7 @@ function useCtrlTabWalk() {
       if (!walk.current.active) return;
       // xterm calls focus() on itself for any non-modifier keyup, which during
       // a walk would pull focus into a terminal that is on its way off screen.
-      if (e.key === "Tab") { e.preventDefault(); e.stopPropagation(); }
+      if (isTabKey(e)) { e.preventDefault(); e.stopPropagation(); }
       // `!e.ctrlKey` rather than `e.key === "Control"`, as modKeyClass does:
       // the name misses a release that arrives while another modifier is down,
       // and misses synthetic sequences in tests.

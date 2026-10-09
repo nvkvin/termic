@@ -23,9 +23,14 @@ static OFFER_ENABLED: AtomicBool = AtomicBool::new(true);
 
 /// A read bigger than this is output, not a prompt. Checked before any
 /// syscall so bulk output (a build log, `cat`) never touches the tty.
+// The watcher is macOS only; the pure helpers below stay compiled on every
+// platform so their tests run where they are written, hence the allows.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const PROMPT_READ_MAX: usize = 512;
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const SUDO_PAM: &str = "/etc/pam.d/sudo";
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const SUDO_LOCAL: &str = "/etc/pam.d/sudo_local";
 const SCRIPT_BODY: &str = include_str!("enable-touchid-sudo.sh");
 
@@ -51,6 +56,7 @@ pub struct SudoOffer {
 }
 
 /// True when a non-comment line of `sudo_local` loads `pam_tid.so`.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn pam_tid_enabled(sudo_local: &str) -> bool {
     sudo_local
         .lines()
@@ -60,6 +66,7 @@ pub fn pam_tid_enabled(sudo_local: &str) -> bool {
 
 /// True when `/etc/pam.d/sudo` includes `sudo_local` (macOS 14+). On older
 /// systems the script would write a file nothing reads.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn sudo_local_included(sudo_pam: &str) -> bool {
     sudo_pam
         .lines()
@@ -71,6 +78,7 @@ pub fn sudo_local_included(sudo_pam: &str) -> bool {
 /// `tgetpass` set. Raw-mode TUIs (vim, agent CLIs) clear ICANON too, so
 /// they never qualify.
 #[cfg(unix)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn is_password_mode(lflag: libc::tcflag_t) -> bool {
     lflag & libc::ECHO == 0 && lflag & libc::ICANON != 0
 }

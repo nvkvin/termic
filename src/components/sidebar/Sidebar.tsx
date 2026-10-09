@@ -12,7 +12,7 @@ import { usePrefs, scheduledNavVisible, taskLocationIconShown } from "@/store/pr
 import { Button } from "@/components/ui/Button";
 import { Tip } from "@/components/ui/Tooltip";
 import { Spinner } from "@/components/ui/Spinner";
-import { LayoutGrid, History, Columns3, CalendarClock, FolderPlus, Settings, Plus, Minus, MoreHorizontal, Archive, Layers, Moon, Cog, MoreVertical, GitBranch, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, CircleStop, Trash2, Folder, FolderMinus, FolderOpen, Megaphone, Keyboard, Activity, Waypoints, Square, Play, GitPullRequest } from "lucide-react";
+import { LayoutGrid, History, Columns3, CalendarClock, FolderPlus, Settings, Plus, MoreHorizontal, Archive, Layers, Moon, Cog, MoreVertical, GitBranch, GitBranchPlus, FolderGit2, ChevronRight, ChevronDown, Bug, Mail, Zap, X, Pencil, Copy, ChevronsDownUp, ChevronsUpDown, Check, AudioWaveform, Radio, SquareChevronRight, CircleStop, Trash2, Folder, FolderMinus, FolderOpen, Megaphone, Keyboard, Activity, Waypoints, Square, Play, GitPullRequest } from "lucide-react";
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSeparator, DropdownLabel, DropdownSub, DropdownSubTrigger, DropdownSubContent } from "@/components/ui/Dropdown";
 import { ContextMenuRoot, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuLabel, ContextMenuSub, ContextMenuSubTrigger, ContextMenuSubContent } from "@/components/ui/ContextMenu";
 import { ProjectActionsMenuItems } from "./ProjectActionsMenuItems";
@@ -197,8 +197,6 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
     return profileSidebarWashCss(me?.accent, s.profiles.length > 0);
   });
   const setShowStatusSection = usePrefs(s => s.setShowStatusSection);
-  const projectsSectionCollapsed = usePrefs(s => s.projectsSectionCollapsed);
-  const setProjectsSectionCollapsed = usePrefs(s => s.setProjectsSectionCollapsed);
   // Temporary, non-persisted reveal of the hidden inactive projects. Reset
   // whenever the hide pref flips off so the "Show N inactive" row starts
   // collapsed next time the user re-enables hiding.
@@ -234,7 +232,6 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
     [taskQuery.filtering, taskQuery.matches, queryLiveTasks],
   );
   const queryOn = queryMatchIds !== null;
-  const isProjectsCollapsed = !compact && (queryOn ? false : projectsSectionCollapsed);
   // While filtering, matching projects, folders and task groups render open
   // whatever their stored fold says: results behind a chevron read as
   // "nothing matched". Their chevrons still work, through the throwaway
@@ -1322,50 +1319,15 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
           )}
         >
           {!compact && (
-            <div
-              role="button"
-              tabIndex={0}
-              aria-expanded={!isProjectsCollapsed}
-              title={isProjectsCollapsed ? t("expandProjectsSection") : t("collapseProjectsSection")}
-              onClick={() => setProjectsSectionCollapsed(!projectsSectionCollapsed)}
-              onKeyDown={ev => {
-                if (ev.key === "Enter" || ev.key === " ") {
-                  ev.preventDefault();
-                  setProjectsSectionCollapsed(!projectsSectionCollapsed);
-                }
-              }}
-              className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 py-0.5"
-            >
+            // A label, not a fold. STATUS above it folds because it is a
+            // second copy of some tasks; this is the tree itself, and folding
+            // it away left a sidebar with nothing in it.
+            <div className="flex min-w-0 flex-1 items-center gap-1.5 py-0.5">
               <FolderGit2 className="h-3.5 w-3.5 shrink-0 text-[var(--color-accent)]" />
               <span className="truncate">{t("projectsHeader")}</span>
-              {projects.length > 0 && (
-                <span
-                  data-testid="projects-section-total-count"
-                  className="ml-0.5 rounded-full bg-[var(--color-bg-3)]/80 px-1.5 py-0.5 text-[10.5px] font-medium tabular-nums text-[var(--color-fg-dim)] group-hover:text-[var(--color-fg)]"
-                >
-                  {projects.length}
-                </span>
-              )}
-              <span className="ml-1 flex shrink-0 items-center text-[var(--color-fg-faint)] group-hover:text-[var(--color-fg-dim)]">
-                {isProjectsCollapsed ? (
-                  <span
-                    data-testid="projects-section-expand-indicator"
-                    className="flex h-4 w-4 items-center justify-center rounded text-[var(--color-accent)]"
-                  >
-                    <Plus className="h-3 w-3" strokeWidth={2.5} />
-                  </span>
-                ) : (
-                  <span
-                    data-testid="projects-section-collapse-indicator"
-                    className="flex h-4 w-4 items-center justify-center rounded"
-                  >
-                    <Minus className="h-3 w-3" strokeWidth={2.5} />
-                  </span>
-                )}
-              </span>
             </div>
           )}
-          <div className={cn("flex gap-0.5", compact && "flex-col")} onClick={e => e.stopPropagation()}>
+          <div className={cn("flex gap-0.5", compact && "flex-col")}>
             {/* Expand/collapse-all + expand-mode + hide-inactive controls act
                 on the full project TREE (names, task rows), none of which
                 compact mode renders — the rail is icon-only. Nothing here
@@ -1525,7 +1487,6 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
           </div>
         </div>
 
-        {!isProjectsCollapsed && (
         <div className="flex flex-col gap-0.5">
           {(() => {
           const renderProject = (p: typeof projects[number]) => {
@@ -2493,7 +2454,6 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
           );
           })()}
         </div>
-        )}
       </div>
         {/* The compact rail scrolls with no visible bar (a 10px bar is a sixth
             of a 56px rail), so the fade is what says there is more below. */}

@@ -34,7 +34,7 @@ import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { SearchAddon } from "@xterm/addon-search";
 import { loadTerminalRenderer, awaitTerminalFonts } from "@/lib/terminalRenderer";
 import { resyncViewportAfterReveal } from "@/lib/xtermViewportSync";
-import { IS_MAC, bindingMatches, type ShortcutId } from "@/lib/shortcuts";
+import { IS_MAC, bindingMatches, superIsHeld, type ShortcutId } from "@/lib/shortcuts";
 import { registerTerminalDropTarget } from "@/lib/terminalDrop";
 import { HOOK_OSC_TITLE, HOOK_OSC_READY_BODY, HOOK_OSC_SESSION_PREFIX, HOOK_OSC_WORKING_BODY, HOOK_OSC_DONE_BODY, HOOK_OSC_DELEGATED_PREFIX, hookOscSessionId, sessionHolder } from "@/lib/agentHooks";
 import { parseDelegatedBody, delegatedVerdict, isAgentOwned, delegatedChipText, DELEGATED_DETACHED_GRACE_MS, type DelegatedWork } from "@/lib/delegatedWork";
@@ -70,7 +70,7 @@ import { spawnArgsForCli, spawnCommandForCli, tryToggleYoloLive, envForCli, agen
 import { recordTitle, noteSubmit, noteDone } from "@/lib/agentSignalLog";
 import { MessageQueueButton } from "./MessageQueueButton";
 import { ReviewCommentsBar } from "./ReviewCommentsBar";
-import { IS_WINDOWS } from "@/lib/platform";
+import { IS_LINUX, IS_WINDOWS } from "@/lib/platform";
 import { isConsoleHostTitle } from "@/lib/terminalTitle";
 
 interface Props { task: Task; tab: TerminalTab; active: boolean; }
@@ -1090,7 +1090,12 @@ const captureArmedRef = useRef(false);
       // default carries none of the new path's risk. Link activation itself
       // (#14, #58, #117) is untouched — this is only the handoff to the OS.
       const browser = browserCommandForTask(task.id);
-      if (browser) { void openWebUrl(uri, browser); return; }
+      // Linux always takes the Rust path, configured browser or not: the
+      // plugin spawns xdg-open with our own environment, and inside an
+      // AppImage that is the bundled-library one, under which xdg-open's
+      // readlink and sed do not start (docs/gotchas.md). Rust's default
+      // path is the same xdg-open with the host's environment restored.
+      if (browser || IS_LINUX) { void openWebUrl(uri, browser); return; }
       openUrl(uri)
         .then(() => ipc.logLine("[link] agent open ok").catch(() => {}))
         .catch((e) => ipc.logLine(`[link] agent open FAILED: ${e}`).catch(() => {}));
@@ -1384,6 +1389,13 @@ const captureArmedRef = useRef(false);
       // and emit it once on compositionend. `isComposing` covers continuation
       // keystrokes; `keyCode === 229` covers the one that starts composition.
       if (e.type === "keydown" && (e.isComposing || e.keyCode === 229)) {
+        return false;
+      }
+      // Linux: Super is held, so this key is an app shortcut (Super+J) and
+      // not text. WebKitGTK reports the chord as a bare letter, which xterm
+      // would send to the PTY; returning false leaves it for useShortcuts.
+      // Keypress too, or the letter is typed after the shortcut fired.
+      if (superIsHeld() && (e.type === "keydown" || e.type === "keypress")) {
         return false;
       }
       // Open find in terminal (TerminalFindBar). See isTerminalFindCombo.

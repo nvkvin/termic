@@ -35,8 +35,8 @@ import { TerminalFindBar } from "@/components/task/TerminalFindBar";
 import { isTerminalCloseCombo, isTerminalFindCombo } from "@/lib/terminalFind";
 import { usePrefs, useResolvedThemeFull, currentTerminalStack, currentTerminalTheme, currentColorFgBg, currentMinimumContrastRatio } from "@/store/prefs";
 import { useApp } from "@/store/app";
-import { IS_MAC, bindingMatches } from "@/lib/shortcuts";
-import { IS_WINDOWS } from "@/lib/platform";
+import { IS_MAC, bindingMatches, superIsHeld } from "@/lib/shortcuts";
+import { IS_LINUX, IS_WINDOWS } from "@/lib/platform";
 import { isConsoleHostTitle } from "@/lib/terminalTitle";
 
 // Theme is no longer a module-level constant - see TerminalPane for why.
@@ -120,7 +120,12 @@ export function AuxTerminal({ taskId, tabId, taskPath, active, autoFocus, onExit
       // GH #245, same rule as TerminalPane: configured browser or the
       // untouched pre-#245 default path.
       const browser = browserCommandForTask(taskId);
-      if (browser) { void openWebUrl(uri, browser); return; }
+      // Linux always takes the Rust path, configured browser or not: the
+      // plugin spawns xdg-open with our own environment, and inside an
+      // AppImage that is the bundled-library one, under which xdg-open's
+      // readlink and sed do not start (docs/gotchas.md). Rust's default
+      // path is the same xdg-open with the host's environment restored.
+      if (browser || IS_LINUX) { void openWebUrl(uri, browser); return; }
       openUrl(uri)
         .then(() => ipc.logLine("[link] scratch open ok").catch(() => {}))
         .catch((e) => ipc.logLine(`[link] scratch open FAILED: ${e}`).catch(() => {}));
@@ -182,6 +187,13 @@ export function AuxTerminal({ taskId, tabId, taskPath, active, autoFocus, onExit
     // See src/lib/ime.ts for ownership of the input events.
     term.attachCustomKeyEventHandler((e) => {
       if (e.type === "keydown" && (e.isComposing || e.keyCode === 229)) {
+        return false;
+      }
+      // Linux: Super is held, so this key is an app shortcut (Super+J) and
+      // not text. WebKitGTK reports the chord as a bare letter, which xterm
+      // would send to the PTY; returning false leaves it for useShortcuts.
+      // Keypress too, or the letter is typed after the shortcut fired.
+      if (superIsHeld() && (e.type === "keydown" || e.type === "keypress")) {
         return false;
       }
       // Linux/Windows terminal copy/paste. macOS keeps native ⌘C / ⌘V (this

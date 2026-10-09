@@ -30,6 +30,19 @@ export PATH := $(subst /,\,$(GIT_ROOT))\usr\bin;$(PATH)
 SHELL := $(GIT_ROOT)/usr/bin/bash.exe
 else
 SHELL := /bin/bash
+ifeq ($(shell uname -s),Linux)
+IS_LINUX := 1
+# An AppImage's terminals (Termic's own included) inherit an LD_LIBRARY_PATH
+# pointing at its bundled libraries, and on Ubuntu 25.10+ that breaks `env`,
+# `ls` and every `#!/usr/bin/env` script a recipe runs. No target wants it.
+unexport LD_LIBRARY_PATH
+# rustup installs into ~/.cargo/bin and puts it on PATH through the shell
+# profile, which the shell that just ran `make setup` has already read. So
+# the very next `make dev` could not find cargo. Look there ourselves.
+ifneq ($(wildcard $(HOME)/.cargo/bin/cargo),)
+export PATH := $(HOME)/.cargo/bin:$(PATH)
+endif
+endif
 endif
 .SHELLFLAGS := -euo pipefail -c
 MAKEFLAGS += --no-print-directory
@@ -52,6 +65,10 @@ ifdef IS_WINDOWS
 setup: ## One-shot dev env bootstrap (build tools, rust, node, make via winget + npm install + cargo check).
 	@# Also runnable without make: bash scripts/setup-windows.sh
 	@bash scripts/setup-windows.sh
+else ifdef IS_LINUX
+setup: ## One-shot dev env bootstrap (system packages, rust, node + npm install + cargo check).
+	@# Also runnable without make: bash scripts/setup-linux.sh
+	@bash scripts/setup-linux.sh
 else
 setup: ## One-shot dev env bootstrap (rust/node + npm install + cargo check).
 	@echo "→ Termic dev environment bootstrap"
@@ -113,7 +130,12 @@ doctor: ## Verify the dev env without installing anything (CI-friendly, exits no
 	        echo "  ✗ $$name: missing"; fail=1; \
 	    fi; \
 	}; \
-	if [ -z "$(IS_WINDOWS)" ]; then check brew brew --version; else \
+	if [ -n "$(IS_LINUX)" ]; then \
+	    check cc cc --version; check pkg-config pkg-config --version; \
+	    if pkg-config --exists webkit2gtk-4.1 2>/dev/null; then \
+	        echo "  ✓ webkit2gtk-4.1: $$(pkg-config --modversion webkit2gtk-4.1)"; \
+	    else echo "  ✗ webkit2gtk-4.1 dev package: missing"; fail=1; fi; \
+	elif [ -z "$(IS_WINDOWS)" ]; then check brew brew --version; else \
 	    check make make --version; check git git --version; \
 	    vsw="/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe"; \
 	    if [ -x "$$vsw" ] && [ -n "$$("$$vsw" -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>/dev/null)" ]; then \
@@ -334,6 +356,12 @@ define quit_keeping_profiles
 	  fi; \
 	fi
 endef
+else ifdef IS_LINUX
+# Linux: install-app-linux.sh quits the running copy itself (it is the only
+# place that knows which AppImage file is "this app"). Nothing to do here.
+define quit_keeping_profiles
+@true
+endef
 else
 # $(call quit_keeping_profiles,<app name>,<bundle id>)
 define quit_keeping_profiles
@@ -363,6 +391,11 @@ endif
 ifdef IS_WINDOWS
 BUNDLE_ARGS := -- --bundles nsis
 BETA_BUNDLES := nsis
+else ifdef IS_LINUX
+# The AppImage alone: it is what install-app-linux.sh installs, and building
+# the .deb and .rpm beside it costs minutes nobody asked for.
+BUNDLE_ARGS := -- --bundles appimage
+BETA_BUNDLES := appimage
 else
 BUNDLE_ARGS :=
 BETA_BUNDLES := app
@@ -435,6 +468,10 @@ uninstall: ## Remove the installed copies (shipped + beta). User data untouched.
 	    un="$$LOCALAPPDATA/$$app/uninstall.exe"; \
 	    if [ -f "$$un" ]; then "$$un" //S && echo "✓ Uninstalled $$app"; else echo "  (not installed) $$app"; fi; \
 	done
+else ifdef IS_LINUX
+uninstall: ## Remove the installed copies (shipped + beta). User data untouched.
+	@D="$${TERMIC_INSTALL_DIR:-$$HOME/Applications}"; rm -f "$$D/Termic.AppImage" "$$D/Termic-Beta.AppImage" \
+	  && echo "✓ Removed Termic.AppImage + Termic-Beta.AppImage from $$D"
 else
 uninstall: ## Remove the installed copies (shipped + beta). User data untouched.
 	@rm -rf /Applications/Termic.app /Applications/termic.app "/Applications/Termic Beta.app" \

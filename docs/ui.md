@@ -774,10 +774,13 @@ on screen while you work (#298).
 with twenty it is the point. Two switches write the one pref: a check row in
 the Project list options menu next to "Collapse inactive projects", and
 Settings > Appearance > Interface & Sidebar > Sidebar. The STATUS header and
-PROJECTS header are highlighted section bars with semantic icons and item
-counts. Clicking on either collapses and expands its section in place
+PROJECTS header are highlighted section bars with semantic icons, and STATUS
+carries an item count (PROJECTS does not: the list is right there). Clicking
+the STATUS header collapses and expands its section in place
 (using Plus/Minus fold indicators rather than chevrons, which avoids arrow
-clutter), and a clean divider line separates Status from Projects. Each
+clutter). The PROJECTS header is a plain label and does NOT fold: it is the
+tree itself, not a copy of it, and folding it left a sidebar with nothing in
+it. A clean divider line separates Status from Projects. Each
 bucket folds too, and those folds are a pref (`statusBucketCollapsed`,
 a scoped localStorage key, with a setter that bails on an unchanged value).
 
@@ -1323,7 +1326,7 @@ attributes, so its rows cannot carry a test id.
 
 ## Window chrome / drag
 
-macOS overlay title bar, hidden title, 84px reserved left for traffic lights. Three drag mechanisms (each fails differently):
+macOS overlay title bar, hidden title, 84px reserved left for traffic lights. Windows and Linux have no native frame at all (`decorations(false)` in `build_profile_window`): the same bar drags the window through `startDragging()`, a double click maximizes (read off the mousedown's click count), and `WindowControls` draws minimize, maximize / restore and close at its right end, in each platform's own look (Windows' caption glyphs and red Close; GNOME's small round buttons on Linux). Linux dropped GTK's title bar because it spent ~58px on the word "Termic" above a bar that already says where you are. The window still resizes from its edges (tao hit-tests the outer 5px of an undecorated window), and `WindowResizeEdges` lays transparent strips over that same 5px purely for the resize CURSOR, which tao sets on the toplevel window and which never shows over the webview. On Linux the window has no shadow, and the title-bar context menu (Move, Always on Top) is gone with the bar; the compositor's own Super+drag still moves it. The Activity window keeps its native title bar everywhere. Three drag mechanisms (each fails differently):
 
 1. `data-tauri-drag-region` — primary (Tauri 2 JS handler)
 2. `WebkitAppRegion: "drag"` — backup (native AppKit hint)

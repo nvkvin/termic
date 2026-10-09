@@ -311,5 +311,8 @@ impl CommandProcExt for std::process::Command {
 pub fn command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
     let mut cmd = std::process::Command::new(program);
     hide_console(&mut cmd);
+    // A Linux AppImage's bundled-library environment stops here: a no-op
+    // everywhere else. See appimage_env.rs.
+    crate::appimage_env::scrub(&mut cmd);
     cmd
 }

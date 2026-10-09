@@ -1,8 +1,12 @@
-// The window's own chrome: on Windows the app draws its title bar (no native
-// frame), with minimize / maximize / close at the right of the top bar; on
-// macOS the system's traffic lights sit on the app's bar; Linux keeps its
-// native title bar. Each platform asserts its own shape, so a change that
-// leaks the Windows buttons onto macOS or Linux fails there too.
+// The window's own chrome: on Windows and Linux the app draws its title bar
+// (no native frame), with minimize / maximize / close at the right of the top
+// bar; on macOS the system's traffic lights sit on the app's bar. Each
+// platform asserts its own shape, so a change that leaks the buttons onto
+// macOS fails there too.
+//
+// Maximize and minimize are asked of the window MANAGER, and the Linux CI
+// display (Xvfb) has none, so those two cases run on Windows only. What Linux
+// can assert without one, it does: no frame, and the buttons in the corner.
 //
 // Close is not clicked: it would end the session every later spec runs in.
 // It is the same `close()` the Rust CloseRequested handler already covers.
@@ -13,6 +17,8 @@ import { controlConnect, requireTermicApi, snap, waitForAppShell, waitVisible } 
 import { dataDir } from "../../wdio.conf.js";
 
 const isWindows = process.platform === "win32";
+/** Platforms where the app draws its own caption buttons. */
+const drawsControls = isWindows || process.platform === "linux";
 
 /** A Tauri window getter for the current window, through the IPC the app
  *  itself uses (core:window:default grants the getters). */
@@ -48,15 +54,15 @@ describe("window chrome", () => {
     await requireTermicApi();
   });
 
-  it("draws the caption buttons on Windows only", async () => {
+  it("draws the caption buttons on Windows and Linux, never on macOS", async () => {
     const present = await browser.execute(() => !!document.querySelector('[data-testid="window-controls"]'));
-    expect(present).toBe(isWindows);
+    expect(present).toBe(drawsControls);
   });
 
-  (isWindows ? it : it.skip)("has no native frame on Windows, so the app's bar is the title bar", async () => {
+  (drawsControls ? it : it.skip)("has no native frame on Windows and Linux, so the app's bar is the title bar", async () => {
     expect(await windowState("is_decorated")).toBe(false);
     // The buttons sit flush with the window's top-right corner, the full
-    // height of the bar, in Windows' order.
+    // height of the bar, in the same order on both.
     const box = await browser.execute(() => {
       const bar = document.querySelector("header")!.getBoundingClientRect();
       const ctl = document.querySelector('[data-testid="window-controls"]')!.getBoundingClientRect();

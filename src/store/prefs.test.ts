@@ -791,11 +791,9 @@ describe("prefs: status section", () => {
     const { usePrefs } = await import("./prefs");
     usePrefs.getState().setShowStatusSection(true);
     usePrefs.getState().setStatusSectionCollapsed(true);
-    usePrefs.getState().setProjectsSectionCollapsed(true);
     usePrefs.getState().setStatusBucketCollapsed("settled", false);
     expect(localStorage.getItem("showStatusSection")).toBe("1");
     expect(localStorage.getItem("statusSectionCollapsed")).toBe("1");
-    expect(localStorage.getItem("projectsSectionCollapsed")).toBe("1");
     expect(JSON.parse(localStorage.getItem("statusBucketCollapsed")!)).toEqual({ settled: false });
   });
 
@@ -805,7 +803,6 @@ describe("prefs: status section", () => {
     const unsub = usePrefs.subscribe(() => { notified++; });
     usePrefs.getState().setShowStatusSection(false);
     usePrefs.getState().setStatusSectionCollapsed(false);
-    usePrefs.getState().setProjectsSectionCollapsed(false);
     // Already the default for both, so there is no override to write.
     usePrefs.getState().setStatusBucketCollapsed("attention", false);
     usePrefs.getState().setStatusBucketCollapsed("backlog", true);

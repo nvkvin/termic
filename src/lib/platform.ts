@@ -10,6 +10,12 @@ const UA = typeof navigator === "undefined" ? null : navigator.userAgent || "";
 
 export const IS_MAC: boolean = UA === null || /Mac|iPhone|iPad|iPod/.test(UA);
 export const IS_WINDOWS: boolean = UA !== null && /Windows/.test(UA);
+export const IS_LINUX: boolean = UA !== null && !IS_MAC && !IS_WINDOWS && /Linux|X11/.test(UA);
+
+/** The window has no native frame and the app draws minimize / maximize /
+ *  close itself (`WindowControls`). macOS is the other kind of frameless: the
+ *  system still draws its traffic lights on our bar. */
+export const DRAWS_WINDOW_CONTROLS: boolean = IS_WINDOWS || IS_LINUX;
 
 /** The macOS Seatbelt sandbox exists only on macOS. Everywhere else a task
  *  offers Off and Docker, and a stored Seatbelt mode (a `.termic.yaml`
@@ -27,8 +33,9 @@ export function setSeatbeltAvailableForTests(v: boolean): void {
  *
  *  On macOS the title bar is hidden (an overlay title bar with traffic
  *  lights), so the app's own bar, and a dialog's backdrop, have to move the
- *  window. Windows keeps its native title bar, so none of that is needed,
- *  and it would do harm: WebView2 honours `-webkit-app-region: drag` (wry
+ *  window. Windows and Linux move theirs through `startDragging()` on the
+ *  bar alone (UnifiedBar), so none of that is needed, and on Windows it
+ *  would do harm: WebView2 honours `-webkit-app-region: drag` (wry
  *  enables non-client region support), which turns every covered element
  *  into window caption, and a dialog's full-screen backdrop would swallow
  *  every click in the dialog. Spread `dragRegion()` where the macOS build

@@ -2964,7 +2964,6 @@ mod tests {
 
     // ── render_filter_for ─────────────────────────────────────────────
 
-    #[test]
     /// A duplicated agent talks to the same vendor API as what it was copied
     /// from. Keyed on the raw id, `next-claude` matched no arm of the vendor
     /// table and reached the proxy with an EMPTY allow-list: the maintainer's
@@ -2986,6 +2985,7 @@ mod tests {
                 "an id that extends nothing must not inherit by accident");
     }
 
+    #[test]
     fn render_filter_claude_contains_anthropic() {
         use crate::Task;
         let task = Task { cli: "claude".into(), ..Default::default() };

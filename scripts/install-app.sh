@@ -13,6 +13,8 @@ set -euo pipefail
 # Windows (Git Bash): an NSIS installer, not a .app. Same contract.
 case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*) exec "$(dirname "$0")/install-app-windows.sh" "${1:-Termic}" ;;
+  # Linux: an AppImage in ~/Applications. Same contract.
+  Linux) exec "$(dirname "$0")/install-app-linux.sh" "${1:-Termic}" ;;
 esac
 
 APP_NAME="${1:-Termic}"

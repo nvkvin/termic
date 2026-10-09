@@ -570,7 +570,9 @@ fn probe_once() -> Option<LoginEnv> {
 /// terminal launch, or the static fallback union for a GUI launch. No
 /// rc delta — we haven't seen the rc yet.
 fn bare_login_env() -> LoginEnv {
-    let bare_path = std::env::var("PATH").unwrap_or_default();
+    // Minus an AppImage's own bin dir, which AppRun puts first: it holds the
+    // app binary under the name the CLI is installed as.
+    let bare_path = crate::appimage_env::host_var("PATH").unwrap_or_default();
     let from_terminal = std::env::var("TERM_PROGRAM").is_ok();
     let path = if from_terminal && !bare_path.is_empty() {
         bare_path

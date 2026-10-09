@@ -147,7 +147,6 @@ describe("sidebar status section", () => {
       p.setShowStatusSection(false);
       p.setUseBranchAsTaskName(false);
       p.setStatusSectionCollapsed(false);
-      p.setProjectsSectionCollapsed(false);
       const defaults = [["attention", false], ["working", false], ["review", false], ["settled", true], ["backlog", true]] as const;
       for (const [b, c] of defaults) p.setStatusBucketCollapsed(b, c);
     });
@@ -487,31 +486,24 @@ describe("sidebar status section", () => {
     expect(await ariaExpanded(HEADER)).toBe("true");
   });
 
-  it("collapses and expands the projects section", async () => {
-    const projHeaderToggle = '[data-testid="projects-section-header"] [role="button"]';
-    await waitVisible(projHeaderToggle);
-    expect(await ariaExpanded(projHeaderToggle)).toBe("true");
+  it("the projects header is a label, and the tree stays while status folds", async () => {
+    // PROJECTS does not fold: it is the tree itself, and a click on its
+    // header is a click on a label. STATUS above it still does.
+    const projHeader = '[data-testid="projects-section-header"]';
+    await waitVisible(projHeader);
+    // Not `[aria-expanded]`: the list-options menu button in the same header
+    // carries one of its own.
+    expect(await present(`${projHeader} [role="button"]`)).toBe(false);
+    await click(projHeader);
     expect(await present(`[data-project-id="${projectId}"]`)).toBe(true);
+    expect(await stored("projectsSectionCollapsed")).toBe(null);
 
-    // Clicking the projects header collapses the project tree.
-    await click(projHeaderToggle);
-    expect(await ariaExpanded(projHeaderToggle)).toBe("false");
-    expect(await present(`[data-project-id="${projectId}"]`)).toBe(false);
-    expect(await stored("projectsSectionCollapsed")).toBe("1");
-    await snap("sidebar-projects-collapsed.png");
-
-    // Both collapsed
     await click(HEADER);
     expect(await ariaExpanded(HEADER)).toBe("false");
-    await snap("sidebar-both-collapsed.png");
+    expect(await present(`[data-project-id="${projectId}"]`)).toBe(true);
+    await snap("sidebar-status-collapsed.png");
     await click(HEADER);
     expect(await ariaExpanded(HEADER)).toBe("true");
-
-    // Clicking again expands it back.
-    await click(projHeaderToggle);
-    expect(await ariaExpanded(projHeaderToggle)).toBe("true");
-    expect(await present(`[data-project-id="${projectId}"]`)).toBe(true);
-    expect(await stored("projectsSectionCollapsed")).toBe("0");
   });
 
   it("puts a task with an open PR in review, and a merge takes it out", async () => {

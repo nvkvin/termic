@@ -14,6 +14,44 @@
   - A component that stays MOUNTED while off screen (every visited task, every open tab) must gate that listener on an app-wide claim, not "am I laid out". Several instances answer the latter yes at once, and capture + `stopPropagation` means the loser doesn't just misfire, it eats the chord from whoever should have had it. Store state can't finish the job either: it doesn't model the bottom split, the right panel, or a modal on top. See the ⌘F bullet in [gotchas.md](gotchas.md#reactzustand-traps).
 - **Help modal** (`ShortcutsHelpDialog`, triggered by `open-shortcuts`): read-only, grouped by `GROUP_ORDER`. Edit button jumps to Settings → Shortcuts.
 
+## What "Cmd" is on each platform, and what a real key looks like
+
+One table serves all three platforms. `Binding.cmd` is Cmd on macOS, and off
+macOS it is Ctrl OR the Windows / Super key (`eventCmd` in `lib/shortcuts.ts`).
+The second half is what makes shortcuts usable from INSIDE a terminal there:
+plain Ctrl+letter is the shell's (Ctrl+J is a line feed, Ctrl+P is readline's
+previous line), so the terminal keeps all of them, and of the Ctrl chords only
+the handful in `PASS_TO_APP` that also carry Shift or Alt are handed to the
+app. Win+J on Windows and Super+J on Linux toggle the terminal panel from a
+focused terminal exactly as ⌘J does on a Mac.
+
+Three things a real key does on Linux that a synthetic `KeyboardEvent` never
+shows. All three were measured with real X key events against WebKitGTK 2.52,
+and `e2e/specs/shortcuts-linux.e2e.ts` presses every binding that way:
+
+- **Super is never reported as a modifier.** Super+J arrives as `key: "j"`
+  with `metaKey: false`, and `getModifierState` is false for `Super`, `OS`,
+  `Meta` and `Hyper` alike. What does arrive is the Super key's own keydown
+  and keyup (`key: "Super"`, `code: "OSLeft"`), so `shortcuts.ts` tracks the
+  held state from those and clears it when the window loses focus (GNOME
+  takes the focus, and the keyup, when Super is released alone). A terminal
+  asks `superIsHeld()` in its key handler and returns false, or the bare
+  letter is written to the PTY.
+- **Shift+Tab is `key: "Unidentified"`** (X's `ISO_Left_Tab` keysym). Anything
+  that means Tab reads `isTabKey`, which falls back to `code`. ⌃⇧⇥ never
+  walked backwards before it did.
+- **Shift turns punctuation into another character.** ⇧⌘[ arrives as `{`, so
+  the default previous / next tab chords never matched. `eventKeyToken` takes
+  Shift's effect back out, and a recorded binding stores the key, not the
+  character.
+
+The desktop takes some Super chords before any application sees them. GNOME's
+defaults: Super+L (lock), Super+D, Super+N, Super+P, Super+O, Super+V,
+Super+A, Super+S, Super+H, Super+M, Super+Tab and Super+1-9. Those Termic
+shortcuts need Ctrl (outside a terminal) or a rebind. Alt was considered as a
+second stand-in and rejected: inside a terminal Alt+letter belongs to the
+agent (Claude Code's Alt+T and Alt+P, readline's Alt+B / F / D).
+
 ## Code navigation keys
 
 The five editor jumps (`go-to-definition` F12, `find-usages` ⇧F12,

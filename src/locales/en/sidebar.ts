@@ -50,8 +50,6 @@ export default {
   statusHeader: "Status",
   collapseStatusSection: "Collapse Status section",
   expandStatusSection: "Expand Status section",
-  collapseProjectsSection: "Collapse Projects section",
-  expandProjectsSection: "Expand Projects section",
   statusBucketCount_one: "{{count}} task",
   statusBucketCount_other: "{{count}} tasks",
   addProjectTip: "Add project (repo)",
