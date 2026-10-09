@@ -213,8 +213,9 @@ it keeps now (the "Lens" concept of the sidebar rethink):
   options) switches that to the glyph alone, glyph and number, or nothing.
   Every one of them keeps the state colour and the link.
 - **An approved PR is ticked.** An OPEN PR whose review verdict is
-  "approved" draws a small `--color-ok` check after its number, whatever
-  the mark's own colour, so approved with a failing build is amber and
+  "approved" draws a small `--color-ok` check LEFT of its number (so the
+  numbers keep one right edge down the tree), whatever the mark's own
+  colour, so approved with a failing build is amber and
   ticked. Merged and closed PRs do not: the verdict no longer says
   anything. The verdict is `PrStatus.review`, which all three forges
   already report; GitHub's falls back to the reviews themselves when

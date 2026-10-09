@@ -73,10 +73,11 @@ export function TaskPrBadge({ task, testId = "task-pr-badge", showNumber = false
         style={showNumber ? { color } : undefined}
       >
         {(showIcon || !(showNumber && num)) && <Icon className="h-3 w-3" style={{ color }} />}
-        {showNumber && num ? <span className="text-[11px] tabular-nums leading-none">{prRef(provider, num)}</span> : null}
-        {/* Its own green, whatever the mark's colour: an approved PR with a
+        {/* LEFT of the number, so the numbers keep one right edge down the
+            tree whether or not a row is ticked. Its own green, whatever the mark's colour: an approved PR with a
             failing build is amber AND ticked, which is exactly what it is. */}
         {approved && <Check data-testid="task-pr-approved" aria-hidden className="h-3 w-3 text-[var(--color-ok)]" strokeWidth={3} />}
+        {showNumber && num ? <span className="text-[11px] tabular-nums leading-none">{prRef(provider, num)}</span> : null}
       </button>
     </Tip>
   );

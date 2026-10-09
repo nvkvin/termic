@@ -327,8 +327,10 @@ describe("sidebar filter bar", () => {
         cached: "prCached" in el.dataset,
         ticked: !!tick,
         tickIsOk: tick ? getComputedStyle(tick).color === ok : null,
-        // the tick comes AFTER the number
-        tickLast: tick ? el.lastElementChild === tick : null,
+        // the tick sits LEFT of the number, which stays the last thing in
+        // the mark so the numbers share one right edge down the tree
+        tickBeforeNumber: tick ? tick.nextElementSibling === el.lastElementChild && el.lastElementChild !== tick
+          && (el.lastElementChild?.textContent ?? "").includes("42") : null,
       };
     }, BADGE, TICK);
     const waitMark = async (want: Record<string, unknown>, why: string) => {
@@ -350,7 +352,7 @@ describe("sidebar filter bar", () => {
       // merged is done: approved no longer says anything
       await waitMark({ state: "merged", cached: true, ticked: false }, "remembered merged");
       await seed({ state: "open", checks: "failing", review: "approved" }, null);
-      await waitMark({ state: "open", cached: true, ticked: true, tickIsOk: true, tickLast: true }, "remembered approved");
+      await waitMark({ state: "open", cached: true, ticked: true, tickIsOk: true, tickBeforeNumber: true }, "remembered approved");
 
       // The live poll wins over what was remembered.
       await seed({ state: "open", checks: "passing", review: "approved" }, { state: "draft", checks: "none", review: "none" });
@@ -358,7 +360,7 @@ describe("sidebar filter bar", () => {
       await seed(null, { state: "open", checks: "passing", review: "changes_requested" });
       await waitMark({ state: "open", ticked: false }, "changes requested is not a tick");
       await seed(null, { state: "open", checks: "passing", review: "approved" });
-      await waitMark({ state: "open", cached: false, ticked: true, tickIsOk: true, tickLast: true }, "live approved");
+      await waitMark({ state: "open", cached: false, ticked: true, tickIsOk: true, tickBeforeNumber: true }, "live approved");
       await snap("sidebar-task-pr-approved.png");
 
       // A remembered status for ANOTHER PR is not this one's.
