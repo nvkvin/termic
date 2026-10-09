@@ -294,12 +294,27 @@ describe("sidebar filter bar", () => {
         gapToEdge: s && h ? Math.round(h.right - s.right) : null,
         menuOpacity: menu ? getComputedStyle(menu).opacity : null,
         badgeInMenu: !!menu?.querySelector('[data-testid="work-badge"], [data-testid="task-yolo-badge"]'),
+        statePointerEvents: state ? getComputedStyle(state).pointerEvents : null,
       };
     }, b);
     expect(anatomy).toEqual({
       slotIsLast: true, sameSlot: true, sameBox: true, slotWidth: 18, gapToEdge: 4,
-      menuOpacity: "0", badgeInMenu: false,
+      menuOpacity: "0", badgeInMenu: false, statePointerEvents: "none",
     });
+
+    // Clicking the three dots opens the actions menu (state slot must not intercept)
+    await browser.execute(id => {
+      const menu = document.querySelector(`[data-sidebar-task-row="${id}"] [data-testid="task-menu-trigger"]`) as HTMLElement;
+      const opts = { bubbles: true, cancelable: true, pointerType: "mouse", button: 0 } as any;
+      menu.dispatchEvent(new PointerEvent("pointerdown", opts));
+      menu.dispatchEvent(new PointerEvent("pointerup", opts));
+      menu.click();
+    }, b);
+    await browser.waitUntil(
+      async () => (await browser.execute(() => document.querySelectorAll('[role="menu"]').length)) > 0,
+      { timeout: 5_000, timeoutMsg: "task actions menu never opened after clicking three dots" },
+    );
+    await dismissOverlays();
   });
 
   it("a project with no matches hides, and the empty state clears the query", async () => {

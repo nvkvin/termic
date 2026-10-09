@@ -3275,6 +3275,24 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
           );
         })()}
         <span className="relative flex h-[18px] w-[18px] shrink-0 items-center justify-center">
+          {/* `translate3d(0,0,0)` pins it to its own compositing layer for
+              good. Without it the layer exists only WHILE the opacity
+              transition runs, and WebKit pixel-snaps a layer, so the badge
+              jumped on hover and back on leave. pointer-events-none keeps it
+              from intercepting clicks intended for the menu trigger. */}
+          <span
+            data-testid="task-state-slot"
+            className={cn(
+              "pointer-events-none absolute inset-0 flex items-center justify-center transition-opacity group-hover/wsrow:opacity-0 [transform:translate3d(0,0,0)]",
+              menuOpen && "opacity-0",
+            )}
+          >
+          {collapsed && (hasAttention ? <TaskWorkBadge reason="attention" />
+            : hasDone ? <TaskWorkBadge reason="done" delegated={rowDelegated} />
+            : hasWorking ? <TaskWorkBadge reason="working" delegated={rowDelegated} />
+            : hasDelegated ? <TaskWorkBadge reason="delegated" delegated={rowDelegated} />
+            : null)}
+          </span>
           <DropdownRoot open={menuOpen} onOpenChange={setMenuOpen}>
             <Tip content={t("taskMenu")}>
             <DropdownTrigger asChild>
@@ -3648,23 +3666,6 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
               </DropdownItem>
             </DropdownMenu>
           </DropdownRoot>
-          {/* `translate3d(0,0,0)` pins it to its own compositing layer for
-              good. Without it the layer exists only WHILE the opacity
-              transition runs, and WebKit pixel-snaps a layer, so the badge
-              jumped on hover and back on leave. */}
-          <span
-            data-testid="task-state-slot"
-            className={cn(
-              "absolute inset-0 flex items-center justify-center transition-opacity group-hover/wsrow:opacity-0 [transform:translate3d(0,0,0)]",
-              menuOpen && "opacity-0",
-            )}
-          >
-          {collapsed && (hasAttention ? <TaskWorkBadge reason="attention" />
-            : hasDone ? <TaskWorkBadge reason="done" delegated={rowDelegated} />
-            : hasWorking ? <TaskWorkBadge reason="working" delegated={rowDelegated} />
-            : hasDelegated ? <TaskWorkBadge reason="delegated" delegated={rowDelegated} />
-            : null)}
-          </span>
         </span>
       </div>
 
