@@ -1900,6 +1900,9 @@ struct McpState {
     /// Port to prefer on the next bind, surviving disable/enable within
     /// one run. Across restarts the mcp-port file serves the same role.
     last_port: Option<u16>,
+    /// Why the last bind did not happen, for Settings. None while serving
+    /// or switched off.
+    bind_error: Option<String>,
 }
 
 fn state() -> &'static Mutex<McpState> {
@@ -1913,13 +1916,48 @@ fn state() -> &'static Mutex<McpState> {
 /// apply_enabled.
 fn bind_listener(preferred: Option<u16>, addr: IpAddr) -> Result<TcpListener, BindFailure> {
     match preferred.filter(|p| *p != 0) {
-        Some(p) => TcpListener::bind((addr, p)).map_err(|e| match e.kind() {
-            // An address this machine does not have is a wrong setting,
-            // not a squatter on our port: report it as what it is.
-            std::io::ErrorKind::AddrNotAvailable => BindFailure::Io(e),
-            _ => BindFailure::PortTaken(p),
-        }),
-        None => TcpListener::bind((addr, 0)).map_err(BindFailure::Io),
+        Some(p) => TcpListener::bind((addr, p)).map_err(|e| bind_failure(e, p)),
+        // Never an OS-assigned port when one of ours is free: the OS hands
+        // out the dynamic range, which is the one Windows later reserves
+        // out from under us (see bind_failure).
+        None => AUTO_PORTS
+            .find_map(|p| TcpListener::bind((addr, p)).ok())
+            .map_or_else(|| TcpListener::bind((addr, 0)).map_err(BindFailure::Io), Ok),
+    }
+}
+
+/// Where an unset port is picked from. Below every platform's dynamic
+/// range (Linux starts at 32768, macOS and Windows at 49152) and clear of
+/// the task port allocator, which starts at 18100.
+const AUTO_PORTS: std::ops::RangeInclusive<u16> = 23517..=23616;
+
+/// Why a bind to a specific port failed. Only "in use" is a squatter.
+fn bind_failure(e: std::io::Error, port: u16) -> BindFailure {
+    match e.kind() {
+        // An address this machine does not have is a wrong setting,
+        // not a squatter on our port: report it as what it is.
+        std::io::ErrorKind::AddrNotAvailable => BindFailure::Io(e),
+        // Windows answers WSAEACCES for a port inside an excluded range.
+        // Hyper-V (WSL, Docker) reserves blocks of 100 in 49152-65535 and
+        // reshuffles them on boot, so a port there works for days and
+        // then cannot be bound by anyone, with nothing listening on it.
+        std::io::ErrorKind::PermissionDenied => BindFailure::Reserved(port),
+        _ => BindFailure::PortTaken(port),
+    }
+}
+
+impl BindFailure {
+    /// The sentence Settings shows. User-visible: no em dashes.
+    fn message(&self) -> String {
+        match self {
+            BindFailure::PortTaken(p) => format!(
+                "Port {p} is in use by another program. Termic will not move to a different port on its own, because your clients are pointed at this one."
+            ),
+            BindFailure::Reserved(p) => format!(
+                "The system refused port {p}. On Windows this means it sits in a reserved range (Hyper-V, WSL and Docker take blocks of ports from 49152 up, and change them on restart). Use a port below 49152."
+            ),
+            BindFailure::Io(e) => format!("Could not bind: {e}"),
+        }
     }
 }
 
@@ -1957,6 +1995,8 @@ fn url_at(addr: IpAddr, port: u16) -> String {
 enum BindFailure {
     /// Someone else holds the port our clients were told to use.
     PortTaken(u16),
+    /// The OS will not let anyone bind it (see bind_failure).
+    Reserved(u16),
     Io(std::io::Error),
 }
 
@@ -2050,20 +2090,27 @@ pub(crate) fn apply_enabled(app: tauri::AppHandle, on: bool) {
                 // valid token to whatever process now answers on that
                 // port, and it could spend it against us. Refuse to
                 // serve.
-                Err(BindFailure::PortTaken(p)) => {
+                Err(f @ (BindFailure::PortTaken(p) | BindFailure::Reserved(p))) => {
                     dlog(&format!(
-                        "[mcp] port {p} is held by another process; not serving, \
-                         because clients pointed at it would send their token there"
+                        "[mcp] {f:?}; not serving, because clients pointed at \
+                         that port would send their token to whoever answers there"
                     ));
+                    st.bind_error = Some(f.message());
                     // Keep refusing THIS port until it can be reclaimed:
                     // dropping the memo would make the next enable bind a
                     // different port while every installed client still
-                    // points at the squatter.
-                    st.last_port = Some(p);
+                    // points at the squatter. Not for a TYPED port: the
+                    // setting already holds it, and a memo of it would
+                    // keep refusing after the user clears the field,
+                    // which is them asking for a different port.
+                    if want_port.is_none() {
+                        st.last_port = Some(p);
+                    }
                     return;
                 }
-                Err(BindFailure::Io(e)) => {
-                    dlog(&format!("[mcp] bind failed: {e}"));
+                Err(f) => {
+                    dlog(&format!("[mcp] bind failed: {f:?}"));
+                    st.bind_error = Some(f.message());
                     return;
                 }
             };
@@ -2114,6 +2161,7 @@ pub(crate) fn apply_enabled(app: tauri::AppHandle, on: bool) {
             });
             dlog(&format!("[mcp] listening on {}", url_at(addr, port)));
             st.last_port = Some(port);
+            st.bind_error = None;
             st.handle = Some(McpHandle { port, addr, shutdown, stopped: Some(done_rx) });
         }
         (false, true) => {
@@ -2145,6 +2193,7 @@ pub(crate) fn apply_enabled(app: tauri::AppHandle, on: bool) {
         // memo, leaves files behind, and "off" has to mean nothing is
         // advertised.
         (false, false) => {
+            st.bind_error = None;
             if let Ok(dir) = crate::global_dir() {
                 revoke_advertisement(&dir);
             }
@@ -2173,18 +2222,24 @@ pub(crate) struct McpStatus {
     /// listener is bound on every interface (where `url` is the loopback
     /// one) and the machine has a network address.
     lan_url: Option<String>,
+    /// Why the endpoint is not bound although the setting is on.
+    bind_error: Option<String>,
 }
 
 /// Settings-UI probe. Reads the live handle, so it reflects reality
 /// (a failed bind reports url: null even with the setting on).
 #[tauri::command]
 pub(crate) fn mcp_status() -> McpStatus {
-    let (url, lan_url) = match state().lock().unwrap().handle.as_ref() {
-        Some(h) => (
-            Some(url_at(reach(h.addr), h.port)),
-            h.addr.is_unspecified().then(lan_ip).flatten().map(|ip| url_at(ip, h.port)),
-        ),
-        None => (None, None),
+    let (url, lan_url, bind_error) = {
+        let st = state().lock().unwrap();
+        match st.handle.as_ref() {
+            Some(h) => (
+                Some(url_at(reach(h.addr), h.port)),
+                h.addr.is_unspecified().then(lan_ip).flatten().map(|ip| url_at(ip, h.port)),
+                None,
+            ),
+            None => (None, None, st.bind_error.clone()),
+        }
     };
     let rendered = url.as_ref().and_then(|u| {
         let dir = crate::global_dir().ok()?;
@@ -2200,6 +2255,7 @@ pub(crate) fn mcp_status() -> McpStatus {
             .flatten(),
         url,
         lan_url,
+        bind_error,
     }
 }
 
@@ -2890,6 +2946,14 @@ mod tests {
         // setting, reported as that and not as someone holding our port.
         let elsewhere: IpAddr = "192.0.2.1".parse().unwrap();
         assert!(matches!(bind_listener(Some(port), elsewhere), Err(BindFailure::Io(_))));
+        // A refusal is not a squatter: it is the OS reserving the port.
+        let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        let f = bind_failure(denied, 65510);
+        assert!(matches!(f, BindFailure::Reserved(65510)));
+        assert!(f.message().contains("65510"));
+        // An unset port is picked from our own range, not the OS's.
+        let auto = bind_listener(None, LOOPBACK).unwrap().local_addr().unwrap().port();
+        assert!(AUTO_PORTS.contains(&auto), "{auto}");
         // And once it is free again, it is reclaimed.
         //
         // Retried rather than asserted on the first attempt. `drop` closes the

@@ -38,7 +38,7 @@ import { cn } from "@/lib/utils";
  *  Never `null`: that is the "still reading" sentinel, and a rejection left
  *  there parks the panel on it forever, with no retry and no path to the
  *  could-not-bind copy. */
-const UNBOUND: McpStatus = { url: null, token_path: null, codex_config: null, claude_command: null, lan_url: null };
+const UNBOUND: McpStatus = { url: null, token_path: null, codex_config: null, claude_command: null, lan_url: null, bind_error: null };
 
 /** A copyable monospace block. One component so every snippet shares the
  *  same chrome and copy affordance. */
@@ -364,8 +364,8 @@ export function McpSection() {
               {claudeCommand && <CopyRow text={claudeCommand} label={t("mcp.copyClaudeLabel")} className="mt-1.5" />}
             </>
           ) : (
-            <p className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
-              {t("mcp.bindFailed")}
+            <p data-testid="mcp-bind-failed" className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
+              {status.bind_error ?? t("mcp.bindFailed")}
             </p>
           )}
         </Block>

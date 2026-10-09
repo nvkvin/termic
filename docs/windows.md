@@ -143,6 +143,14 @@ Each of these is a deliberate choice; the reasoning lives next to the code.
   (`mcp_server::helper_command`). A registration made by an older build
   keeps the old helper until "Add to Claude" is clicked again. Which shell
   codex runs its helper in on Windows is unmeasured.
+- **MCP port.** Hyper-V (WSL, Docker) reserves blocks of 100 ports inside
+  the dynamic range 49152-65535 and reshuffles them on restart (`netsh int
+  ipv4 show excludedportrange protocol=tcp`). A port in a reserved block
+  cannot be bound by anyone, the bind answers WSAEACCES with nothing
+  listening, so an endpoint on 65510 served for days and then refused. An
+  unset port is therefore picked from 23517-23616 (`AUTO_PORTS`), never
+  OS-assigned, and a refused typed port is reported in Settings > MCP as
+  reserved rather than as held by another process.
 - **Paths in the UI.** `src/lib/osPath.ts` holds the platform rules:
   segment-safe `relUnder`, `baseName`, standard `file:///C:/...` URIs for
   the language servers (mirrored by `lsp_path_to_uri`), and quoting rather

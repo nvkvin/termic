@@ -973,6 +973,8 @@ export interface McpStatus {
   token_path: string | null;
   /** The URL another device on the network uses, when LAN access is on. */
   lan_url: string | null;
+  /** Why the endpoint is not bound although the setting is on. */
+  bind_error: string | null;
 }
 
 export interface DiscoveredRepo {
