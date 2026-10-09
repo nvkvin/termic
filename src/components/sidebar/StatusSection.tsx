@@ -24,7 +24,7 @@
 import { memo, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
-import { Bell, ChevronDown, ChevronRight, GitPullRequest, Moon } from "lucide-react";
+import { Activity, Bell, ChevronDown, ChevronRight, GitPullRequest, Minus, Moon, Plus } from "lucide-react";
 import { useApp } from "@/store/app";
 import { usePrefs } from "@/store/prefs";
 import { usePr } from "@/store/pr";
@@ -99,6 +99,9 @@ export function StatusSection({ matchIds = null }: { matchIds?: ReadonlySet<stri
   const useBranchAsTaskName = usePrefs(s => s.useBranchAsTaskName);
   const bucketCollapsed = usePrefs(s => s.statusBucketCollapsed);
   const setBucketCollapsed = usePrefs(s => s.setStatusBucketCollapsed);
+  const statusSectionCollapsed = usePrefs(s => s.statusSectionCollapsed);
+  const setStatusSectionCollapsed = usePrefs(s => s.setStatusSectionCollapsed);
+  const isCollapsed = matchIds ? false : statusSectionCollapsed;
   // The board's pref set, so the same toggles fill the same buckets. Stable
   // identity: it keys every row's badge selector.
   const workPrefs: WorkStatePrefs = useMemo(
@@ -121,21 +124,60 @@ export function StatusSection({ matchIds = null }: { matchIds?: ReadonlySet<stri
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [projects, listed, facts, workPrefs, prKey],
   );
+  const totalStatusCount = useMemo(() => groups.reduce((acc, g) => acc + g.count, 0), [groups]);
   const projectName = useMemo(() => new Map(projects.map(p => [p.id, p.name])), [projects]);
 
   return (
     <div data-testid="status-section" className="mb-1">
-      {/* A label, exactly like the PROJECTS header, and NOT a fold: the
-          on/off switch is how the section goes away, and a chevron here made
-          it the odd one out next to PROJECTS. It stays when every bucket is
-          empty, so the section cannot silently vanish. */}
       <div
+        role="button"
+        tabIndex={0}
         data-testid="status-section-header"
-        className="flex items-center px-2 py-1 text-[12px] uppercase tracking-wider text-[var(--color-fg-dim)]"
+        aria-expanded={!isCollapsed}
+        title={isCollapsed ? t("expandStatusSection") : t("collapseStatusSection")}
+        onClick={() => setStatusSectionCollapsed(!statusSectionCollapsed)}
+        onKeyDown={ev => {
+          if (ev.key === "Enter" || ev.key === " ") {
+            ev.preventDefault();
+            setStatusSectionCollapsed(!statusSectionCollapsed);
+          }
+        }}
+        className={cn(
+          "group flex h-7 cursor-pointer select-none items-center justify-between rounded-md px-2 text-[11px] font-semibold uppercase tracking-wider transition-colors",
+          "bg-[var(--color-bg-2)]/60 hover:bg-[var(--color-bg-2)] text-[var(--color-fg)] border border-[var(--color-border-soft)]/50",
+        )}
       >
-        <span>{t("statusHeader")}</span>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <Activity className="h-3.5 w-3.5 shrink-0 text-[var(--color-accent)]" />
+          <span className="truncate">{t("statusHeader")}</span>
+          {totalStatusCount > 0 && (
+            <span
+              data-testid="status-section-total-count"
+              className="ml-0.5 rounded-full bg-[var(--color-bg-3)]/80 px-1.5 py-0.2 text-[10.5px] font-medium tabular-nums text-[var(--color-fg-dim)] group-hover:text-[var(--color-fg)]"
+            >
+              {totalStatusCount}
+            </span>
+          )}
+        </div>
+        <div className="flex shrink-0 items-center gap-1 text-[var(--color-fg-faint)] group-hover:text-[var(--color-fg-dim)]">
+          {isCollapsed ? (
+            <span
+              data-testid="status-section-expand-indicator"
+              className="flex h-4 w-4 items-center justify-center rounded text-[var(--color-accent)]"
+            >
+              <Plus className="h-3 w-3" strokeWidth={2.5} />
+            </span>
+          ) : (
+            <span
+              data-testid="status-section-collapse-indicator"
+              className="flex h-4 w-4 items-center justify-center rounded"
+            >
+              <Minus className="h-3 w-3" strokeWidth={2.5} />
+            </span>
+          )}
+        </div>
       </div>
-      {groups.map(g => {
+      {!isCollapsed && groups.map(g => {
         const open = !isStatusBucketCollapsed(g.bucket, bucketCollapsed);
         const count = g.count;
         const countLabel = count === 1

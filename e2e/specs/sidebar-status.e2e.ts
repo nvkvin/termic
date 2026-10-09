@@ -188,14 +188,16 @@ describe("sidebar status section", () => {
     await click(TOGGLE_ROW);
     await waitVisible(SECTION);
 
-    // The header is a label like PROJECTS, not a fold: the switch is how the
-    // section goes away.
+    // The header is a highlighted section bar with an expand/collapse toggle.
     const header = await browser.execute(sel => {
       const el = document.querySelector(sel) as HTMLElement;
       // textContent, not innerText: the capitals are CSS, not the string.
       return { tag: el.tagName, expandable: el.hasAttribute("aria-expanded"), text: el.textContent?.trim() };
     }, HEADER);
-    expect(header).toEqual({ tag: "DIV", expandable: false, text: "Status" });
+    expect(header.tag).toBe("DIV");
+    expect(header.expandable).toBe(true);
+    expect(header.text).toMatch(/^Status/);
+    expect(await present('[data-testid="sidebar-section-divider"]')).toBe(true);
     // Above the PROJECTS header (which holds the Add project button), in
     // document order.
     const above = await browser.execute(sec => {
@@ -431,10 +433,22 @@ describe("sidebar status section", () => {
     await typeIntoAgent(blocked, "\x7f");
   });
 
-  it("remembers each bucket's fold", async () => {
-    // Clicking the header does nothing: it is a label.
-    await click(HEADER);
+  it("collapses and expands the status section, and remembers each bucket's fold", async () => {
+    // Clicking the header collapses the section in place.
+    expect(await ariaExpanded(HEADER)).toBe("true");
     expect(await present(BUCKET_HEADER("backlog"))).toBe(true);
+    await snap("sidebar-sections-expanded.png");
+    await click(HEADER);
+    expect(await ariaExpanded(HEADER)).toBe("false");
+    expect(await present(BUCKET_HEADER("backlog"))).toBe(false);
+    expect(await stored("statusSectionCollapsed")).toBe("1");
+    await snap("sidebar-status-collapsed.png");
+
+    // Clicking again expands it back.
+    await click(HEADER);
+    expect(await ariaExpanded(HEADER)).toBe("true");
+    expect(await present(BUCKET_HEADER("backlog"))).toBe(true);
+    expect(await stored("statusSectionCollapsed")).toBe("0");
 
     // A bucket's fold is stored as an override of its default. Not started
     // was opened earlier; folding it again writes that back.
@@ -462,6 +476,33 @@ describe("sidebar status section", () => {
     expect(await present(ROW(blocked))).toBe(false);
     await setBucketOpen("attention", true);
     await waitVisible(ROW_IN("attention", blocked));
+  });
+
+  it("collapses and expands the projects section", async () => {
+    const projHeaderToggle = '[data-testid="projects-section-header"] [role="button"]';
+    await waitVisible(projHeaderToggle);
+    expect(await ariaExpanded(projHeaderToggle)).toBe("true");
+    expect(await present(`[data-project-id="${projectId}"]`)).toBe(true);
+
+    // Clicking the projects header collapses the project tree.
+    await click(projHeaderToggle);
+    expect(await ariaExpanded(projHeaderToggle)).toBe("false");
+    expect(await present(`[data-project-id="${projectId}"]`)).toBe(false);
+    expect(await stored("projectsSectionCollapsed")).toBe("1");
+    await snap("sidebar-projects-collapsed.png");
+
+    // Both collapsed
+    await click(HEADER);
+    expect(await ariaExpanded(HEADER)).toBe("false");
+    await snap("sidebar-both-collapsed.png");
+    await click(HEADER);
+    expect(await ariaExpanded(HEADER)).toBe("true");
+
+    // Clicking again expands it back.
+    await click(projHeaderToggle);
+    expect(await ariaExpanded(projHeaderToggle)).toBe("true");
+    expect(await present(`[data-project-id="${projectId}"]`)).toBe(true);
+    expect(await stored("projectsSectionCollapsed")).toBe("0");
   });
 
   it("puts a task with an open PR in review, and a merge takes it out", async () => {

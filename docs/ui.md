@@ -772,11 +772,13 @@ on screen while you work (#298).
 **Off by default** (`prefs.showStatusSection`): with two tasks it is clutter,
 with twenty it is the point. Two switches write the one pref: a check row in
 the Project list options menu next to "Collapse inactive projects", and
-Settings > Appearance > Interface & Sidebar > Sidebar. The STATUS header is a label
-exactly like PROJECTS and does not fold: the switch is how the section goes
-away, and a chevron on it made it the odd one out next to PROJECTS. Each
-bucket folds, and those folds are a pref (`statusBucketCollapsed`, a scoped
-localStorage key, with a setter that bails on an unchanged value).
+Settings > Appearance > Interface & Sidebar > Sidebar. The STATUS header and
+PROJECTS header are highlighted section bars with semantic icons and item
+counts. Clicking on either collapses and expands its section in place
+(using Plus/Minus fold indicators rather than chevrons, which avoids arrow
+clutter), and a clean divider line separates Status from Projects. Each
+bucket folds too, and those folds are a pref (`statusBucketCollapsed`,
+a scoped localStorage key, with a setter that bails on an unchanged value).
 
 **It is a copy, and the tree does not change.** Every task keeps its one home
 in the project tree; the section lists a subset again. Copying rather than
