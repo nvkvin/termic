@@ -15552,7 +15552,14 @@ async fn scratch_tree_list(
             if name == "index.json" || name == ".DS_Store" || name == ".git" || name.starts_with('.') {
                 continue;
             }
-            let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            let ft = match e.file_type() {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            if ft.is_symlink() {
+                continue;
+            }
+            let is_dir = ft.is_dir();
             out.push(FileEntry { name, is_dir });
         }
         out.sort_by(|a, b| {

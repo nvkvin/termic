@@ -1352,9 +1352,15 @@ fn collect_relative_files(root: &Path, current: &Path, out: &mut Vec<String>) {
             if name.starts_with('.') {
                 continue;
             }
-            if p.is_dir() {
+            let Ok(meta) = fs::symlink_metadata(&p) else {
+                continue;
+            };
+            if meta.is_symlink() {
+                continue;
+            }
+            if meta.is_dir() {
                 collect_relative_files(root, &p, out);
-            } else if p.is_file() {
+            } else if meta.is_file() {
                 if let Ok(rel) = p.strip_prefix(root) {
                     let rel_str = rel.to_string_lossy().replace('\\', "/");
                     out.push(rel_str);
@@ -1368,7 +1374,10 @@ fn clean_empty_dirs(dir: &Path) {
     if let Ok(rd) = fs::read_dir(dir) {
         for e in rd.flatten() {
             let p = e.path();
-            if p.is_dir() {
+            let Ok(meta) = fs::symlink_metadata(&p) else {
+                continue;
+            };
+            if meta.is_dir() && !meta.is_symlink() {
                 clean_empty_dirs(&p);
                 let _ = fs::remove_dir(&p);
             }
@@ -4453,5 +4462,33 @@ mod tests {
             let taken: BTreeSet<String> = ["work-stuff".to_string(), "work-stuff-2".to_string()].into();
             assert_eq!(new_folder_id(&work, &taken), "work-stuff-3");
         });
+    }
+
+    #[test]
+    fn export_dir_mirror_skips_symlinks() {
+        let temp = tempfile::tempdir().unwrap();
+        let src = temp.path().join("src");
+        let dst = temp.path().join("dst");
+        let outside = temp.path().join("outside");
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(&dst).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+
+        fs::write(src.join("normal.txt"), "hello").unwrap();
+        fs::write(outside.join("secret.txt"), "secret").unwrap();
+
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(outside.join("secret.txt"), src.join("symlink_file.txt")).unwrap();
+            std::os::unix::fs::symlink(&outside, src.join("symlink_dir")).unwrap();
+        }
+
+        export_dir_mirror(&src, &dst).unwrap();
+
+        assert!(dst.join("normal.txt").exists());
+        assert_eq!(fs::read_to_string(dst.join("normal.txt")).unwrap(), "hello");
+        assert!(!dst.join("symlink_file.txt").exists());
+        assert!(!dst.join("symlink_dir").exists());
+        assert!(!dst.join("symlink_dir").join("secret.txt").exists());
     }
 }

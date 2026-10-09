@@ -3469,7 +3469,7 @@ fn handle_pad(
             }
         };
         format!("project_{}", p.id)
-    } else {
+    } else if scope.is_none() || scope == Some("task") {
         let t = match resolve_task_arg(&projects, &tasks, task, project, cwd) {
             Ok(t) => t.clone(),
             Err(e) => return Reply { id: id.into(), ok: false, data: None, error: Some(e) },
@@ -3478,6 +3478,13 @@ fn handle_pad(
             return Reply::err(id, ErrorCode::BadRequest, format!("task {} is archived", t.name));
         }
         t.id.clone()
+    } else {
+        let s = scope.unwrap();
+        return Reply::err(
+            id,
+            ErrorCode::BadRequest,
+            format!("unknown scratchpad scope \"{s}\"; expected 'task', 'project', 'profile', or 'global'"),
+        );
     };
     op["taskId"] = serde_json::Value::String(target_id.clone());
     if let Some(s) = scope {
@@ -7361,6 +7368,24 @@ mod tests {
         assert!(reply_proj.ok, "{reply_proj:?}");
         let Some(ReplyData::Pad(dp)) = reply_proj.data else { panic!("expected pad, got {reply_proj:?}") };
         assert_eq!(dp.task_id, "project_p1");
+
+        // Unrecognized scope returns bad request rather than falling back to task
+        let reply_bad = handle(
+            &req(
+                Command::PadList {
+                    task: None,
+                    project: None,
+                    scope: Some("globall".into()),
+                    cwd: None,
+                },
+                Some("tok"),
+            ),
+            &host,
+        );
+        assert!(!reply_bad.ok, "{reply_bad:?}");
+        let err = reply_bad.error.unwrap();
+        assert_eq!(err.code, ErrorCode::BadRequest);
+        assert!(err.message.contains("unknown scratchpad scope \"globall\""));
     }
 
     #[test]
