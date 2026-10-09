@@ -336,6 +336,7 @@ export default {
     delete: "删除",
     deleteTitle: "删除「{{name}}」？",
     deleteMessage: "定时任务将停止。它的任务和每次执行会作为普通任务保留。保留的报告留在 {{folder}} 中，不再自动清理。",
+    deleteTasks: "同时归档相关任务并删除报告",
     deleteReports: "同时删除它的报告",
     deleteConfirm: "删除定时任务",
     noRuns: "还没有执行过",

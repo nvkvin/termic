@@ -490,6 +490,7 @@ describe("the Scheduled view and dialog", () => {
       window.__termic!.useApp.getState().tasks.find((t: any) => t.id === id).schedule.slug, parent);
     await clickWhenVisible('[data-testid="nav-scheduled"]');
     await clickWhenVisible(`[data-testid="schedule-delete-${parent}"]`);
+    await snap("schedules-ui-06-delete-confirm.png");
     await clickByText("Delete schedule");
     await waitGone(rowSel(parent));
     expect((await diskTask(parent)).schedule).toBeUndefined();

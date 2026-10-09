@@ -926,9 +926,9 @@ pub(crate) fn dispatch_authenticated(
             &req.id, host, task.as_deref(), project.as_deref(), cwd.as_deref(),
             serde_json::json!({ "op": "run" }),
         ),
-        Command::ScheduleDelete { task, project, delete_reports, cwd } => handle_schedule(
+        Command::ScheduleDelete { task, project, delete_reports, archive_tasks, cwd } => handle_schedule(
             &req.id, host, task.as_deref(), project.as_deref(), cwd.as_deref(),
-            serde_json::json!({ "op": "delete", "deleteReports": delete_reports }),
+            serde_json::json!({ "op": "delete", "deleteReports": delete_reports, "archiveTasks": archive_tasks }),
         ),
         Command::Send { .. } => handle_send(req, host, sink),
         Command::Apply { task, project } => {

@@ -204,4 +204,29 @@ describe("schedule delete", () => {
     expect(ipc.taskSetSchedule).toHaveBeenCalledWith("task-1", null);
     expect(ipc.scheduleDeleteReports).toHaveBeenCalledWith("proj-1", "daily-sync");
   });
+
+  it("removes a schedule, deletes reports, and archives related tasks when archiveTasks is true", async () => {
+    const runTask = task({
+      id: "run-task-1",
+      project_id: "proj-1",
+      name: "daily sync run",
+      spawned_by: "task-1",
+    });
+    useApp.setState({
+      projects: [PROJ],
+      tasks: [TASK, DOCKER_TASK, BARE_TASK, runTask],
+    });
+
+    const res = (await scheduleHandler({
+      op: "delete",
+      taskId: "task-1",
+      archiveTasks: true,
+    })) as { deleted: boolean };
+
+    expect(res.deleted).toBe(true);
+    expect(ipc.taskSetSchedule).toHaveBeenCalledWith("task-1", null);
+    expect(ipc.scheduleDeleteReports).toHaveBeenCalledWith("proj-1", "daily-sync");
+    expect(ipc.taskArchive).toHaveBeenCalledWith("run-task-1", false, true);
+    expect(ipc.taskArchive).toHaveBeenCalledWith("task-1", false, true);
+  });
 });

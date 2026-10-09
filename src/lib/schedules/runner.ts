@@ -24,6 +24,7 @@ import { useUI } from "@/store/ui";
 import { usePromptLibrary } from "@/store/prompts";
 import { i18n } from "@/lib/i18n";
 import * as ipc from "@/lib/ipc";
+import { startArchive } from "@/lib/archiveTask";
 import { withCreateLock } from "@/lib/createLock";
 import { markUnattendedSpawn } from "@/lib/unattendedSpawns";
 import { nextGroupColor } from "@/lib/taskGroups";
@@ -430,10 +431,25 @@ export async function updateSchedule(
   return next;
 }
 
+export interface DeleteScheduleOptions {
+  deleteReports?: boolean;
+  archiveTasks?: boolean;
+}
+
 /** Remove a schedule (the parent and its runs stay, as ordinary tasks), and
- *  with `deleteReports` its report files too. A kept folder is no longer
- *  cleaned up: the schedule that owned it is gone. */
-export function deleteSchedule(parentId: string, deleteReports: boolean): Promise<void> {
+ *  with `deleteReports` its report files too. With `archiveTasks`, archives
+ *  the parent and all its run tasks and deletes its reports. A kept folder is
+ *  no longer cleaned up: the schedule that owned it is gone. */
+export function deleteSchedule(
+  parentId: string,
+  options?: boolean | DeleteScheduleOptions,
+): Promise<void> {
+  const opts: DeleteScheduleOptions = typeof options === "boolean"
+    ? { deleteReports: options }
+    : (options ?? {});
+  const shouldDeleteReports = opts.deleteReports ?? opts.archiveTasks ?? false;
+  const shouldArchiveTasks = opts.archiveTasks ?? false;
+
   return enqueue(parentId, async () => {
     const parent = useApp.getState().tasks.find(t => t.id === parentId);
     const s = parent?.schedule;
@@ -441,7 +457,24 @@ export function deleteSchedule(parentId: string, deleteReports: boolean): Promis
     await ipc.taskSetSchedule(parentId, null);
     useApp.getState().setTaskSchedule(parentId, null);
     actedSlot.delete(parentId);
-    if (deleteReports) await ipc.scheduleDeleteReports(parent.project_id, s.slug).catch(() => {});
+    if (shouldDeleteReports) await ipc.scheduleDeleteReports(parent.project_id, s.slug).catch(() => {});
+    if (shouldArchiveTasks) {
+      const runIds = new Set<string>();
+      for (const t of useApp.getState().tasks) {
+        if (!t.archived && (t.spawned_by === parentId || s.history.some(h => h.run_task_id === t.id))) {
+          runIds.add(t.id);
+        }
+      }
+      for (const runId of runIds) {
+        inFlight.delete(runId);
+        await startArchive(runId, false, true).catch(() => {});
+      }
+      const parentTask = useApp.getState().tasks.find(t => t.id === parentId);
+      if (parentTask && !parentTask.archived) {
+        inFlight.delete(parentId);
+        await startArchive(parentId, false, true).catch(() => {});
+      }
+    }
   });
 }
 

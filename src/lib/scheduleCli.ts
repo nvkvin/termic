@@ -72,6 +72,7 @@ export interface ScheduleParams {
   catchUp?: boolean;
   enabled?: boolean;
   deleteReports?: boolean;
+  archiveTasks?: boolean;
 }
 
 function toSummaryWire(
@@ -194,7 +195,10 @@ export async function scheduleHandler(raw: unknown): Promise<unknown> {
 
   if (params.op === "delete") {
     if (!task.schedule) throw new Error(`task "${task.name}" has no schedule`);
-    await deleteSchedule(task.id, !!params.deleteReports);
+    await deleteSchedule(task.id, {
+      deleteReports: !!params.deleteReports || !!params.archiveTasks,
+      archiveTasks: !!params.archiveTasks,
+    });
     return { deleted: true };
   }
 

@@ -390,4 +390,35 @@ describe("creating, editing and deleting", () => {
     await deleteSchedule("parent", true);
     expect(ipc.scheduleDeleteReports).toHaveBeenCalledWith("p1", "grafana-check");
   });
+
+  it("archives parent and run tasks and deletes reports when archiveTasks is requested", async () => {
+    const runTask: Task = {
+      id: "run-1",
+      project_id: "p1",
+      name: "grafana check 2026-10-02 09:00",
+      branch: "main",
+      base_branch: "main",
+      path: "/Users/u/web",
+      cli: "claude",
+      port: 18101,
+      created: "",
+      archived: false,
+      is_main_checkout: true,
+      spawned_by: "parent",
+    } as Task;
+    disk.tasks.push(runTask);
+    const s = schedule({ history: [{ slot: SLOT, outcome: "fired", run_task_id: "run-1" }] });
+    seed({}, s);
+    disk.tasks.push(runTask);
+    useApp.setState({ tasks: clone(disk.tasks) });
+
+    await deleteSchedule("parent", { archiveTasks: true });
+
+    expect(ipc.scheduleDeleteReports).toHaveBeenCalledWith("p1", "grafana-check");
+    expect(ipc.taskArchive).toHaveBeenCalledWith("run-1", false, true);
+    expect(ipc.taskArchive).toHaveBeenCalledWith("parent", false, true);
+    expect(useApp.getState().tasks.find(t => t.id === "run-1")!.archived).toBe(true);
+    expect(useApp.getState().tasks.find(t => t.id === "parent")!.archived).toBe(true);
+    expect(useApp.getState().tasks.find(t => t.id === "parent")!.schedule).toBeUndefined();
+  });
 });

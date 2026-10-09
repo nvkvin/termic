@@ -337,6 +337,7 @@ export default {
     delete: "Delete",
     deleteTitle: "Delete \"{{name}}\"?",
     deleteMessage: "The schedule stops. Its task and its runs stay, as ordinary tasks. Reports you keep stay in {{folder}} and are no longer cleaned up.",
+    deleteTasks: "Also archive related tasks and delete reports",
     deleteReports: "Also delete its reports",
     deleteConfirm: "Delete schedule",
     noRuns: "No runs yet",

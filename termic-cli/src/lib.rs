@@ -1621,6 +1621,9 @@ Exit codes: 0 deleted, 1 error (unknown task, declined, no TTY without --yes), \
         /// Delete report files on disk in addition to removing the schedule.
         #[arg(long)]
         delete_reports: bool,
+        /// Archive the parent task and all past run tasks (and delete reports).
+        #[arg(long)]
+        archive_tasks: bool,
         /// Skip the confirmation prompt (required non-interactively).
         #[arg(short, long)]
         yes: bool,
@@ -2900,7 +2903,7 @@ fn execute_schedule(
             project: project.clone(),
             cwd,
         },
-        ScheduleCmd::Delete { task, project, delete_reports, yes } => {
+        ScheduleCmd::Delete { task, project, delete_reports, archive_tasks, yes } => {
             let show_res = client::request(
                 conn,
                 proto::Command::ScheduleShow {
@@ -2920,8 +2923,9 @@ fn execute_schedule(
                 .unwrap_or_else(|| task.clone().unwrap_or_else(|| "task".to_string()));
             if !yes {
                 let question = format!(
-                    "termic: delete recurring schedule for {task_display}?{}",
-                    if *delete_reports { " Historical reports on disk will also be deleted." } else { "" }
+                    "termic: delete recurring schedule for {task_display}?{}{}",
+                    if *archive_tasks { " Related tasks will be archived." } else { "" },
+                    if *delete_reports || *archive_tasks { " Historical reports on disk will also be deleted." } else { "" }
                 );
                 if !confirm_tty(&question)? {
                     return Err(CliError::new(exit_code::ERROR, "schedule delete declined"));
@@ -2933,6 +2937,7 @@ fn execute_schedule(
                 task: task.clone(),
                 project: project.clone(),
                 delete_reports: *delete_reports,
+                archive_tasks: *archive_tasks,
                 cwd,
             };
             let data = client::request(conn, wire, token)?;
@@ -3967,10 +3972,11 @@ mod tests {
         assert_eq!(task.as_deref(), Some("parent-1"));
         assert_eq!(project, &None);
 
-        let d = Cli::try_parse_from(["termic", "schedule", "delete", "parent-1", "--delete-reports", "-y"]).unwrap();
-        let Cmd::Schedule(ScheduleCmd::Delete { task, delete_reports, yes, .. }) = &d.cmd else { panic!("not schedule delete") };
+        let d = Cli::try_parse_from(["termic", "schedule", "delete", "parent-1", "--delete-reports", "--archive-tasks", "-y"]).unwrap();
+        let Cmd::Schedule(ScheduleCmd::Delete { task, delete_reports, archive_tasks, yes, .. }) = &d.cmd else { panic!("not schedule delete") };
         assert_eq!(task.as_deref(), Some("parent-1"));
         assert!(*delete_reports);
+        assert!(*archive_tasks);
         assert!(*yes);
 
         assert!(Cli::try_parse_from(["termic", "schedule"]).is_err());

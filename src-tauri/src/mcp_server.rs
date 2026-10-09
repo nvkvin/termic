@@ -1666,6 +1666,7 @@ const TOOLS: &[ToolDef] = &[
             P_SCHEDULE_TASK,
             P_PROJECT,
             ParamDef { name: "deleteReports", json_type: "boolean", required: false, description: "Delete report files on disk in addition to removing the schedule.", cli_flag: Some("--delete-reports") },
+            ParamDef { name: "archiveTasks", json_type: "boolean", required: false, description: "Archive related tasks and delete reports.", cli_flag: Some("--archive-tasks") },
         ],
         destructive: true,
         read_only: false,
@@ -1673,6 +1674,7 @@ const TOOLS: &[ToolDef] = &[
             task: arg_str(a, "task")?,
             project: arg_str(a, "project")?,
             delete_reports: arg_bool(a, "deleteReports")?,
+            archive_tasks: arg_bool(a, "archiveTasks")?,
             cwd: None,
         }),
     },
@@ -3494,7 +3496,9 @@ mod tests {
         // 21850: task_send's `now`, parity with `termic send --now`:
         // skip a busy agent's queue for a message that cannot wait. One clause
         // on the param, three words on the tool, the rest in the CLI's help.
-        const RECORDED: usize = 21850;
+        // 21907: schedule_delete's `archiveTasks`, parity with `--archive-tasks`:
+        // archive related tasks and delete reports.
+        const RECORDED: usize = 21907;
         assert!(
             size <= RECORDED,
             "serialized tools/list grew to {size} bytes (recorded {RECORDED}); grow it consciously"

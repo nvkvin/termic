@@ -720,6 +720,8 @@ pub enum Command {
         project: Option<String>,
         #[serde(default, skip_serializing_if = "is_false")]
         delete_reports: bool,
+        #[serde(default, skip_serializing_if = "is_false")]
+        archive_tasks: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cwd: Option<String>,
     },
@@ -2291,7 +2293,8 @@ mod tests {
                 cwd: None,
             },
             Command::ScheduleRun { task: Some("parent-1".into()), project: None, cwd: None },
-            Command::ScheduleDelete { task: Some("parent-1".into()), project: None, delete_reports: true, cwd: None },
+            Command::ScheduleDelete { task: Some("parent-1".into()), project: None, delete_reports: true, archive_tasks: false, cwd: None },
+            Command::ScheduleDelete { task: Some("parent-1".into()), project: None, delete_reports: false, archive_tasks: true, cwd: None },
         ] {
             roundtrip(&Request { id: "r1".into(), token: Some("t".into()), profile: None, cmd });
         }

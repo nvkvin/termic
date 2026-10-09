@@ -2121,8 +2121,10 @@ schedules" counts a paused schedule because the view is where it is switched
 back on) opens `views/Scheduled.tsx`: each schedule's agent, name, project,
 cadence, next run, last outcome (a fired run reads as its report's title,
 linked), an enabled switch, Run now, edit, delete, and its history. Delete
-asks, with "Also delete its reports" unticked, and leaves the parent and its
-runs as ordinary tasks. Renaming a schedule renames its parent too while the
+asks, with "Also archive related tasks and delete reports" unticked
+(leaving the parent and its runs as ordinary tasks by default; ticked,
+it archives the parent and its runs with skip_scripts and deletes the
+reports). Renaming a schedule renames its parent too while the
 parent still carries the schedule's old name, so the sidebar group (which
 shows its lead's name) agrees; a parent with a name of its own keeps it.
 `ScheduleDialog.tsx` creates one with a new parent

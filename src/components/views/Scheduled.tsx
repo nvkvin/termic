@@ -85,9 +85,9 @@ function ScheduleRow({ parent, lang }: { parent: Task; lang: string }) {
       message: t("scheduled.deleteMessage", { folder: reportFolder(s.slug) }),
       confirmLabel: t("scheduled.deleteConfirm"),
       destructive: true,
-      checkbox: { label: t("scheduled.deleteReports"), defaultValue: false },
+      checkbox: { label: t("scheduled.deleteTasks"), defaultValue: false },
     });
-    if (res.confirmed) await deleteSchedule(parent.id, res.checked);
+    if (res.confirmed) await deleteSchedule(parent.id, { archiveTasks: res.checked, deleteReports: res.checked });
   };
 
   return (
