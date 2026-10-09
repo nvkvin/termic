@@ -2884,7 +2884,7 @@ pub async fn sync_now(app: tauri::AppHandle, prefs: Option<PrefsSnapshot>) -> Re
     Ok(res)
 }
 
-/// The pull on launch: once per process, whichever window asks first. The
+/// The sync on launch: once per process, whichever window asks first. The
 /// window calls it after first paint, so it never delays startup.
 #[tauri::command]
 pub async fn sync_launch_pull(app: tauri::AppHandle, prefs: Option<PrefsSnapshot>) -> Result<SyncRunResult, String> {
@@ -2899,14 +2899,14 @@ pub async fn sync_launch_pull(app: tauri::AppHandle, prefs: Option<PrefsSnapshot
         let _g = SYNC_LOCK.lock();
         let machine = machine_name();
         let finder = Finder { find_repo: &default_find_repo };
-        Ok::<_, String>(run_core(&clone, &opts(false, &machine, prefs.as_ref(), &finder)))
+        Ok::<_, String>(run_core(&clone, &opts(true, &machine, prefs.as_ref(), &finder)))
     })
     .await??;
     after_apply(&app, &res);
     Ok(res)
 }
 
-/// A pull when a window regains focus. No push. Not latched for the process
+/// A sync when a window regains focus. Not latched for the process
 /// the way `sync_launch_pull` is: `focus_pull_due` decides, under `SYNC_LOCK`,
 /// so every open window shares one answer. An outstanding conflict is returned
 /// and not fetched over.
@@ -2927,7 +2927,7 @@ pub async fn sync_focus_pull(app: tauri::AppHandle, prefs: Option<PrefsSnapshot>
         }
         let machine = machine_name();
         let finder = Finder { find_repo: &default_find_repo };
-        Ok::<_, String>(run_core(&clone, &opts(false, &machine, prefs.as_ref(), &finder)))
+        Ok::<_, String>(run_core(&clone, &opts(true, &machine, prefs.as_ref(), &finder)))
     })
     .await??;
     after_apply(&app, &res);

@@ -480,8 +480,8 @@ specs and get an issue at the same time. That is the whole promotion path:
   is about, is the missing rung between a changelog line and a 16px button.
   [docs/ideas/feature-tips.md](docs/ideas/feature-tips.md).
 - **Config sync, beyond manual.** Syncing your setup through a private git
-  repo you own ships as an experimental feature: a pull at launch, a pull when
-  a window comes forward, and a "Sync now" button. What is left: pushing on
+  repo you own ships as an experimental feature: syncing (pull and push) at launch,
+  when a window comes forward, and a "Sync now" button. What is left: pushing on
   its own when something changes, and merging two machines' edits field by
   field instead of asking you to pick a whole file.
   [docs/ideas/config-sync.md](docs/ideas/config-sync.md).

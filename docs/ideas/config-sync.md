@@ -424,11 +424,11 @@ merging is phase 3 and optional.
 
 ## Phase 2
 
-The focus pull is built. A window that regains focus pulls, without
-pushing, when the later of `last_pull_at` and `last_sync_at` is at
+The focus sync is built. A window that regains focus syncs (pulls and
+pushes) when the later of `last_pull_at` and `last_sync_at` is at
 least five minutes old (`sync_focus_pull`, `focus_pull_due`). Rust
 decides under `SYNC_LOCK`. A conflict or a sign-in failure from that
-pull, or from the launch pull, toasts once and opens Settings > Sync.
+sync, or from the launch sync, toasts once and opens Settings > Sync.
 An offline failure does not toast. The rest of this section is not
 approved: the timer and the push-on-change. It is not a schedule, and
 it is not something a user can wire up from outside the app. Add the
@@ -490,12 +490,10 @@ This is a reading of `run_core`. It has not been tested.
 
 ### What to build, cheapest first
 
-1. **Pull when a window regains focus.** Built. The loop above already
-   asked for this, and it keeps the promise on Settings > Sync that
-   nothing is pushed until "Sync now" (`sync.desc2` in
-   `src/locales/en/settings.ts`): `sync_focus_pull` uses `push: false`.
-   `sync_launch_pull` cannot be called again (`LAUNCH_PULLED`), so this
-   is its own command. The due check is the later of `last_pull_at`
+1. **Sync when a window regains focus and on launch.** Built.
+   `sync_focus_pull` and `sync_launch_pull` run with `push: true`.
+   `sync_launch_pull` cannot be called again (`LAUNCH_PULLED`), so the focus
+   sync is its own command. The due check is the later of `last_pull_at`
    (set at the start of every `run_core`, including a failure) and
    `last_sync_at`. Several open windows share one answer because the
    check and the run hold `SYNC_LOCK`. While `state.conflicts` is

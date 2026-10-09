@@ -516,7 +516,7 @@ export default {
   sync: {
     title: "Sync",
     desc1: "Keep this setup the same on every machine, through a private git repo you own. termic commits and pushes with your own git login (SSH key or credential helper) and talks to no other server.",
-    desc2: "It pulls when termic starts and when you press Sync now. Nothing is pushed until you press Sync now.",
+    desc2: "It syncs when termic starts, when the window regains focus, and when you press Sync now.",
     urlLabel: "Repo URL",
     urlPlaceholder: "git@git.acme.com:alice/termic-config.git",
     urlHint: "Use an empty private repo, or the one another machine already syncs to.",

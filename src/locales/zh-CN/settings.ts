@@ -515,7 +515,7 @@ export default {
   sync: {
     title: "同步",
     desc1: "通过你自己的私有 git 仓库，让每台机器上的这套环境保持一致。termic 使用你自己的 git 登录（SSH 密钥或凭据助手）提交和推送，不连接任何其他服务器。",
-    desc2: "termic 启动时和你点击「立即同步」时会拉取。在你点击「立即同步」之前不会推送任何内容。",
+    desc2: "termic 启动时、窗口重新聚焦时以及点击「立即同步」时会自动同步。",
     urlLabel: "仓库 URL",
     urlPlaceholder: "git@git.acme.com:alice/termic-config.git",
     urlHint: "使用一个空的私有仓库，或另一台机器已在同步的那个仓库。",
