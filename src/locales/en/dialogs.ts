@@ -533,7 +533,7 @@ export default {
   taskFinder: {
     srTitle: "Task search",
     srDesc: "Search and switch tasks across projects.",
-    placeholder: "Search tasks by name, project, branch, or agent…",
+    placeholder: "Search tasks by name, project, branch, or status…",
     clear: "Clear search query",
     noMatching: "No matching tasks",
     noTasks: "No tasks yet",

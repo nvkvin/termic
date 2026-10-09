@@ -19,6 +19,7 @@ import { useUI } from "@/store/ui";
 import { useApp } from "@/store/app";
 import { DEFAULT_BINDINGS, SHORTCUT_DEFS } from "@/lib/shortcuts";
 import { fuzzyMatch } from "@/lib/fuzzy";
+import { resolveStatusQualifier, STATUS_QUALIFIER_RE } from "./TaskFinderDialog";
 import type { Task, Project } from "@/lib/types";
 
 describe("TaskFinder shortcut and state", () => {
@@ -72,5 +73,99 @@ describe("task matching logic for TaskFinder", () => {
   it("fuzzy-matches by project name", () => {
     expect(fuzzyMatch(p1.name, "term")).toBeTruthy();
     expect(fuzzyMatch(p2.name, "api")).toBeTruthy();
+  });
+
+  it("fuzzy-matches by status label directly", () => {
+    expect(fuzzyMatch("Working", "work")).toBeTruthy();
+    expect(fuzzyMatch("In review", "review")).toBeTruthy();
+    expect(fuzzyMatch("Needs attention", "attention")).toBeTruthy();
+    expect(fuzzyMatch("Needs attention", "needs")).toBeTruthy();
+    expect(fuzzyMatch("Not started", "not started")).toBeTruthy();
+    expect(fuzzyMatch("Settled", "settled")).toBeTruthy();
+  });
+
+  it("matches combined project, task name, and status string", () => {
+    const combined1 = `${p1.name} ${t1.name} Working`;
+    const combined2 = `${p1.name} ${t2.name} In review`;
+    const combined3 = `${p2.name} ${t3.name} Needs attention`;
+
+    expect(fuzzyMatch(combined1, "termic working")).toBeTruthy();
+    expect(fuzzyMatch(combined1, "auth working")).toBeTruthy();
+    expect(fuzzyMatch(combined2, "termic review")).toBeTruthy();
+    expect(fuzzyMatch(combined3, "api attention")).toBeTruthy();
+    expect(fuzzyMatch(combined3, "api working")).toBeNull();
+  });
+});
+
+describe("resolveStatusQualifier and STATUS_QUALIFIER_RE", () => {
+  it("resolves English status names and aliases", () => {
+    expect(resolveStatusQualifier("working")).toBe("working");
+    expect(resolveStatusQualifier("work")).toBe("working");
+    expect(resolveStatusQualifier("running")).toBe("working");
+
+    expect(resolveStatusQualifier("review")).toBe("review");
+    expect(resolveStatusQualifier("in review")).toBe("review");
+    expect(resolveStatusQualifier("in-review")).toBe("review");
+    expect(resolveStatusQualifier("in_review")).toBe("review");
+    expect(resolveStatusQualifier("pr")).toBe("review");
+
+    expect(resolveStatusQualifier("attention")).toBe("attention");
+    expect(resolveStatusQualifier("needs attention")).toBe("attention");
+    expect(resolveStatusQualifier("needs-attention")).toBe("attention");
+    expect(resolveStatusQualifier("blocked")).toBe("attention");
+    expect(resolveStatusQualifier("warn")).toBe("attention");
+
+    expect(resolveStatusQualifier("backlog")).toBe("backlog");
+    expect(resolveStatusQualifier("not started")).toBe("backlog");
+    expect(resolveStatusQualifier("not-started")).toBe("backlog");
+    expect(resolveStatusQualifier("todo")).toBe("backlog");
+
+    expect(resolveStatusQualifier("settled")).toBe("settled");
+    expect(resolveStatusQualifier("done")).toBe("settled");
+    expect(resolveStatusQualifier("idle")).toBe("settled");
+
+    expect(resolveStatusQualifier("unknown-status")).toBeNull();
+    expect(resolveStatusQualifier("")).toBeNull();
+  });
+
+  it("resolves localized status names using translator function", () => {
+    const mockTc = (key: string) => {
+      switch (key) {
+        case "board.colWorking": return "进行中";
+        case "board.colReview": return "审查中";
+        case "board.colAttention": return "需要注意";
+        case "board.colBacklog": return "未开始";
+        case "board.colSettled": return "已完成";
+        default: return "";
+      }
+    };
+
+    expect(resolveStatusQualifier("进行中", mockTc)).toBe("working");
+    expect(resolveStatusQualifier("审查中", mockTc)).toBe("review");
+    expect(resolveStatusQualifier("需要注意", mockTc)).toBe("attention");
+    expect(resolveStatusQualifier("未开始", mockTc)).toBe("backlog");
+    expect(resolveStatusQualifier("已完成", mockTc)).toBe("settled");
+  });
+
+  it("extracts qualifier prefix from queries", () => {
+    const m1 = "status:working".match(STATUS_QUALIFIER_RE);
+    expect(m1).toBeTruthy();
+    expect(m1?.[1] || m1?.[2] || m1?.[3]).toBe("working");
+
+    const m2 = "is:review".match(STATUS_QUALIFIER_RE);
+    expect(m2).toBeTruthy();
+    expect(m2?.[1] || m2?.[2] || m2?.[3]).toBe("review");
+
+    const m3 = 'status:"in review" auth'.match(STATUS_QUALIFIER_RE);
+    expect(m3).toBeTruthy();
+    expect(m3?.[1] || m3?.[2] || m3?.[3]).toBe("in review");
+
+    const m4 = "termic is:attention".match(STATUS_QUALIFIER_RE);
+    expect(m4).toBeTruthy();
+    expect(m4?.[1] || m4?.[2] || m4?.[3]).toBe("attention");
+
+    const m5 = "status:not-started".match(STATUS_QUALIFIER_RE);
+    expect(m5).toBeTruthy();
+    expect(m5?.[1] || m5?.[2] || m5?.[3]).toBe("not-started");
   });
 });

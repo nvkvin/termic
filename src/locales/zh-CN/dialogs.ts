@@ -527,7 +527,7 @@ export default {
   taskFinder: {
     srTitle: "任务搜索",
     srDesc: "跨项目搜索并切换任务。",
-    placeholder: "按名称、项目、分支或智能体搜索任务…",
+    placeholder: "按名称、项目、分支或状态搜索任务…",
     clear: "清除搜索内容",
     noMatching: "未找到匹配的任务",
     noTasks: "暂无任务",

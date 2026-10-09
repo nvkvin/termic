@@ -12,6 +12,7 @@ import {
 
 const DIALOG = '[data-testid="task-finder"]';
 const INPUT = '[data-testid="task-finder-input"]';
+const STATUS = '[data-testid="task-finder-status"]';
 
 describe("task finder dialog", () => {
   let t1 = "";
@@ -98,5 +99,32 @@ describe("task finder dialog", () => {
     // Active task should now be t2 (bravo)
     const active = await browser.execute(() => window.__termic!.useApp.getState().activeTaskId);
     expect(active).toBe(t2);
+  });
+
+  it("shows status on the right and filters by status query", async () => {
+    await browser.execute(() => {
+      window.__termic!.useUI.getState().openTaskFinder();
+    });
+    await waitVisible(DIALOG);
+    await waitVisible(INPUT);
+    await waitVisible(STATUS);
+
+    // Ensure dialog animation settles
+    await browser.execute((sel) => {
+      const el = document.querySelector(sel) as HTMLElement;
+      if (el) {
+        el.style.animation = "none";
+        el.style.opacity = "1";
+        el.style.transform = "none";
+      }
+    }, DIALOG);
+
+    // Search by status query
+    await setInputValue(INPUT, "status:not-started");
+    await snap("task-finder-status-filtered.png");
+
+    // Close with Escape
+    await browser.keys(["Escape"]);
+    await waitGone(DIALOG);
   });
 });
