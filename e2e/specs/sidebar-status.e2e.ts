@@ -146,6 +146,8 @@ describe("sidebar status section", () => {
       const p = window.__termic!.usePrefs.getState();
       p.setShowStatusSection(false);
       p.setUseBranchAsTaskName(false);
+      p.setStatusSectionCollapsed(false);
+      p.setProjectsSectionCollapsed(false);
       const defaults = [["attention", false], ["working", false], ["review", false], ["settled", true], ["backlog", true]] as const;
       for (const [b, c] of defaults) p.setStatusBucketCollapsed(b, c);
     });
@@ -476,6 +478,13 @@ describe("sidebar status section", () => {
     expect(await present(ROW(blocked))).toBe(false);
     await setBucketOpen("attention", true);
     await waitVisible(ROW_IN("attention", blocked));
+
+    // Collapsing the section while a task needs attention shows its rollup mark on the header.
+    await click(HEADER);
+    expect(await ariaExpanded(HEADER)).toBe("false");
+    expect(await present('[data-testid="status-section-marks"]')).toBe(true);
+    await click(HEADER);
+    expect(await ariaExpanded(HEADER)).toBe("true");
   });
 
   it("collapses and expands the projects section", async () => {

@@ -38,7 +38,7 @@ import { TaskWorkBadge } from "@/components/TaskWorkBadge";
 import { TaskPrBadge } from "@/components/TaskPrBadge";
 import { TaskLabelText } from "@/components/TaskLabelText";
 import { Spinner } from "@/components/ui/Spinner";
-import { WorkMarkList } from "./RollupMarks";
+import { RollupMarks, WorkMarkList } from "./RollupMarks";
 import { cn } from "@/lib/utils";
 import { taskLabel, taskLabelParts } from "@/lib/taskLabel";
 import { isStatusBucketCollapsed, STATUS_MARK_COLOR, statusBuckets, type StatusBucket } from "@/lib/sidebarStatus";
@@ -125,6 +125,16 @@ export function StatusSection({ matchIds = null }: { matchIds?: ReadonlySet<stri
     [projects, listed, facts, workPrefs, prKey],
   );
   const totalStatusCount = useMemo(() => groups.reduce((acc, g) => acc + g.count, 0), [groups]);
+  const statusTaskIds = useMemo(() => {
+    const ids: string[] = [];
+    for (const g of groups) {
+      for (const item of g.items) {
+        if (item.kind === "task") ids.push(item.task.id);
+        else for (const t of item.tasks) ids.push(t.id);
+      }
+    }
+    return ids.join(",");
+  }, [groups]);
   const projectName = useMemo(() => new Map(projects.map(p => [p.id, p.name])), [projects]);
 
   return (
@@ -153,13 +163,16 @@ export function StatusSection({ matchIds = null }: { matchIds?: ReadonlySet<stri
           {totalStatusCount > 0 && (
             <span
               data-testid="status-section-total-count"
-              className="ml-0.5 rounded-full bg-[var(--color-bg-3)]/80 px-1.5 py-0.2 text-[10.5px] font-medium tabular-nums text-[var(--color-fg-dim)] group-hover:text-[var(--color-fg)]"
+              className="ml-0.5 rounded-full bg-[var(--color-bg-3)]/80 px-1.5 py-0.5 text-[10.5px] font-medium tabular-nums text-[var(--color-fg-dim)] group-hover:text-[var(--color-fg)]"
             >
               {totalStatusCount}
             </span>
           )}
         </div>
         <div className="flex shrink-0 items-center gap-1 text-[var(--color-fg-faint)] group-hover:text-[var(--color-fg-dim)]">
+          {isCollapsed && statusTaskIds.length > 0 && (
+            <RollupMarks ids={statusTaskIds} testId="status-section-marks" />
+          )}
           {isCollapsed ? (
             <span
               data-testid="status-section-expand-indicator"

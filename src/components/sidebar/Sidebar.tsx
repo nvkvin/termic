@@ -1341,7 +1341,7 @@ export function Sidebar({ compact: compactProp }: { compact?: boolean } = {}) {
               {projects.length > 0 && (
                 <span
                   data-testid="projects-section-total-count"
-                  className="ml-0.5 rounded-full bg-[var(--color-bg-3)]/80 px-1.5 py-0.2 text-[10.5px] font-medium tabular-nums text-[var(--color-fg-dim)] group-hover:text-[var(--color-fg)]"
+                  className="ml-0.5 rounded-full bg-[var(--color-bg-3)]/80 px-1.5 py-0.5 text-[10.5px] font-medium tabular-nums text-[var(--color-fg-dim)] group-hover:text-[var(--color-fg)]"
                 >
                   {projects.length}
                 </span>
