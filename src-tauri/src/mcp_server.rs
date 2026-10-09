@@ -998,6 +998,13 @@ const P_SCHEDULE_TASK: ParamDef = ParamDef {
     description: "Task name or id. Omitted: your own task.",
     cli_flag: Some("task"),
 };
+const P_SCOPE: ParamDef = ParamDef {
+    name: "scope",
+    json_type: "string",
+    required: false,
+    description: "Target scope: 'task' (default), 'project', 'profile', or 'global'.",
+    cli_flag: Some("--scope"),
+};
 const P_PROJECT: ParamDef = ParamDef {
     name: "project",
     json_type: "string",
@@ -1285,6 +1292,7 @@ const TOOLS: &[ToolDef] = &[
         params: &[
             P_PAD_TASK,
             P_PROJECT,
+            P_SCOPE,
             ParamDef { name: "title", json_type: "string", required: false, description: "A fixed tab title (else it is named after its first line).", cli_flag: Some("--title") },
             ParamDef { name: "content", json_type: "string", required: false, description: "Initial text.", cli_flag: Some("--content") },
         ],
@@ -1293,6 +1301,7 @@ const TOOLS: &[ToolDef] = &[
         build: |a| Ok(Command::PadNew {
             task: arg_str(a, "task")?,
             project: arg_str(a, "project")?,
+            scope: arg_str(a, "scope")?,
             title: arg_str(a, "title")?,
             content: arg_str(a, "content")?,
             cwd: None,
@@ -1306,6 +1315,7 @@ const TOOLS: &[ToolDef] = &[
             ParamDef { name: "pad", json_type: "string", required: true, description: "Pad id, or its exact title (case-insensitive).", cli_flag: Some("pad") },
             P_PAD_TASK,
             P_PROJECT,
+            P_SCOPE,
             ParamDef { name: "content", json_type: "string", required: true, description: "The text.", cli_flag: Some("--content") },
             ParamDef { name: "append", json_type: "boolean", required: false, description: "Add to the end instead of replacing.", cli_flag: Some("--append") },
         ],
@@ -1314,6 +1324,7 @@ const TOOLS: &[ToolDef] = &[
         build: |a| Ok(Command::PadWrite {
             task: arg_str(a, "task")?,
             project: arg_str(a, "project")?,
+            scope: arg_str(a, "scope")?,
             pad: need_str(a, "pad")?,
             content: need_str(a, "content")?,
             append: arg_bool(a, "append")?,
@@ -1328,12 +1339,14 @@ const TOOLS: &[ToolDef] = &[
             ParamDef { name: "pad", json_type: "string", required: true, description: "Pad id, or its exact title (case-insensitive).", cli_flag: Some("pad") },
             P_PAD_TASK,
             P_PROJECT,
+            P_SCOPE,
         ],
         destructive: false,
         read_only: true,
         build: |a| Ok(Command::PadRead {
             task: arg_str(a, "task")?,
             project: arg_str(a, "project")?,
+            scope: arg_str(a, "scope")?,
             pad: need_str(a, "pad")?,
             cwd: None,
         }),
@@ -1342,12 +1355,13 @@ const TOOLS: &[ToolDef] = &[
         name: "scratchpad_list",
         cli_verb: "scratchpad list",
         description: "List a task's scratchpads: id, title, and whether each is open in the window.",
-        params: &[P_PAD_TASK, P_PROJECT],
+        params: &[P_PAD_TASK, P_PROJECT, P_SCOPE],
         destructive: false,
         read_only: true,
         build: |a| Ok(Command::PadList {
             task: arg_str(a, "task")?,
             project: arg_str(a, "project")?,
+            scope: arg_str(a, "scope")?,
             cwd: None,
         }),
     },
@@ -3498,7 +3512,8 @@ mod tests {
         // on the param, three words on the tool, the rest in the CLI's help.
         // 21907: schedule_delete's `archiveTasks`, parity with `--archive-tasks`:
         // archive related tasks and delete reports.
-        const RECORDED: usize = 21907;
+        // 22350: scratchpad scope parameter for global and project scratchpads.
+        const RECORDED: usize = 22350;
         assert!(
             size <= RECORDED,
             "serialized tools/list grew to {size} bytes (recorded {RECORDED}); grow it consciously"
@@ -3950,6 +3965,10 @@ mod tests {
             ("schedule set", "--disable", "the tool takes a boolean `enabled` param"),
             ("schedule set", "--yes", "a TTY confirmation; the tool carries destructiveHint"),
             ("schedule delete", "--yes", "a TTY confirmation; the tool carries destructiveHint"),
+            ("scratchpad list", "--global", "the tool's `scope` enum"),
+            ("scratchpad new", "--global", "the tool's `scope` enum"),
+            ("scratchpad write", "--global", "the tool's `scope` enum"),
+            ("scratchpad read", "--global", "the tool's `scope` enum"),
         ];
         let help = termic_cli::machine_help();
         for c in help["commands"].as_array().unwrap() {

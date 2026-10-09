@@ -41,7 +41,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn().mockResolvedValue(undef
 import * as ipc from "@/lib/ipc";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
-import { newScratchTab, restoreScratchTabs } from "@/lib/scratchTabs";
+import { newScratchTab, openOrCreateScopedScratchTab, openScratchFileTab, restoreScratchTabs, scratchTargetId } from "@/lib/scratchTabs";
 import { padHandler } from "@/lib/scratchCli";
 import { requestCloseTab, requestCloseTabs } from "@/lib/closeTab";
 import type { ScratchTab } from "@/lib/types";
@@ -297,5 +297,113 @@ describe("a pad an agent writes while you are elsewhere", () => {
   it("is not agent news: it never sets unread, which feeds notifications", async () => {
     await padHandler({ taskId: TASK, op: "new", title: "quiet", content: "x" });
     expect(padTab().unread ?? null).toBeNull();
+  });
+
+  it("routes scoped scratchpad disk writes to global and project targets", async () => {
+    await newScratchTab(TASK, { scope: "global" });
+    const globalPad = pads().find(p => p.scope === "global");
+    expect(globalPad).toBeDefined();
+    expect(scratchTargetId(globalPad!, TASK)).toBe("global");
+    expect(ipc.scratchWrite).toHaveBeenCalledWith("global", globalPad!.scratchId, "");
+
+    await newScratchTab(TASK, { scope: "project", projectId: "proj-abc" });
+    const projPad = pads().find(p => p.scope === "project");
+    expect(projPad).toBeDefined();
+    expect(scratchTargetId(projPad!, TASK)).toBe("project_proj-abc");
+    expect(ipc.scratchWrite).toHaveBeenCalledWith("project_proj-abc", projPad!.scratchId, "");
+  });
+
+  it("closing a global or project scratchpad tab does not discard the note on disk", async () => {
+    vi.mocked(ipc.scratchDelete).mockClear();
+    await newScratchTab(TASK, { scope: "global" });
+    const globalPad = pads().find(p => p.scope === "global")!;
+    await requestCloseTab(TASK, globalPad.id);
+    expect(pads().some(p => p.id === globalPad.id)).toBe(false);
+    expect(ipc.scratchDelete).not.toHaveBeenCalled();
+    expect(useUI.getState().scratchClose).toBeNull();
+  });
+
+  it("openOrCreateScopedScratchTab reuses open tab or restores from disk", async () => {
+    vi.mocked(ipc.scratchList).mockResolvedValueOnce([
+      { id: "persisted-global-1", title: "Global Plan", order: 1, created_at: "2026-01-01", updated_at: "2026-01-01" },
+    ]);
+    const tabId = await openOrCreateScopedScratchTab(TASK, "global");
+    const restored = pads().find(p => p.id === tabId);
+    expect(restored).toBeDefined();
+    expect(restored?.title).toBe("Global Plan");
+    expect(restored?.scope).toBe("global");
+
+    // Calling again focuses the existing open tab
+    const tabId2 = await openOrCreateScopedScratchTab(TASK, "global");
+    expect(tabId2).toBe(tabId);
+    expect(useApp.getState().activeTab[TASK]).toBe(tabId);
+  });
+
+  it("openScratchFileTab creates clean tabs for scratchpad tree files and reuses them", () => {
+    const id1 = openScratchFileTab(TASK, "global", undefined, "docs/architecture.md");
+    const pad1 = pads().find(p => p.id === id1);
+    expect(pad1).toBeDefined();
+    expect(pad1?.title).toBe("architecture.md");
+    expect(pad1?.path).toBe("docs/architecture.md");
+    expect(pad1?.scope).toBe("global");
+    expect(pad1?.dirty).toBe(false);
+
+    // Opening the same file again activates the existing tab
+    const id2 = openScratchFileTab(TASK, "global", undefined, "docs/architecture.md");
+    expect(id2).toBe(id1);
+
+    // Opening a project-scoped file creates a distinct tab
+    const id3 = openScratchFileTab(TASK, "project", "proj-xyz", "specs/api.json");
+    const pad3 = pads().find(p => p.id === id3);
+    expect(pad3).toBeDefined();
+    expect(pad3?.title).toBe("api.json");
+    expect(pad3?.path).toBe("specs/api.json");
+    expect(pad3?.scope).toBe("project");
+    expect(pad3?.projectId).toBe("proj-xyz");
+    expect(pad3?.dirty).toBe(false);
+  });
+
+  it("scratch export request state in UI store opens and closes cleanly", () => {
+    expect(useUI.getState().scratchExport).toBeNull();
+    useUI.getState().openScratchExport({
+      scope: "global",
+      scratchPath: "ideas/draft.md",
+      taskId: TASK,
+      defaultRel: "draft.md",
+    });
+    expect(useUI.getState().scratchExport).toEqual({
+      scope: "global",
+      scratchPath: "ideas/draft.md",
+      taskId: TASK,
+      defaultRel: "draft.md",
+    });
+    useUI.getState().closeScratchExport();
+    expect(useUI.getState().scratchExport).toBeNull();
+  });
+
+  it("newScratchTab creates multiple distinct scratchpad tabs for the same scope", async () => {
+    const tab1 = await newScratchTab(TASK, { scope: "global" });
+    const tab2 = await newScratchTab(TASK, { scope: "global" });
+    expect(tab1).not.toBe(tab2);
+    const globalPads = pads().filter(p => p.scope === "global");
+    expect(globalPads).toHaveLength(2);
+    expect(globalPads[0].id).toBe(tab1);
+    expect(globalPads[1].id).toBe(tab2);
+    expect(globalPads[0].scratchId).not.toBe(globalPads[1].scratchId);
+  });
+
+  it("supports profile-scoped scratchpad tabs and resolves targetId correctly", async () => {
+    const tabId = await newScratchTab(TASK, { scope: "profile" });
+    const tab = pads().find(p => p.id === tabId);
+    expect(tab).toBeDefined();
+    expect(tab?.scope).toBe("profile");
+    expect(scratchTargetId(tab!)).toBe("profile_root");
+
+    const fileTabId = openScratchFileTab(TASK, "profile", undefined, "notes/sprint.md");
+    const fileTab = pads().find(p => p.id === fileTabId);
+    expect(fileTab).toBeDefined();
+    expect(fileTab?.scope).toBe("profile");
+    expect(fileTab?.path).toBe("notes/sprint.md");
+    expect(scratchTargetId(fileTab!)).toBe("profile_root");
   });
 });

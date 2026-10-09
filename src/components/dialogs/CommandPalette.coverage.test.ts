@@ -45,6 +45,7 @@ const EXCLUDED: Record<string, string> = {
   openProjectBroadcast: "surfaced",
   openRunCommands: "surfaced",
   openResumeOverride: "surfaced",
+  openScratchExport: "needs a specific scratchpad file and scope; reached from scratchpad editor breadcrumb or tree context menu",
 };
 
 /** `open*` action names declared in the UI store's interface. */

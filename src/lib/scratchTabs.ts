@@ -14,6 +14,7 @@ import { i18n } from "@/lib/i18n";
 import * as ipc from "@/lib/ipc";
 import type { ScratchTab } from "@/lib/types";
 import { SCRATCH_UNTITLED } from "@/lib/scratchTitle";
+import { PROFILE_NS } from "@/lib/profileScope";
 
 /** The pads already open in `taskId`'s strip, by scratch id. */
 function openScratchIds(taskId: string): Set<string> {
@@ -24,35 +25,152 @@ function openScratchIds(taskId: string): Set<string> {
   );
 }
 
-export function scratchTab(rec: { id: string; title?: string; syntax?: string }): ScratchTab {
+export function profileScratchTargetId(): string {
+  if (!PROFILE_NS) return "profile_root";
+  const slug = PROFILE_NS.startsWith("profile-") && PROFILE_NS.endsWith(":")
+    ? PROFILE_NS.slice("profile-".length, -1)
+    : "";
+  return slug ? `profile_${slug}` : "profile_root";
+}
+
+export function scratchTargetId(tab: ScratchTab, defaultTaskId?: string): string {
+  if (tab.targetId) return tab.targetId;
+  if (tab.scope === "global") return "global";
+  if (tab.scope === "profile") return profileScratchTargetId();
+  if (tab.scope === "project") return `project_${tab.projectId ?? ""}`;
+  return defaultTaskId ?? "";
+}
+
+export function scratchTab(rec: {
+  id: string;
+  title?: string;
+  syntax?: string;
+  scope?: "task" | "project" | "profile" | "global";
+  projectId?: string;
+  targetId?: string;
+  path?: string;
+  dirty?: boolean;
+}): ScratchTab {
   return {
     id: crypto.randomUUID(),
     type: "scratch",
     scratchId: rec.id,
     title: rec.title || SCRATCH_UNTITLED,
-    // Dirty for its whole life: nothing has been saved anywhere the user
-    // chose, and the dot on the pill is the honest signal for that. Only
-    // promotion (⌘S) ends it, by turning this into an `edit` tab.
-    dirty: true,
+    // Dirty for untitled pads until saved/promoted; real scratch tree files start clean.
+    dirty: rec.dirty ?? true,
+    ...(rec.scope ? { scope: rec.scope } : {}),
+    ...(rec.projectId ? { projectId: rec.projectId } : {}),
+    ...(rec.targetId ? { targetId: rec.targetId } : {}),
+    ...(rec.path ? { path: rec.path } : {}),
     ...(rec.syntax ? { syntax: rec.syntax } : {}),
     // NEVER `preview: true`. openPreviewTab recycles the first tab carrying
     // that flag, and recycling a pad would silently retarget it at a file.
   };
 }
 
+/** Open an existing file in the multi-file scratchpad tree, or create a tab for it. */
+export function openScratchFileTab(
+  taskId: string,
+  scope: "project" | "profile" | "global",
+  projectId: string | undefined,
+  path: string,
+): string {
+  const tabs = useApp.getState().tabs[taskId] ?? [];
+  const existing = tabs.find(
+    (t): t is ScratchTab =>
+      t.type === "scratch" &&
+      t.scope === scope &&
+      (scope === "global" || scope === "profile" || t.projectId === projectId) &&
+      t.path === path,
+  );
+  if (existing) {
+    useApp.getState().setActiveTabId(taskId, existing.id);
+    return existing.id;
+  }
+  const leaf = path.split("/").pop() || path;
+  const targetId = scope === "global"
+    ? "global"
+    : scope === "profile"
+      ? profileScratchTargetId()
+      : `project_${projectId ?? ""}`;
+  const tab = scratchTab({
+    id: crypto.randomUUID(),
+    title: leaf,
+    dirty: false,
+    scope,
+    projectId,
+    targetId,
+    path,
+  });
+  useApp.getState().addTab(taskId, tab, { focus: true });
+  return tab.id;
+}
+
 /** New empty pad in `taskId`, focused. The record is created eagerly (an
  *  empty buffer write) so a crash before the first keystroke still leaves a
  *  pad rather than a tab pointing at nothing. */
-export async function newScratchTab(taskId: string): Promise<string> {
+export async function newScratchTab(
+  taskId: string,
+  opts?: { scope?: "task" | "project" | "profile" | "global"; projectId?: string }
+): Promise<string> {
   const scratchId = crypto.randomUUID();
-  const tab = scratchTab({ id: scratchId });
+  const scope = opts?.scope ?? "task";
+  const projectId = scope === "project" ? opts?.projectId : undefined;
+  const targetId = scope === "global"
+    ? "global"
+    : scope === "profile"
+      ? profileScratchTargetId()
+      : scope === "project"
+        ? `project_${projectId ?? ""}`
+        : taskId;
+  const tab = scratchTab({ id: scratchId, scope, projectId, targetId });
   useApp.getState().addTab(taskId, tab);
   try {
-    await ipc.scratchWrite(taskId, scratchId, "");
+    await ipc.scratchWrite(targetId, scratchId, "");
   } catch (e) {
     useUI.getState().pushToast(i18n.t("backend:scratchTabs.createFailed", { error: String(e) }), "error");
   }
   return tab.id;
+}
+
+/** Open an existing shared scratchpad for this scope, or create a new one if none exists. */
+export async function openOrCreateScopedScratchTab(
+  taskId: string,
+  scope: "project" | "profile" | "global",
+  projectId?: string,
+): Promise<string> {
+  const projId = scope === "project" ? projectId : undefined;
+  const targetId = scope === "global"
+    ? "global"
+    : scope === "profile"
+      ? profileScratchTargetId()
+      : `project_${projId ?? ""}`;
+  const existingTab = (useApp.getState().tabs[taskId] ?? []).find(
+    (t): t is ScratchTab => t.type === "scratch" && scratchTargetId(t, taskId) === targetId,
+  );
+  if (existingTab) {
+    useApp.getState().setActiveTabId(taskId, existingTab.id);
+    return existingTab.id;
+  }
+  try {
+    const list = await ipc.scratchList(targetId);
+    if (list.length > 0) {
+      const rec = list[0];
+      const tab = scratchTab({
+        id: rec.id,
+        title: rec.title,
+        syntax: rec.syntax,
+        scope,
+        projectId: projId,
+        targetId,
+      });
+      useApp.getState().addTab(taskId, tab, { focus: true });
+      return tab.id;
+    }
+  } catch {
+    // fall through to create new pad
+  }
+  return newScratchTab(taskId, { scope, projectId: projId });
 }
 
 /** Tasks with a restore in flight — see the guard below. */

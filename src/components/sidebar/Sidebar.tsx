@@ -17,7 +17,7 @@ import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSepa
 import { ContextMenuRoot, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuLabel, ContextMenuSub, ContextMenuSubTrigger, ContextMenuSubContent } from "@/components/ui/ContextMenu";
 import { ProjectActionsMenuItems } from "./ProjectActionsMenuItems";
 import { NewTabMenuItems } from "@/components/task/NewTabMenuItems";
-import { newScratchTab } from "@/lib/scratchTabs";
+import { newScratchTab, openOrCreateScopedScratchTab } from "@/lib/scratchTabs";
 import { UpdateCard } from "./UpdateCard";
 import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
 import { useUI } from "@/store/ui";
@@ -3329,13 +3329,17 @@ function TaskRow({ w, compact, dragging = false, dragTy = 0, onDragPointerDown, 
                       title: t("terminalTabTitle"),
                       cli: "shell",
                     })}
-                    onScratchpad={() => {
+                    onScratchpad={(scope) => {
                       // Same activate-first rule as spawnIntoTask: an
                       // unmounted task has no TaskView, so nothing would
                       // restore its other pads or render this one.
                       setActive(w.id);
                       ensureDefaultTab(w.id, w.cli || "claude");
-                      void newScratchTab(w.id);
+                      if (scope === "global" || scope === "profile" || scope === "project") {
+                        void openOrCreateScopedScratchTab(w.id, scope, scope === "project" ? w.project_id : undefined);
+                      } else {
+                        void newScratchTab(w.id);
+                      }
                       setMenuOpen(false);
                     }}
                     onResume={(entryId) => {

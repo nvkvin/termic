@@ -1813,6 +1813,14 @@ export interface ScratchTab extends BaseTab {
    *  read by the OS notifier and the sidebar's work badges, and a pad edit is
    *  neither. Session-only. */
   unseen?: boolean;
+  /** Scope of this scratchpad: "task" (default), "project", "profile", or "global". */
+  scope?: "task" | "project" | "profile" | "global";
+  /** Project id when scope is "project". */
+  projectId?: string;
+  /** Custom/derived target id (e.g. "global", "project_<id>", or taskId). */
+  targetId?: string;
+  /** Relative path within the scratchpad root when this tab represents a file in the multi-file scratchpad tree. */
+  path?: string;
 }
 
 /** A file OUTSIDE the task, opened READ-ONLY from a cmd+clicked absolute
@@ -2019,7 +2027,7 @@ export interface SyncLocal {
 
 /** One line of a first-connect preview or a sync report. */
 export interface SyncChange {
-  kind: "project" | "agent" | "settings" | "pref" | "theme" | "profile";
+  kind: "project" | "agent" | "settings" | "pref" | "theme" | "profile" | "scratchpad";
   /** A project, agent or profile name, a pref key, a theme file. */
   target: string;
   /** "upload" is a profile's only: a local profile sent to the repo. */
@@ -2055,6 +2063,7 @@ export interface SyncRunResult {
   changed_profiles: string[];
   prefs: SyncPrefsChanges;
   themes_changed: boolean;
+  scratchpad_changed?: boolean;
   changes: SyncChange[];
   conflicts: string[];
   error: string | null;

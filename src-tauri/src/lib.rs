@@ -1053,7 +1053,7 @@ pub(crate) fn profiles_registry() -> profiles::Registry {
 /// install that never made a second profile byte-identical to a pre-profiles
 /// one (docs/plans/profiles.md, "the default profile stays exactly where it
 /// is").
-fn profile_dir(id: &ProfileId) -> Result<PathBuf> {
+pub(crate) fn profile_dir(id: &ProfileId) -> Result<PathBuf> {
     let p = profiles::profile_dir(&global_dir()?, id);
     fs::create_dir_all(&p)?;
     Ok(p)
@@ -15145,28 +15145,58 @@ fn scratch_id_ok(id: &str) -> bool {
         && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
-/// A task's scratchpad dir, in the profile that owns the task.
-///
-/// Resolved from the RECORD rather than a passed-in profile, so every existing
-/// call site keeps working with only a task id in hand. An unknown id falls
-/// back to the root profile, which is where it would have been written before
-/// profiles existed.
-fn scratch_profile_of(task_id: &str) -> ProfileId {
+/// A scratchpad target's profile. For a task, resolves to the profile that
+/// owns the task. For a project target (`project_<id>`), resolves to the profile
+/// that owns the project. Global scratchpads (`global`) and unknown ids fall
+/// back to the root profile.
+fn scratch_profile_of(target_id: &str) -> ProfileId {
+    if target_id == "global" {
+        return ProfileId::default();
+    }
+    if let Some(slug) = target_id.strip_prefix("profile_") {
+        if slug == "root" || slug == "default" || slug.is_empty() {
+            return ProfileId::Root;
+        }
+        return ProfileId::Slug(slug.to_string());
+    }
+    if let Some(proj_id) = target_id.strip_prefix("project_") {
+        for pid in profiles_registry().ids() {
+            if load_projects_in(&pid).iter().any(|p| p.id == proj_id) {
+                return pid;
+            }
+        }
+        return ProfileId::default();
+    }
     load_tasks_all()
         .into_iter()
-        .find(|t| t.id == task_id)
+        .find(|t| t.id == target_id)
         .map(|t| t.profile)
         .unwrap_or_default()
 }
 
-fn scratch_dir(task_id: &str) -> Result<PathBuf, String> {
-    if !scratch_id_ok(task_id) {
-        return Err(format!("invalid task id: {task_id:?}"));
+fn scratch_dir(target_id: &str) -> Result<PathBuf, String> {
+    if !scratch_id_ok(target_id) {
+        return Err(format!("invalid scratchpad target id: {target_id:?}"));
     }
-    let p = profile_dir(&scratch_profile_of(task_id))
+    let pid = scratch_profile_of(target_id);
+    let base = profile_dir(&pid)
         .map_err(|e| e.to_string())?
-        .join("scratch")
-        .join(task_id);
+        .join("scratch");
+    let p = if target_id == "global" {
+        crate::profile_dir(&ProfileId::Root)
+            .map_err(|e| e.to_string())?
+            .join("scratch")
+            .join("global")
+    } else if target_id.starts_with("profile_") {
+        base.join("profile")
+    } else if let Some(proj_id) = target_id.strip_prefix("project_") {
+        if proj_id.trim().is_empty() {
+            return Err("invalid project id in scratch target".to_string());
+        }
+        base.join("projects").join(proj_id)
+    } else {
+        base.join(target_id)
+    };
     fs::create_dir_all(&p).map_err(|e| format!("create scratch dir failed: {e}"))?;
     Ok(p)
 }
@@ -15424,6 +15454,328 @@ async fn scratch_promote_target_exists(task_id: String, rel_path: String) -> Res
             return Ok(false);
         }
         Ok(safe_task_path_for_create(&cwd, &rel).map(|p| p.exists()).unwrap_or(false))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+// ────────────────────── multi-file scratchpad tree ──────────────────────
+
+fn safe_scratch_path(root: &Path, rel: &str) -> Result<PathBuf, String> {
+    let trimmed = rel.trim();
+    if trimmed.is_empty() {
+        return Ok(root.to_path_buf());
+    }
+    let pb = reject_escaping_segments(trimmed)?;
+    Ok(root.join(pb))
+}
+
+fn safe_scratch_existing_path(root: &Path, rel: &str) -> Result<PathBuf, String> {
+    let target = safe_scratch_path(root, rel)?;
+    let canon_root = dunce::canonicalize(root).map_err(|e| format!("{}: {e}", root.display()))?;
+    let canon_target = dunce::canonicalize(&target).map_err(|e| format!("{}: {e}", target.display()))?;
+    if !canon_target.starts_with(&canon_root) {
+        return Err(format!("path escapes scratch directory: {rel}"));
+    }
+    Ok(canon_target)
+}
+
+fn safe_scratch_create_path(root: &Path, rel: &str) -> Result<PathBuf, String> {
+    let trimmed = rel.trim();
+    if trimmed.is_empty() {
+        return Err("empty path".into());
+    }
+    let pb = reject_escaping_segments(trimmed)?;
+    let canon_root = dunce::canonicalize(root).map_err(|e| format!("{}: {e}", root.display()))?;
+    let comps: Vec<_> = pb.components().collect();
+    for split in (0..=comps.len()).rev() {
+        let head: PathBuf = comps[..split].iter().collect();
+        let probe = canon_root.join(&head);
+        if !probe.exists() {
+            continue;
+        }
+        let canon_head = dunce::canonicalize(&probe).map_err(|e| format!("{}: {e}", probe.display()))?;
+        if !canon_head.starts_with(&canon_root) {
+            return Err(format!("path escapes scratch directory: {rel}"));
+        }
+        let tail: PathBuf = comps[split..].iter().collect();
+        return Ok(canon_head.join(tail));
+    }
+    Err(format!("could not resolve {rel} inside {}", root.display()))
+}
+
+fn resolve_scratch_scope_root(scope: &str, project_id: Option<&str>) -> Result<PathBuf, String> {
+    match scope {
+        "global" => scratch_dir("global"),
+        "profile" => {
+            let slug = project_id.unwrap_or("root");
+            scratch_dir(&format!("profile_{slug}"))
+        }
+        "project" => {
+            let pid = project_id.ok_or_else(|| "project_id is required for project scope".to_string())?;
+            if pid.trim().is_empty() {
+                return Err("project_id cannot be empty".to_string());
+            }
+            scratch_dir(&format!("project_{pid}"))
+        }
+        "task" => {
+            let tid = project_id.ok_or_else(|| "task_id is required for task scope".to_string())?;
+            scratch_dir(tid)
+        }
+        _ => Err(format!("unknown scratch scope: {scope}")),
+    }
+}
+
+#[tauri::command]
+async fn scratch_tree_list(
+    scope: String,
+    project_id: Option<String>,
+    rel: String,
+) -> Result<Vec<FileEntry>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = resolve_scratch_scope_root(&scope, project_id.as_deref())?;
+        let dir = if rel.trim().is_empty() {
+            root
+        } else {
+            safe_scratch_existing_path(&root, &rel)?
+        };
+        if !dir.exists() {
+            return Ok(Vec::new());
+        }
+        let rd = fs::read_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let mut out = Vec::new();
+        for e in rd.flatten() {
+            let name = match e.file_name().into_string() {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            if name == "index.json" || name == ".DS_Store" || name == ".git" || name.starts_with('.') {
+                continue;
+            }
+            let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            out.push(FileEntry { name, is_dir });
+        }
+        out.sort_by(|a, b| {
+            match (a.is_dir, b.is_dir) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+            }
+        });
+        Ok(out)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn scratch_file_read(
+    scope: String,
+    project_id: Option<String>,
+    path: String,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = resolve_scratch_scope_root(&scope, project_id.as_deref())?;
+        let f = safe_scratch_existing_path(&root, &path)?;
+        fs::read_to_string(&f).map_err(|e| format!("read failed: {e}"))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn scratch_file_write(
+    scope: String,
+    project_id: Option<String>,
+    path: String,
+    content: String,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = resolve_scratch_scope_root(&scope, project_id.as_deref())?;
+        let target = safe_scratch_create_path(&root, &path)?;
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).map_err(|e| format!("mkdir failed: {e}"))?;
+        }
+        write_atomic(&target, content.as_bytes()).map_err(|e| format!("write failed: {e}"))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn scratch_file_create(
+    scope: String,
+    project_id: Option<String>,
+    path: String,
+    is_dir: bool,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = resolve_scratch_scope_root(&scope, project_id.as_deref())?;
+        let target = safe_scratch_create_path(&root, &path)?;
+        if target.exists() {
+            return Err(format!("already exists: {path}"));
+        }
+        if is_dir {
+            fs::create_dir_all(&target).map_err(|e| format!("mkdir failed: {e}"))?;
+        } else {
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent).map_err(|e| format!("mkdir failed: {e}"))?;
+            }
+            write_atomic(&target, b"").map_err(|e| format!("create file failed: {e}"))?;
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn scratch_path_rename(
+    scope: String,
+    project_id: Option<String>,
+    path: String,
+    new_name: String,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let trimmed = new_name.trim();
+        if !is_plain_name(trimmed) {
+            return Err(format!("invalid name: {new_name:?}"));
+        }
+        let root = resolve_scratch_scope_root(&scope, project_id.as_deref())?;
+        let old = safe_scratch_existing_path(&root, &path)?;
+        let parent = old.parent().ok_or_else(|| "no parent directory".to_string())?;
+        let new_target = parent.join(trimmed);
+        if new_target.exists() {
+            return Err(format!("\"{trimmed}\" already exists"));
+        }
+        fs::rename(&old, &new_target).map_err(|e| format!("rename failed: {e}"))?;
+        let canon_root = dunce::canonicalize(&root).map_err(|e| format!("{}: {e}", root.display()))?;
+        let new_rel = new_target.strip_prefix(&canon_root)
+            .unwrap_or(&new_target)
+            .to_string_lossy()
+            .replace('\\', "/");
+        Ok(new_rel)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn scratch_path_delete(
+    scope: String,
+    project_id: Option<String>,
+    path: String,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = resolve_scratch_scope_root(&scope, project_id.as_deref())?;
+        let target = safe_scratch_existing_path(&root, &path)?;
+        let canon_root = dunce::canonicalize(&root).map_err(|e| format!("{}: {e}", root.display()))?;
+        if target == canon_root {
+            return Err("cannot delete scratchpad root".to_string());
+        }
+        if !target.exists() {
+            return Ok(());
+        }
+        if target.is_dir() {
+            fs::remove_dir_all(&target).map_err(|e| format!("delete dir failed: {e}"))?;
+        } else {
+            fs::remove_file(&target).map_err(|e| format!("delete file failed: {e}"))?;
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn scratch_copy_to_workspace(
+    scope: String,
+    project_id: Option<String>,
+    scratch_path: String,
+    task_id: String,
+    workspace_rel: String,
+    overwrite: bool,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = resolve_scratch_scope_root(&scope, project_id.as_deref())?;
+        let src = safe_scratch_existing_path(&root, &scratch_path)?;
+        if !src.exists() || !src.is_file() {
+            return Err(format!("scratchpad file not found: {scratch_path}"));
+        }
+        let content = fs::read_to_string(&src).map_err(|e| format!("read failed: {e}"))?;
+        let w = load_tasks_all().into_iter().find(|w| w.id == task_id).ok_or("no task")?;
+        let (cwd, rel) = resolve_task_git_path(&w, &workspace_rel)?;
+        if rel.trim().is_empty() || rel.ends_with('/') {
+            return Err(format!("not a file path: {workspace_rel}"));
+        }
+        let abs = safe_task_path_for_create(&cwd, &rel)?;
+        if abs.exists() && !overwrite {
+            return Err(format!("\"{workspace_rel}\" already exists"));
+        }
+        if let Some(parent) = abs.parent() {
+            fs::create_dir_all(parent).map_err(|e| format!("mkdir failed: {e}"))?;
+        }
+        write_atomic(&abs, content.as_bytes()).map_err(|e| format!("write failed: {e}"))?;
+        Ok(rel)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn scratch_copy_from_workspace(
+    scope: String,
+    project_id: Option<String>,
+    scratch_path: String,
+    task_id: String,
+    workspace_rel: String,
+    overwrite: bool,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let w = load_tasks_all().into_iter().find(|w| w.id == task_id).ok_or("no task")?;
+        let (cwd, rel) = resolve_task_git_path(&w, &workspace_rel)?;
+        let src = cwd.join(&rel);
+        if !src.exists() || !src.is_file() {
+            return Err(format!("workspace file not found: {workspace_rel}"));
+        }
+        let content = fs::read_to_string(&src).map_err(|e| format!("read failed: {e}"))?;
+        let root = resolve_scratch_scope_root(&scope, project_id.as_deref())?;
+        let dest = safe_scratch_create_path(&root, &scratch_path)?;
+        if dest.exists() && !overwrite {
+            return Err(format!("\"{scratch_path}\" already exists"));
+        }
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent).map_err(|e| format!("mkdir failed: {e}"))?;
+        }
+        write_atomic(&dest, content.as_bytes()).map_err(|e| format!("write failed: {e}"))?;
+        Ok(scratch_path)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn scratch_path_reveal(
+    scope: String,
+    project_id: Option<String>,
+    path: String,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = resolve_scratch_scope_root(&scope, project_id.as_deref())?;
+        if !root.exists() {
+            fs::create_dir_all(&root).map_err(|e| format!("mkdir failed: {e}"))?;
+        }
+        let target = if path.trim().is_empty() {
+            root
+        } else {
+            safe_scratch_existing_path(&root, &path)?
+        };
+        let target_str = target.to_string_lossy().to_string();
+        if target.is_dir() {
+            open_path(target_str)
+        } else {
+            reveal_path(target_str)
+        }
     })
     .await
     .map_err(|e| e.to_string())?
@@ -25326,6 +25678,8 @@ pub fn run() {
             task_path_rename, task_path_delete, task_reveal_path,
             scratch_list, scratch_read, scratch_write, scratch_set_meta, scratch_delete,
             scratch_promote, scratch_promote_target_exists,
+            scratch_tree_list, scratch_file_read, scratch_file_write, scratch_file_create,
+            scratch_path_rename, scratch_path_delete, scratch_path_reveal, scratch_copy_to_workspace, scratch_copy_from_workspace,
             task_rename, project_rename,
             pty_spawn, pty_write, pty_resize, pty_kill,
             procmon_start, procmon_sample, procmon_stop, procmon_signal, procmon_open_window,
@@ -30254,6 +30608,55 @@ mod tests {
         ).unwrap();
         assert_eq!(old[0].order, 0);
         assert_eq!(old[0].syntax, None);
+    }
+
+    #[test]
+    fn scratch_dir_routes_by_scope() {
+        with_scratch_data_dir(|data| {
+            let task_dir = scratch_dir("task_123").unwrap();
+            assert_eq!(task_dir, data.join("scratch/task_123"));
+
+            let global_dir = scratch_dir("global").unwrap();
+            assert_eq!(global_dir, data.join("scratch/global"));
+
+            let prof_dir = scratch_dir("profile_root").unwrap();
+            assert_eq!(prof_dir, data.join("scratch/profile"));
+
+            let proj_dir = scratch_dir("project_p1").unwrap();
+            assert_eq!(proj_dir, data.join("scratch/projects/p1"));
+        });
+    }
+
+    #[test]
+    fn scratch_tree_operations_and_containment() {
+        with_scratch_data_dir(|_data| {
+            let root = scratch_dir("global").unwrap();
+            assert!(safe_scratch_path(&root, "../foo").is_err());
+            assert!(safe_scratch_path(&root, "/etc/passwd").is_err());
+            assert!(safe_scratch_path(&root, "a/b/c").is_ok());
+
+            tauri::async_runtime::block_on(async {
+                scratch_file_write("global".into(), None, "ideas/architecture.md".into(), "hello world".into()).await.unwrap();
+                let content = scratch_file_read("global".into(), None, "ideas/architecture.md".into()).await.unwrap();
+                assert_eq!(content, "hello world");
+
+                let list = scratch_tree_list("global".into(), None, "".into()).await.unwrap();
+                assert!(list.iter().any(|e| e.name == "ideas" && e.is_dir));
+
+                let sub_list = scratch_tree_list("global".into(), None, "ideas".into()).await.unwrap();
+                assert!(sub_list.iter().any(|e| e.name == "architecture.md" && !e.is_dir));
+
+                let new_rel = scratch_path_rename("global".into(), None, "ideas/architecture.md".into(), "arch-v2.md".into()).await.unwrap();
+                assert_eq!(new_rel, "ideas/arch-v2.md");
+                let renamed = scratch_file_read("global".into(), None, "ideas/arch-v2.md".into()).await.unwrap();
+                assert_eq!(renamed, "hello world");
+
+                scratch_path_delete("global".into(), None, "ideas/arch-v2.md".into()).await.unwrap();
+                assert!(scratch_file_read("global".into(), None, "ideas/arch-v2.md".into()).await.is_err());
+
+                assert!(scratch_path_reveal("global".into(), None, "../escape".into()).await.is_err());
+            });
+        });
     }
 
     #[test]

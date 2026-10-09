@@ -37,6 +37,7 @@ import { SyntaxPalette } from "./SyntaxPalette";
 import { SearchEverywhereDialog } from "./SearchEverywhereDialog";
 import { ScratchCloseDialog } from "./ScratchCloseDialog";
 import { ScratchSaveDialog } from "./ScratchSaveDialog";
+import { CopyToWorkspaceDialog } from "./CopyToWorkspaceDialog";
 import { Loader2 } from "lucide-react";
 
 export function Dialogs() {
@@ -83,6 +84,7 @@ export function Dialogs() {
       <SearchEverywhereDialog />
       <ScratchCloseDialog />
       <ScratchSaveDialog />
+      <CopyToWorkspaceDialog />
       {/* Blocking work overlay: shown while a slow IPC call is in flight
           (archive task, etc.). Click-blocks the whole window so users
           don't fire the action twice mid-wait. */}

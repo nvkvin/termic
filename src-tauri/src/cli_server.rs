@@ -877,20 +877,20 @@ pub(crate) fn dispatch_authenticated(
             &req.id, host, task.as_deref(), project.as_deref(), cwd.as_deref(),
             name.as_deref(), color.as_deref(),
         ),
-        Command::PadList { task, project, cwd } => handle_pad(
-            &req.id, host, task.as_deref(), project.as_deref(), cwd.as_deref(),
+        Command::PadList { task, project, scope, cwd } => handle_pad(
+            &req.id, host, task.as_deref(), project.as_deref(), scope.as_deref(), cwd.as_deref(),
             serde_json::json!({ "op": "list" }),
         ),
-        Command::PadNew { task, project, title, content, cwd } => handle_pad(
-            &req.id, host, task.as_deref(), project.as_deref(), cwd.as_deref(),
+        Command::PadNew { task, project, scope, title, content, cwd } => handle_pad(
+            &req.id, host, task.as_deref(), project.as_deref(), scope.as_deref(), cwd.as_deref(),
             serde_json::json!({ "op": "new", "title": title, "content": content }),
         ),
-        Command::PadWrite { task, project, pad, content, append, cwd } => handle_pad(
-            &req.id, host, task.as_deref(), project.as_deref(), cwd.as_deref(),
+        Command::PadWrite { task, project, scope, pad, content, append, cwd } => handle_pad(
+            &req.id, host, task.as_deref(), project.as_deref(), scope.as_deref(), cwd.as_deref(),
             serde_json::json!({ "op": "write", "pad": pad, "content": content, "append": append }),
         ),
-        Command::PadRead { task, project, pad, cwd } => handle_pad(
-            &req.id, host, task.as_deref(), project.as_deref(), cwd.as_deref(),
+        Command::PadRead { task, project, scope, pad, cwd } => handle_pad(
+            &req.id, host, task.as_deref(), project.as_deref(), scope.as_deref(), cwd.as_deref(),
             serde_json::json!({ "op": "read", "pad": pad }),
         ),
         Command::ProjectAdd { path, non_git } => {
@@ -3443,18 +3443,46 @@ fn handle_pad(
     host: &dyn CliHost,
     task: Option<&str>,
     project: Option<&str>,
+    scope: Option<&str>,
     cwd: Option<&str>,
     mut op: serde_json::Value,
 ) -> Reply {
     let (projects, tasks) = host.projects_tasks();
-    let t = match resolve_task_arg(&projects, &tasks, task, project, cwd) {
-        Ok(t) => t.clone(),
-        Err(e) => return Reply { id: id.into(), ok: false, data: None, error: Some(e) },
+    let target_id = if scope == Some("global") {
+        "global".to_string()
+    } else if scope == Some("profile") {
+        let t = resolve_task_arg(&projects, &tasks, task, project, cwd).ok();
+        match t.map(|task_ref| task_ref.profile.clone()).unwrap_or_default() {
+            crate::ProfileId::Root => "profile_root".to_string(),
+            crate::ProfileId::Slug(slug) => format!("profile_{slug}"),
+        }
+    } else if scope == Some("project") {
+        let p = if let Some(pname) = project {
+            let Some(p) = find_project(&projects, pname) else {
+                return Reply::err(id, ErrorCode::NotFound, format!("no project named \"{pname}\""));
+            };
+            p.clone()
+        } else {
+            match resolve_project_for_new(&projects, &tasks, host, cwd) {
+                Ok(p) => p.clone(),
+                Err(e) => return Reply { id: id.into(), ok: false, data: None, error: Some(e) },
+            }
+        };
+        format!("project_{}", p.id)
+    } else {
+        let t = match resolve_task_arg(&projects, &tasks, task, project, cwd) {
+            Ok(t) => t.clone(),
+            Err(e) => return Reply { id: id.into(), ok: false, data: None, error: Some(e) },
+        };
+        if t.archived {
+            return Reply::err(id, ErrorCode::BadRequest, format!("task {} is archived", t.name));
+        }
+        t.id.clone()
     };
-    if t.archived {
-        return Reply::err(id, ErrorCode::BadRequest, format!("task {} is archived", t.name));
+    op["taskId"] = serde_json::Value::String(target_id.clone());
+    if let Some(s) = scope {
+        op["scope"] = serde_json::Value::String(s.to_string());
     }
-    op["taskId"] = serde_json::Value::String(t.id.clone());
     let value = match host.rpc("pad", op, PROJECT_RPC_TIMEOUT) {
         Ok(v) => v,
         // The webview's message names the problem (unknown pad, a title two
@@ -3479,7 +3507,7 @@ fn handle_pad(
         .into_iter()
         .map(|p| proto::PadInfo { title: clip_title(&p.title), ..p })
         .collect();
-    Reply::ok(id, ReplyData::Pad(proto::PadData { task_id: t.id, pads, content, truncated }))
+    Reply::ok(id, ReplyData::Pad(proto::PadData { task_id: target_id, pads, content, truncated }))
 }
 
 fn handle_schedule(
@@ -7266,6 +7294,7 @@ mod tests {
                 Command::PadWrite {
                     task: Some("solo".into()),
                     project: None,
+                    scope: None,
                     pad: "findings".into(),
                     content: "more".into(),
                     append: true,
@@ -7289,12 +7318,58 @@ mod tests {
     }
 
     #[test]
+    fn pad_verbs_route_global_and_project_scopes() {
+        let host = StubHost::default();
+        host.script_rpc(
+            "pad",
+            Ok(serde_json::json!({ "pads": [{ "id": "g1", "title": "global-note", "open": false }] })),
+        );
+        // Global scope targets "global" without needing a task
+        let reply = handle(
+            &req(
+                Command::PadList {
+                    task: None,
+                    project: None,
+                    scope: Some("global".into()),
+                    cwd: None,
+                },
+                Some("tok"),
+            ),
+            &host,
+        );
+        assert!(reply.ok, "{reply:?}");
+        let Some(ReplyData::Pad(d)) = reply.data else { panic!("expected pad, got {reply:?}") };
+        assert_eq!(d.task_id, "global");
+
+        // Project scope resolves to project_<id>
+        host.script_rpc(
+            "pad",
+            Ok(serde_json::json!({ "pads": [{ "id": "p1", "title": "proj-note", "open": false }] })),
+        );
+        let reply_proj = handle(
+            &req(
+                Command::PadList {
+                    task: None,
+                    project: Some("web".into()),
+                    scope: Some("project".into()),
+                    cwd: None,
+                },
+                Some("tok"),
+            ),
+            &host,
+        );
+        assert!(reply_proj.ok, "{reply_proj:?}");
+        let Some(ReplyData::Pad(dp)) = reply_proj.data else { panic!("expected pad, got {reply_proj:?}") };
+        assert_eq!(dp.task_id, "project_p1");
+    }
+
+    #[test]
     fn pad_read_clips_an_oversized_pad_and_says_so() {
         let host = StubHost::default();
         let big = "x".repeat(900 * 1024);
         host.script_rpc("pad", Ok(serde_json::json!({ "pads": [{ "id": "p1", "title": "" }], "content": big })));
         let reply = handle(
-            &req(Command::PadRead { task: Some("solo".into()), project: None, pad: "p1".into(), cwd: None }, Some("tok")),
+            &req(Command::PadRead { task: Some("solo".into()), project: None, scope: None, pad: "p1".into(), cwd: None }, Some("tok")),
             &host,
         );
         let Some(ReplyData::Pad(d)) = reply.data else { panic!("expected pad, got {reply:?}") };
@@ -7307,7 +7382,7 @@ mod tests {
         let host = StubHost::default();
         host.script_rpc("pad", Err("no pad named \"nope\"".into()));
         let reply = handle(
-            &req(Command::PadRead { task: Some("solo".into()), project: None, pad: "nope".into(), cwd: None }, Some("tok")),
+            &req(Command::PadRead { task: Some("solo".into()), project: None, scope: None, pad: "nope".into(), cwd: None }, Some("tok")),
             &host,
         );
         let err = reply.error.expect("error");

@@ -28,7 +28,7 @@
 //! so a hand-edited repo cannot inject `env` or `root_path`.
 
 use crate::profiles::ProfileId;
-use crate::{Agent, Project, ProjectMember, ProjectType, Settings};
+use crate::{Agent, Project, ProjectMember, ProjectType, ScratchRecord, Settings};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -879,6 +879,7 @@ pub struct SyncRunResult {
     pub changed_profiles: Vec<String>,
     pub prefs: PrefsChanges,
     pub themes_changed: bool,
+    pub scratchpad_changed: bool,
     pub changes: Vec<Change>,
     pub conflicts: Vec<String>,
     pub error: Option<String>,
@@ -1278,6 +1279,8 @@ pub(crate) fn export_profile(
         }
         None => {}
     }
+    export_profile_scratchpad(clone, id, sync_id)?;
+    export_project_scratchpads(clone, id, sync_id, sl)?;
     Ok(())
 }
 
@@ -1298,6 +1301,7 @@ fn export_all(
         write_if_changed(&clone.join("prefs.json"), &file_bytes(&prefs_doc(&p.shared)))?;
     }
     export_themes(clone)?;
+    export_global_scratchpad(clone)?;
     for (id, sid) in bound {
         let scoped = prefs.and_then(|p| p.scoped.get(&profile_ns(id)));
         export_profile(clone, id, sid, scoped, locate)?;
@@ -1338,6 +1342,180 @@ fn export_themes(clone: &Path) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn collect_relative_files(root: &Path, current: &Path, out: &mut Vec<String>) {
+    if let Ok(rd) = fs::read_dir(current) {
+        for e in rd.flatten() {
+            let p = e.path();
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') {
+                continue;
+            }
+            if p.is_dir() {
+                collect_relative_files(root, &p, out);
+            } else if p.is_file() {
+                if let Ok(rel) = p.strip_prefix(root) {
+                    let rel_str = rel.to_string_lossy().replace('\\', "/");
+                    out.push(rel_str);
+                }
+            }
+        }
+    }
+}
+
+fn clean_empty_dirs(dir: &Path) {
+    if let Ok(rd) = fs::read_dir(dir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                clean_empty_dirs(&p);
+                let _ = fs::remove_dir(&p);
+            }
+        }
+    }
+}
+
+fn export_dir_mirror(src: &Path, dst: &Path) -> Result<(), String> {
+    export_dir_mirror_except(src, dst, None)
+}
+
+fn export_dir_mirror_except(src: &Path, dst: &Path, except_prefix: Option<&str>) -> Result<(), String> {
+    let is_except = |rel: &str| -> bool {
+        if let Some(exc) = except_prefix {
+            rel == exc || rel.starts_with(&format!("{exc}/"))
+        } else {
+            false
+        }
+    };
+
+    let mut local_files = Vec::new();
+    if src.exists() {
+        collect_relative_files(src, src, &mut local_files);
+    }
+    let local_set: BTreeSet<String> = local_files.into_iter().collect();
+
+    for rel in &local_set {
+        if is_except(rel) {
+            continue;
+        }
+        let src_file = src.join(rel);
+        let dst_file = dst.join(rel);
+        if let Ok(bytes) = fs::read(&src_file) {
+            write_if_changed(&dst_file, &bytes)?;
+        }
+    }
+
+    let mut clone_files = Vec::new();
+    if dst.exists() {
+        collect_relative_files(dst, dst, &mut clone_files);
+    }
+    for rel in clone_files {
+        if is_except(&rel) {
+            continue;
+        }
+        if !local_set.contains(&rel) {
+            let dst_file = dst.join(&rel);
+            let _ = fs::remove_file(&dst_file);
+        }
+    }
+    clean_empty_dirs(dst);
+    Ok(())
+}
+
+fn export_global_scratchpad(clone: &Path) -> Result<(), String> {
+    let src = crate::profile_dir(&ProfileId::Root)
+        .map_err(|e| e.to_string())?
+        .join("scratch")
+        .join("global");
+    let dst = clone.join("scratch");
+    export_dir_mirror(&src, &dst)?;
+    clean_empty_dirs(&clone.join("scratch"));
+    Ok(())
+}
+
+fn export_profile_scratchpad(clone: &Path, id: &ProfileId, sync_id: &str) -> Result<(), String> {
+    let src = crate::profile_dir(id)
+        .map_err(|e| e.to_string())?
+        .join("scratch")
+        .join("profile");
+    let dst = clone.join("profiles").join(sync_id).join("scratch");
+    export_dir_mirror_except(&src, &dst, Some("projects"))?;
+    Ok(())
+}
+
+fn export_project_scratchpads(
+    clone: &Path,
+    id: &ProfileId,
+    sync_id: &str,
+    sl: &SyncLocal,
+) -> Result<(), String> {
+    let projects = crate::load_projects_in(id);
+    let dst_parent = clone.join("profiles").join(sync_id).join("scratch").join("projects");
+    let mut active_stems = BTreeSet::new();
+
+    for p in &projects {
+        let sid = sl.sync_id_of(&p.id);
+        let stem = safe_file_stem(&sid);
+        active_stems.insert(stem.clone());
+
+        let local_src = crate::profile_dir(id)
+            .map_err(|e| e.to_string())?
+            .join("scratch")
+            .join("projects")
+            .join(&p.id);
+        let dst = dst_parent.join(&stem);
+        export_dir_mirror(&local_src, &dst)?;
+    }
+
+    if dst_parent.exists() {
+        if let Ok(rd) = fs::read_dir(&dst_parent) {
+            for e in rd.flatten() {
+                let name = e.file_name().to_string_lossy().into_owned();
+                if e.path().is_dir() && !active_stems.contains(&name) {
+                    let _ = fs::remove_dir_all(e.path());
+                }
+            }
+        }
+    }
+    clean_empty_dirs(&clone.join("profiles").join(sync_id).join("scratch"));
+    Ok(())
+}
+
+fn merge_scratch_index(local_path: &Path, incoming_bytes: &[u8]) -> Vec<u8> {
+    let incoming: Vec<ScratchRecord> = serde_json::from_slice(incoming_bytes).unwrap_or_default();
+    let local: Vec<ScratchRecord> = fs::read(local_path)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
+
+    if local.is_empty() {
+        return incoming_bytes.to_vec();
+    }
+    if incoming.is_empty() {
+        return serde_json::to_vec_pretty(&local).unwrap_or_else(|_| incoming_bytes.to_vec());
+    }
+
+    let dir = local_path.parent();
+    let mut map: BTreeMap<String, ScratchRecord> = BTreeMap::new();
+    for rec in incoming {
+        map.insert(rec.id.clone(), rec);
+    }
+    for rec in local {
+        let buf_exists = dir.map(|d| d.join(format!("{}.txt", rec.id)).exists()).unwrap_or(false);
+        if buf_exists {
+            if let Some(existing) = map.get_mut(&rec.id) {
+                if rec.updated_at > existing.updated_at {
+                    *existing = rec;
+                }
+            } else {
+                map.insert(rec.id.clone(), rec);
+            }
+        }
+    }
+    let mut list: Vec<ScratchRecord> = map.into_values().collect();
+    list.sort_by_key(|r| r.order);
+    serde_json::to_vec_pretty(&list).unwrap_or_else(|_| incoming_bytes.to_vec())
 }
 
 fn commit_if_dirty(clone: &Path, machine: &str) -> Result<bool, String> {
@@ -1402,6 +1580,7 @@ struct ApplyOutcome {
     changed_profiles: BTreeSet<String>,
     prefs: PrefsChanges,
     themes_changed: bool,
+    scratchpad_changed: bool,
     changes: Vec<Change>,
     tray: Option<Option<bool>>,
     /// A profile was renamed or recoloured from the repo.
@@ -1477,6 +1656,54 @@ fn apply_paths(
                         let _ = fs::remove_file(&target);
                     }
                     out.themes_changed = true;
+                }
+            }
+        }
+    }
+
+    // Global scratchpad (flattened at repo root).
+    for i in inputs.iter().filter(|i| i.path.starts_with("scratch/")) {
+        let rel = &i.path["scratch/".len()..];
+        if rel.is_empty() || rel.contains("..") {
+            continue;
+        }
+        let Some(root) = crate::profile_dir(&ProfileId::Root).ok().map(|d| d.join("scratch").join("global")) else { continue };
+        let target = root.join(rel);
+        match new_files.get(&i.path).and_then(|b| b.as_ref()) {
+            Some(bytes) => {
+                let write_bytes = if rel == "index.json" {
+                    merge_scratch_index(&target, bytes)
+                } else {
+                    bytes.clone()
+                };
+                if fs::read(&target).ok().as_deref() != Some(write_bytes.as_slice()) {
+                    out.changes.push(Change {
+                        kind: "scratchpad".into(),
+                        target: format!("global:{rel}"),
+                        action: if target.exists() { "update" } else { "add" }.into(),
+                        ..Default::default()
+                    });
+                    if !dry_run {
+                        if let Some(parent) = target.parent() {
+                            let _ = fs::create_dir_all(parent);
+                        }
+                        let _ = fs::write(&target, &write_bytes);
+                    }
+                    out.scratchpad_changed = true;
+                }
+            }
+            None => {
+                if target.exists() {
+                    out.changes.push(Change {
+                        kind: "scratchpad".into(),
+                        target: format!("global:{rel}"),
+                        action: "remove".into(),
+                        ..Default::default()
+                    });
+                    if !dry_run {
+                        let _ = fs::remove_file(&target);
+                    }
+                    out.scratchpad_changed = true;
                 }
             }
         }
@@ -1638,6 +1865,100 @@ fn apply_paths(
                 }
                 if !placed {
                     out.changes.push(Change { kind: "project".into(), target: name, action: "wait".into(), profile: Some(sid.clone()), ..Default::default() });
+                }
+            } else if let Some(after) = rel.strip_prefix("scratch/projects/") {
+                let Some((sync_pid, file_rel)) = after.split_once('/') else { continue };
+                if file_rel.is_empty() || file_rel.contains("..") {
+                    continue;
+                }
+                let local_pid = settings.sync.local_id_of(sync_pid);
+                let Some(root) = crate::profile_dir(pid).ok().map(|d| d.join("scratch").join("projects").join(local_pid)) else { continue };
+                let target = root.join(file_rel);
+                match new_files.get(&i.path).and_then(|b| b.as_ref()) {
+                    Some(bytes) => {
+                        let write_bytes = if file_rel == "index.json" {
+                            merge_scratch_index(&target, bytes)
+                        } else {
+                            bytes.clone()
+                        };
+                        if fs::read(&target).ok().as_deref() != Some(write_bytes.as_slice()) {
+                            out.changes.push(Change {
+                                kind: "scratchpad".into(),
+                                target: format!("project:{sync_pid}:{file_rel}"),
+                                action: if target.exists() { "update" } else { "add" }.into(),
+                                profile: Some(sid.clone()),
+                                ..Default::default()
+                            });
+                            if !dry_run {
+                                if let Some(parent) = target.parent() {
+                                    let _ = fs::create_dir_all(parent);
+                                }
+                                let _ = fs::write(&target, &write_bytes);
+                            }
+                            out.scratchpad_changed = true;
+                        }
+                    }
+                    None => {
+                        if target.exists() {
+                            out.changes.push(Change {
+                                kind: "scratchpad".into(),
+                                target: format!("project:{sync_pid}:{file_rel}"),
+                                action: "remove".into(),
+                                profile: Some(sid.clone()),
+                                ..Default::default()
+                            });
+                            if !dry_run {
+                                let _ = fs::remove_file(&target);
+                            }
+                            out.scratchpad_changed = true;
+                        }
+                    }
+                }
+            } else if let Some(file_rel) = rel.strip_prefix("scratch/") {
+                if file_rel.is_empty() || file_rel.contains("..") {
+                    continue;
+                }
+                let Some(root) = crate::profile_dir(pid).ok().map(|d| d.join("scratch").join("profile")) else { continue };
+                let target = root.join(file_rel);
+                match new_files.get(&i.path).and_then(|b| b.as_ref()) {
+                    Some(bytes) => {
+                        let write_bytes = if file_rel == "index.json" {
+                            merge_scratch_index(&target, bytes)
+                        } else {
+                            bytes.clone()
+                        };
+                        if fs::read(&target).ok().as_deref() != Some(write_bytes.as_slice()) {
+                            out.changes.push(Change {
+                                kind: "scratchpad".into(),
+                                target: format!("profile:{file_rel}"),
+                                action: if target.exists() { "update" } else { "add" }.into(),
+                                profile: Some(sid.clone()),
+                                ..Default::default()
+                            });
+                            if !dry_run {
+                                if let Some(parent) = target.parent() {
+                                    let _ = fs::create_dir_all(parent);
+                                }
+                                let _ = fs::write(&target, &write_bytes);
+                            }
+                            out.scratchpad_changed = true;
+                        }
+                    }
+                    None => {
+                        if target.exists() {
+                            out.changes.push(Change {
+                                kind: "scratchpad".into(),
+                                target: format!("profile:{file_rel}"),
+                                action: "remove".into(),
+                                profile: Some(sid.clone()),
+                                ..Default::default()
+                            });
+                            if !dry_run {
+                                let _ = fs::remove_file(&target);
+                            }
+                            out.scratchpad_changed = true;
+                        }
+                    }
                 }
             }
         }
@@ -1950,6 +2271,7 @@ fn merge_outcome(res: &mut SyncRunResult, o: ApplyOutcome) {
         res.prefs.scoped.entry(ns).or_default().extend(v);
     }
     res.themes_changed |= o.themes_changed;
+    res.scratchpad_changed |= o.scratchpad_changed;
     res.profiles_changed |= o.profiles_changed;
     res.changes.extend(o.changes);
 }
@@ -2097,6 +2419,7 @@ fn first_connect_inputs(clone: &Path, rev: &str, sync_id: &str, machine_wide: bo
     if machine_wide {
         paths.extend(list_files(clone, rev, "themes/"));
         paths.push("prefs.json".into());
+        paths.extend(list_files(clone, rev, "scratch/"));
     }
     paths.into_iter().map(|p| PathInput { path: p, base: None }).collect()
 }
@@ -2187,6 +2510,7 @@ pub(crate) fn bind(clone: &Path, id: &ProfileId, folder: Option<String>, opts: &
     }
     res.prefs = prefs;
     res.themes_changed |= first_res.themes_changed;
+    res.scratchpad_changed |= first_res.scratchpad_changed;
     let mut state = load_state();
     record_notices(&mut state, &res.changes);
     save_state(&state);
@@ -2285,6 +2609,7 @@ pub(crate) fn resolve(clone: &Path, opts: &RunOpts) -> SyncRunResult {
     }
     after.prefs = prefs;
     after.themes_changed |= res.themes_changed;
+    after.scratchpad_changed |= res.scratchpad_changed;
     let mut state = load_state();
     record_notices(&mut state, &after.changes);
     save_state(&state);
@@ -2452,6 +2777,7 @@ fn adopt_profiles(clone: &Path, opts: &RunOpts, state: &SyncState, bound: &[(Pro
             out.outcome.prefs.scoped.entry(ns).or_default().extend(v);
         }
         out.outcome.themes_changed |= o.themes_changed;
+        out.outcome.scratchpad_changed |= o.scratchpad_changed;
         // Its own profile.json is where the name it was just created with
         // came from: nothing to report as a rename.
         out.outcome.changes.extend(o.changes.into_iter().filter(|c| !(c.kind == "profile" && c.action == "update")));
@@ -2635,6 +2961,21 @@ fn conflict_label(path: &str, projects: &[Project], settings: &Settings) -> Stri
     if let Some(name) = path.strip_prefix("themes/") {
         return format!("Theme {name}");
     }
+    if let Some(rel) = path.strip_prefix("scratch/") {
+        return format!("Global scratchpad: {rel}");
+    }
+    if let Some(after) = path.split("/scratch/projects/").nth(1) {
+        if let Some((sync_pid, file_rel)) = after.split_once('/') {
+            let lid = settings.sync.local_id_of(sync_pid);
+            let name = projects.iter().find(|p| p.id == lid).map(|p| p.name.as_str()).unwrap_or(sync_pid);
+            return format!("Project scratchpad ({name}): {file_rel}");
+        } else {
+            return format!("Project scratchpad: {after}");
+        }
+    }
+    if let Some(file_rel) = path.split("/scratch/").nth(1) {
+        return format!("Profile scratchpad: {file_rel}");
+    }
     let stem = Path::new(path).file_stem().and_then(|s| s.to_str()).unwrap_or(path);
     if path.contains("/projects/") {
         let lid = settings.sync.local_id_of(stem);
@@ -2810,10 +3151,11 @@ fn after_apply(app: &tauri::AppHandle, res: &SyncRunResult) {
         crate::rebuild_tray_menu(app);
         let _ = app.emit("termic://profiles-changed", ());
     }
-    if !res.changed_profiles.is_empty() || res.themes_changed || !res.prefs.is_empty() || !res.changes.is_empty() {
+    if !res.changed_profiles.is_empty() || res.themes_changed || res.scratchpad_changed || !res.prefs.is_empty() || !res.changes.is_empty() {
         let _ = app.emit("termic://sync-changed", serde_json::json!({
             "profiles": res.changed_profiles,
             "themes": res.themes_changed,
+            "scratchpad": res.scratchpad_changed,
         }));
     }
 }
@@ -3635,6 +3977,15 @@ mod tests {
         });
         fs::create_dir_all(a.xdg.path().join("termic/themes")).unwrap();
         fs::write(a.xdg.path().join("termic/themes/mine.json"), "{\"id\":\"mine\"}\n").unwrap();
+        let a_global_scratch = a.data.path().join("scratch/global");
+        fs::create_dir_all(&a_global_scratch).unwrap();
+        fs::write(a_global_scratch.join("global-idea.md"), "hello global\n").unwrap();
+        let a_profile_scratch = a.data.path().join("scratch/profile");
+        fs::create_dir_all(&a_profile_scratch).unwrap();
+        fs::write(a_profile_scratch.join("profile-notes.md"), "hello profile\n").unwrap();
+        let a_proj_scratch = a.data.path().join("scratch/projects").join(&app.id);
+        fs::create_dir_all(&a_proj_scratch).unwrap();
+        fs::write(a_proj_scratch.join("project-spec.md"), "hello project\n").unwrap();
         let a_prefs = PrefsSnapshot {
             shared: BTreeMap::from([("themeMode".into(), "dark".into()), ("defaultYolo".into(), "1".into())]),
             scoped: BTreeMap::from([(String::new(), BTreeMap::from([("promptLibrary".into(), "{\"customs\":[]}".into())]))]),
@@ -3661,6 +4012,10 @@ mod tests {
         let log = sh(remote.path(), &["--git-dir", bare.to_str().unwrap(), "log", "-1", "--format=%s|%ae", "main"]);
         assert_eq!(log.trim(), format!("sync from machine-a|{SYNC_EMAIL}"));
         let a_sid = crate::load_settings_in(&ProfileId::Root).sync.sync_id.unwrap();
+        let tree = sh(remote.path(), &["--git-dir", bare.to_str().unwrap(), "ls-tree", "-r", "--name-only", "main"]);
+        assert!(tree.contains("scratch/global-idea.md"), "global scratchpad flattened at repo root: {tree}");
+        assert!(tree.contains(&format!("profiles/{a_sid}/scratch/profile-notes.md")), "profile scratchpad synced: {tree}");
+        assert!(tree.contains(&format!("profiles/{a_sid}/scratch/projects/{}/project-spec.md", app.id)), "project scratchpad synced: {tree}");
 
         // ── machine B: the same repo under repos_dir, different setup
         let b = Machine::new("machine-b");
@@ -3700,6 +4055,13 @@ mod tests {
         assert!(r.prefs.shared.iter().any(|c| c.key == "themeMode" && c.value.as_deref() == Some("dark")));
         assert!(r.prefs.scoped.get("").is_some_and(|v| v.iter().any(|c| c.key == "promptLibrary")));
         assert!(b.xdg.path().join("termic/themes/mine.json").exists(), "themes follow");
+        let b_global = b.data.path().join("scratch/global/global-idea.md");
+        assert_eq!(fs::read_to_string(&b_global).unwrap(), "hello global\n");
+        let b_prof = b.data.path().join("scratch/profile/profile-notes.md");
+        assert_eq!(fs::read_to_string(&b_prof).unwrap(), "hello profile\n");
+        let b_proj = b.data.path().join("scratch/projects").join(&app.id).join("project-spec.md");
+        assert_eq!(fs::read_to_string(&b_proj).unwrap(), "hello project\n");
+        assert!(r.scratchpad_changed, "scratchpad changed flag propagated");
         let b_after = merged_snapshot(&b_prefs, &r.prefs);
 
         // ── A renames and turns YOLO on; B changed a different field meanwhile

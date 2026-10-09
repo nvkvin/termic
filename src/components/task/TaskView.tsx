@@ -29,11 +29,11 @@ import { RunPane } from "./RunPane";
 import { SplitNodeView } from "./SplitView";
 import { AuxTerminal } from "./AuxTerminal";
 import { MessageQueueButton } from "./MessageQueueButton";
-import { Plus, ChevronDown, ChevronUp, ChevronRight, LocateFixed, Copy, Check, FolderOpen, Globe } from "lucide-react";
+import { Plus, ChevronDown, ChevronUp, ChevronRight, LocateFixed, Copy, Check, FolderOpen, Globe, ArrowRightFromLine } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { getAllLeaves, computeLeafBounds, focusedTabId } from "@/lib/splitTree";
 import type { PaneLeaf, Rect } from "@/lib/splitTree";
-import { openPath, revealPath } from "@/lib/ipc";
+import { openPath, revealPath, scratchPathReveal } from "@/lib/ipc";
 import { copyToClipboard } from "@/lib/clipboard";
 import { absUnder } from "@/lib/osPath";
 import { fileIconUrl } from "@/lib/explorer/iconResolver";
@@ -82,6 +82,64 @@ function EditorBreadcrumb({ task }: { task: Task }) {
   // extension to go on, the content sniffer's guess (and the user's override)
   // is the only thing that says how the buffer is being highlighted.
   if (tab?.type === "scratch") {
+    if (tab.path) {
+      const extName = tab.path.split("/").pop() || tab.path;
+      return (
+        <div className="flex h-7 shrink-0 items-center gap-1 border-b border-[var(--color-border-soft)] bg-[var(--color-bg-1)] px-2 text-[12px]">
+          <img src={fileIconUrl(extName)} alt="" className="mr-1 h-3.5 w-3.5 shrink-0 file-icon" />
+          <span className="shrink-0 rounded bg-[var(--color-bg-2)] px-1.5 py-0.5 text-[10.5px] font-semibold text-[var(--color-accent)]">
+            {tab.scope === "global" ? "[Global]" : tab.scope === "profile" ? "[Profile]" : "[Project]"}
+          </span>
+          <span className="min-w-0 flex-1 truncate text-[var(--color-fg-dim)]" title={tab.path}>
+            {tab.path}
+          </span>
+          <button
+            onClick={() => {
+              useUI.getState().openScratchExport({
+                scope: tab.scope === "project" ? "project" : tab.scope === "profile" ? "profile" : "global",
+                projectId: tab.projectId,
+                scratchPath: tab.path!,
+                taskId: task.id,
+                defaultRel: extName,
+              });
+            }}
+            title={t("scratchpad.saveToWorkspace", "Save to workspace...")}
+            className="flex items-center gap-1 shrink-0 rounded px-1.5 py-0.5 text-[11px] text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
+          >
+            <ArrowRightFromLine className="h-3 w-3" />
+            <span>{t("scratchpad.saveToWorkspaceAction", "Save to workspace")}</span>
+          </button>
+          <button
+            data-testid="syntax-button"
+            onClick={() => openSyntaxPalette(task.id, tab.id)}
+            title={t("breadcrumb.setSyntaxTip")}
+            className="shrink-0 rounded px-1.5 py-0.5 text-[11.5px] text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
+          >
+            {languageLabel(effectiveLanguageId(tab))}
+          </button>
+          <button
+            onClick={() => void copyToClipboard(tab.path!, "path")}
+            title={t("breadcrumb.copyPathTip")}
+            className="shrink-0 rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
+          >
+            <Copy className="h-3.5 w-3.5" />
+          </button>
+          <button
+            onClick={() => {
+              void scratchPathReveal(
+                tab.scope === "project" ? "project" : tab.scope === "profile" ? "profile" : "global",
+                tab.projectId ?? (tab.scope === "project" ? task.project_id : undefined),
+                tab.path!
+              ).catch(() => {});
+            }}
+            title={t("breadcrumb.revealInFinderTip", { manager: FILE_MANAGER })}
+            className="shrink-0 rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
+          >
+            <FolderOpen className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      );
+    }
     return (
       <div className="flex h-7 shrink-0 items-center gap-1 border-b border-[var(--color-border-soft)] bg-[var(--color-bg-1)] px-2 text-[12px]">
         <span className="min-w-0 flex-1 truncate text-[var(--color-fg-faint)]">

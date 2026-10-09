@@ -611,6 +611,8 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         project: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         cwd: Option<String>,
     },
     /// Create a scratchpad in a task, optionally titled and seeded. It opens
@@ -620,6 +622,8 @@ pub enum Command {
         task: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         project: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         title: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -634,6 +638,8 @@ pub enum Command {
         task: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         project: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<String>,
         pad: String,
         content: String,
         #[serde(default, skip_serializing_if = "is_false")]
@@ -647,6 +653,8 @@ pub enum Command {
         task: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         project: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<String>,
         pad: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cwd: Option<String>,
@@ -2206,10 +2214,11 @@ mod tests {
                 name: "retitled".into(),
                 cwd: Some("/tasks/web/x".into()),
             },
-            Command::PadList { task: None, project: None, cwd: Some("/tasks/web/x".into()) },
+            Command::PadList { task: None, project: None, scope: None, cwd: Some("/tasks/web/x".into()) },
             Command::PadNew {
                 task: Some("fix-auth".into()),
                 project: Some("web".into()),
+                scope: None,
                 title: Some("findings".into()),
                 content: Some("# notes\n".into()),
                 cwd: None,
@@ -2217,12 +2226,13 @@ mod tests {
             Command::PadWrite {
                 task: None,
                 project: None,
+                scope: None,
                 pad: "findings".into(),
                 content: "more\n".into(),
                 append: true,
                 cwd: None,
             },
-            Command::PadRead { task: Some("t1".into()), project: None, pad: "p1".into(), cwd: None },
+            Command::PadRead { task: Some("t1".into()), project: None, scope: None, pad: "p1".into(), cwd: None },
             Command::ProjectAdd { path: "/repo/web".into(), non_git: false },
             Command::ProjectAdd { path: "/notes/plain".into(), non_git: true },
             Command::ProjectList,

@@ -9,7 +9,7 @@
 import { isUserWatchingIn, useApp } from "@/store/app";
 import * as ipc from "@/lib/ipc";
 import { livePad, padDiskSettled, trackPadDiskWrite } from "@/lib/scratchLive";
-import { scratchTab } from "@/lib/scratchTabs";
+import { scratchTab, scratchTargetId } from "@/lib/scratchTabs";
 import { deriveScratchTitle, SCRATCH_UNTITLED } from "@/lib/scratchTitle";
 import type { ScratchTab } from "@/lib/types";
 
@@ -29,10 +29,18 @@ interface PadParams {
   append?: boolean;
 }
 
-function openPads(taskId: string): Map<string, ScratchTab> {
+function openPads(targetId: string): Map<string, ScratchTab> {
+  const tabsState = useApp.getState().tabs;
+  const direct = tabsState[targetId];
+  if (direct) {
+    return new Map(
+      direct.filter((t): t is ScratchTab => t.type === "scratch").map(t => [t.scratchId, t]),
+    );
+  }
+  const allTabs = Object.values(tabsState).flat();
   return new Map(
-    (useApp.getState().tabs[taskId] ?? [])
-      .filter((t): t is ScratchTab => t.type === "scratch")
+    allTabs
+      .filter((t): t is ScratchTab => t.type === "scratch" && scratchTargetId(t) === targetId)
       .map(t => [t.scratchId, t]),
   );
 }
@@ -73,12 +81,24 @@ export async function resolvePad(taskId: string, selector: string): Promise<PadI
  *  append would re-run every mounted selector for nothing). */
 function markPadUnseen(taskId: string, scratchId: string) {
   const s = useApp.getState();
-  const tab = (s.tabs[taskId] ?? []).find(
-    (t): t is ScratchTab => t.type === "scratch" && t.scratchId === scratchId,
-  );
-  if (!tab || tab.unseen) return;
-  if (isUserWatchingIn(s, taskId, tab.id)) return;
-  s.patchTab(taskId, tab.id, { unseen: true });
+  const tabs = s.tabs[taskId];
+  if (tabs) {
+    const tab = tabs.find((t): t is ScratchTab => t.type === "scratch" && t.scratchId === scratchId);
+    if (tab && !tab.unseen && !isUserWatchingIn(s, taskId, tab.id)) {
+      s.patchTab(taskId, tab.id, { unseen: true });
+      return;
+    }
+  }
+  // If not found in taskId directly (e.g. global/project pad open in another task), find across tasks:
+  for (const [tId, tabList] of Object.entries(s.tabs)) {
+    const tab = tabList.find(
+      (t): t is ScratchTab => t.type === "scratch" && t.scratchId === scratchId && scratchTargetId(t, tId) === taskId,
+    );
+    if (tab && !tab.unseen && !isUserWatchingIn(s, tId, tab.id)) {
+      s.patchTab(tId, tab.id, { unseen: true });
+      return;
+    }
+  }
 }
 
 async function createPad(taskId: string, title: string | null, content: string): Promise<PadInfo> {
@@ -87,19 +107,35 @@ async function createPad(taskId: string, title: string | null, content: string):
   const shown = fixed || deriveScratchTitle(content);
   await trackPadDiskWrite(taskId, id, ipc.scratchWrite(taskId, id, content));
   if (shown) await ipc.scratchSetMeta(taskId, id, { title: shown });
-  // Only a task whose tabs are loaded gets a tab now; any other picks the pad
-  // up from the index when it is next opened (restoreScratchTabs).
-  const tabsLoaded = useApp.getState().tabs[taskId] !== undefined;
-  if (tabsLoaded) {
+
+  const isGlobal = taskId === "global";
+  const isProfile = taskId.startsWith("profile_");
+  const isProject = taskId.startsWith("project_");
+  const scope: "task" | "project" | "profile" | "global" = isGlobal
+    ? "global"
+    : isProfile
+    ? "profile"
+    : isProject
+    ? "project"
+    : "task";
+  const projectId = isProject
+    ? taskId.slice("project_".length)
+    : isProfile
+    ? taskId.slice("profile_".length)
+    : undefined;
+
+  const hostTaskId = (!isGlobal && !isProject && !isProfile) ? taskId : useApp.getState().activeTaskId;
+  const tabsLoaded = hostTaskId ? useApp.getState().tabs[hostTaskId] !== undefined : false;
+  if (hostTaskId && tabsLoaded) {
     useApp.getState().addTab(
-      taskId,
-      // A --title locks, exactly like a double-click rename: the text an
-      // agent writes next must not retitle a pad it named on purpose.
-      { ...scratchTab({ id, title: shown }), ...(fixed ? { customTitle: true } : {}) },
-      // Never steal focus from the human, or from the agent's own terminal.
+      hostTaskId,
+      {
+        ...scratchTab({ id, title: shown, scope, projectId, targetId: taskId }),
+        ...(fixed ? { customTitle: true } : {}),
+      },
       { focus: false },
     );
-    markPadUnseen(taskId, id);
+    markPadUnseen(hostTaskId, id);
   }
   return { id, title: shown, open: tabsLoaded };
 }

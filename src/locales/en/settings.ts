@@ -592,6 +592,7 @@ export default {
       setting: "Setting {{field}}",
       pref: "Preference {{key}}",
       theme: "Theme {{name}}",
+      scratchpad: "Scratchpad {{target}}",
     },
     conflictsTitle: "Changed on both machines",
     conflictsHint: "These files changed here and on another machine since the last sync. termic kept this machine's version. Choose one for each, and the sync carries on.",

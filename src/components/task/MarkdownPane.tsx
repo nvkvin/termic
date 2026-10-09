@@ -74,10 +74,11 @@ export function MarkdownPane(
   // stable label here, so the key is the source rather than the path.
   const srcKey = tab.type === "edit" ? tab.path
     : tab.type === "external" ? `external:${tab.path}`
+    : tab.path ? `scratch:${tab.scope ?? "global"}:${tab.projectId ?? ""}:${tab.path}`
     : `scratch:${tab.scratchId}`;
   // Task-relative for an edit tab, ABSOLUTE for an external one (the ctx's
-  // `external` flag says which), "" for a pad.
-  const filePath = tab.type === "scratch" ? "" : tab.path;
+  // `external` flag says which), "" for an untitled pad.
+  const filePath = tab.type === "scratch" ? (tab.path ?? "") : tab.path;
   const [buf, setBuf] = useState({ path: srcKey, text: "" });
   const text = buf.path === srcKey ? buf.text : "";
   const debounceRef = useRef<number | null>(null);

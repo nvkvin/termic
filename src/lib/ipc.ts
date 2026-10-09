@@ -818,6 +818,54 @@ export const scratchPromote = (taskId: string, id: string, relPath: string, over
   invoke<void>("scratch_promote", { taskId, id, relPath, overwrite });
 export const scratchPromoteTargetExists = (taskId: string, relPath: string) =>
   invoke<boolean>("scratch_promote_target_exists", { taskId, relPath });
+
+// ─────────────────── multi-file scratchpad tree ───────────────────
+export const scratchTreeList = (scope: string, projectId?: string | null, rel = "") =>
+  invoke<FileEntry[]>("scratch_tree_list", { scope, projectId: projectId ?? null, rel });
+export const scratchFileRead = (scope: string, projectId: string | undefined | null, path: string) =>
+  invoke<string>("scratch_file_read", { scope, projectId: projectId ?? null, path });
+export const scratchFileWrite = (scope: string, projectId: string | undefined | null, path: string, content: string) =>
+  invoke<void>("scratch_file_write", { scope, projectId: projectId ?? null, path, content });
+export const scratchFileCreate = (scope: string, projectId: string | undefined | null, path: string, isDir: boolean) =>
+  invoke<void>("scratch_file_create", { scope, projectId: projectId ?? null, path, isDir });
+export const scratchPathRename = (scope: string, projectId: string | undefined | null, path: string, newName: string) =>
+  invoke<string>("scratch_path_rename", { scope, projectId: projectId ?? null, path, newName });
+export const scratchPathDelete = (scope: string, projectId: string | undefined | null, path: string) =>
+  invoke<void>("scratch_path_delete", { scope, projectId: projectId ?? null, path });
+export const scratchPathReveal = (scope: string, projectId?: string | null, path = "") =>
+  invoke<void>("scratch_path_reveal", { scope, projectId: projectId ?? null, path });
+export const scratchCopyToWorkspace = (
+  scope: string,
+  projectId: string | undefined | null,
+  scratchPath: string,
+  taskId: string,
+  workspaceRel: string,
+  overwrite = false,
+) =>
+  invoke<string>("scratch_copy_to_workspace", {
+    scope,
+    projectId: projectId ?? null,
+    scratchPath,
+    taskId,
+    workspaceRel,
+    overwrite,
+  });
+export const scratchCopyFromWorkspace = (
+  scope: string,
+  projectId: string | undefined | null,
+  scratchPath: string,
+  taskId: string,
+  workspaceRel: string,
+  overwrite = false,
+) =>
+  invoke<string>("scratch_copy_from_workspace", {
+    scope,
+    projectId: projectId ?? null,
+    scratchPath,
+    taskId,
+    workspaceRel,
+    overwrite,
+  });
 // `heal` restores any missing repo-root member symlink while listing the
 // root — only worth doing at intentional moments (task launch, manual
 // refresh), not on every agent-settle reload, so the caller opts in.

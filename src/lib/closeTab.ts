@@ -40,6 +40,23 @@ const scheduledPhrase = (n: number) =>
  *  own ×, and folding several into one confirm would mean one click deciding
  *  the fate of several notes. */
 async function confirmScratchClose(taskId: string, tab: ScratchTab): Promise<boolean> {
+  // Named scratchpad files from the tree (tab.path): closing a dirty buffer warns before discarding changes.
+  if (tab.path) {
+    if (tab.dirty) {
+      const name = tab.path.split("/").pop() || tab.path;
+      const ok = await useUI.getState().askConfirm({
+        title: i18n.t("backend:closeTab.unsavedTitle"),
+        message: i18n.t("backend:closeTab.unsavedMessage", { name, combo: kbd("⌘S") }),
+        confirmLabel: i18n.t("backend:closeTab.unsavedConfirm"),
+        destructive: true,
+      });
+      return ok === true;
+    }
+    return true;
+  }
+  // Global, Profile, and Project scratchpads without a path are persistent notes in the scope;
+  // closing their tab simply closes the editor view without discarding the pad.
+  if (tab.scope === "global" || tab.scope === "project" || tab.scope === "profile") return true;
   const choice = await useUI.getState().askScratchClose(tab.liveTitle || tab.title);
   if (choice === "cancel") return false;
   if (choice === "discard") {

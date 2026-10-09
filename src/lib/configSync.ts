@@ -138,6 +138,7 @@ export async function runSync(kind: "now" | "launch" | "focus"): Promise<SyncRun
   // A skipped focus pull did not run. Applying it would re-read status for
   // notices that did not change.
   if (!res.skipped) await applyRunResult(res);
+  if (res.scratchpad_changed) useUI.getState().reloadFileTree();
   // Background runs only. "Sync now" already draws the failure and the
   // conflict list on the page the user is looking at.
   // "Sync now" is the page the user is looking at, so it remembers the set
@@ -343,9 +344,10 @@ let started = false;
 export function initConfigSync(): void {
   if (started) return;
   started = true;
-  void listen<{ profiles: string[]; themes: boolean }>(SYNC_CHANGED_EVENT, ev => {
+  void listen<{ profiles: string[]; themes: boolean; scratchpad?: boolean }>(SYNC_CHANGED_EVENT, ev => {
     if (ev.payload.profiles.includes(PROFILE_NS)) void useApp.getState().loadAll();
     if (ev.payload.themes) void usePrefs.getState().loadCustomThemes();
+    if (ev.payload.scratchpad) useUI.getState().reloadFileTree();
     void surfaceNotices();
   }).catch(() => {});
   void listen(SYNC_PREFS_WRITTEN_EVENT, () => { reloadSyncedStores(); }).catch(() => {});

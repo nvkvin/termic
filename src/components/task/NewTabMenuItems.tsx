@@ -106,8 +106,8 @@ export function NewTabMenuItems({ taskId, onSpawnCli, onSpawnShell, onScratchpad
   taskId: string;
   onSpawnCli: (cli: string) => void;
   onSpawnShell: () => void;
-  /** New scratchpad (GH #244) — an untitled buffer in this task's strip. */
-  onScratchpad: () => void;
+  /** New scratchpad (GH #244) - task (default), project, profile, or global. */
+  onScratchpad: (scope?: "task" | "project" | "profile" | "global") => void;
   /** Reopen a closed tab with its original session id. */
   onResume: (entryId: string) => void;
   /** "More…" under Resume — jump to the full History view. */
@@ -123,6 +123,7 @@ export function NewTabMenuItems({ taskId, onSpawnCli, onSpawnShell, onScratchpad
     () => registry.filter(a => isTerminalEntry(a) && !a.disabled),
     [registry],
   );
+  const hasProject = useApp(s => !!s.tasks.find(w => w.id === taskId)?.project_id);
 
   return (
     <>
@@ -133,9 +134,23 @@ export function NewTabMenuItems({ taskId, onSpawnCli, onSpawnShell, onScratchpad
       <DropdownLabel>{t("newTab.newAgent")}</DropdownLabel>
       <CliMenuItems entries={registry.filter(a => visibleClis.has(a.id))} onSpawn={onSpawnCli} />
       <DropdownSeparator />
-      <DropdownItem onSelect={onScratchpad} data-testid="new-scratchpad" className="items-center">
+      <DropdownItem onSelect={() => onScratchpad("task")} data-testid="new-scratchpad" className="items-center">
         <span className="shrink-0 text-[var(--color-fg-dim)]"><NotepadText className="h-4 w-4" /></span>
         {t("newTab.scratchpad")}
+      </DropdownItem>
+      {hasProject && (
+        <DropdownItem onSelect={() => onScratchpad("project")} className="items-center">
+          <span className="shrink-0 text-[var(--color-fg-dim)]"><NotepadText className="h-4 w-4" /></span>
+          {t("newTab.scratchpadProject")}
+        </DropdownItem>
+      )}
+      <DropdownItem onSelect={() => onScratchpad("profile")} className="items-center">
+        <span className="shrink-0 text-[var(--color-fg-dim)]"><NotepadText className="h-4 w-4" /></span>
+        {t("newTab.scratchpadProfile")}
+      </DropdownItem>
+      <DropdownItem onSelect={() => onScratchpad("global")} className="items-center">
+        <span className="shrink-0 text-[var(--color-fg-dim)]"><NotepadText className="h-4 w-4" /></span>
+        {t("newTab.scratchpadGlobal")}
       </DropdownItem>
       {/* Resume is a NESTED submenu, not an inline section. It grows with
           every closed tab, and a flat list of five "Claude Code" rows pushed

@@ -538,6 +538,8 @@ function describeChange(c: SyncChange, t: (k: string, o?: Record<string, unknown
       if (c.action === "upload") return t("sync.change.profileUpload", { name: c.target });
       if (c.action === "update") return t("sync.change.profileUpdate", { name: c.target, to: String(c.to ?? "") });
       return t("sync.change.profileAdd", { name: c.target });
+    case "scratchpad":
+      return t("sync.change.scratchpad", { target: c.target });
   }
 }
 

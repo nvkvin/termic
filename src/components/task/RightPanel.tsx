@@ -32,6 +32,7 @@ import { Tip } from "@/components/ui/Tooltip";
 import { Spinner } from "@/components/ui/Spinner";
 import { AuxTerminal } from "./AuxTerminal";
 import { FileTree } from "./FileTree";
+import { ScratchpadPanel } from "./ScratchpadPanel";
 import { GitPanel } from "./GitPanel";
 import { ResizeHandle } from "@/components/ui/ResizeHandle";
 import { useScriptRuns, useRunState } from "@/store/scriptRuns";
@@ -64,7 +65,7 @@ export function RightPanel() {
   const addTab = useApp(s => s.addTab);
   const split = useApp(s => !!s.terminalSplit[task?.id ?? ""]);
   const toggleSplit = useApp(s => s.toggleTerminalSplit);
-  const [view, setView] = useState<"files" | "changes">("files");
+  const [view, setView] = useState<"files" | "changes" | "scratchpad">("files");
   // A reveal-in-tree request (editor breadcrumb / locate button) forces the
   // "All files" view so the tree is on screen for FileTree to expand/scroll.
   const revealFile = useApp(s => s.revealFile);
@@ -515,6 +516,7 @@ export function RightPanel() {
       />
       <header className="flex h-10 shrink-0 items-stretch border-b border-[var(--color-border-soft)]">
         <RTab label={t("rightPanel.allFiles")} active={view === "files"} onClick={() => setView("files")} />
+        <RTab label={t("rightPanel.scratchpad", "Scratchpad")} active={view === "scratchpad"} onClick={() => setView("scratchpad")} />
         <RTab label={t("rightPanel.git")} active={view === "changes"} onClick={() => setView("changes")}
           badge={(gitStatus?.total_changed ?? 0) > 0 ? gitStatus!.total_changed : undefined}
           repoBadge={(gitStatus?.repos_changed ?? 0) > 1 ? gitStatus!.repos_changed : undefined} />
@@ -535,12 +537,16 @@ export function RightPanel() {
         </div>
       </header>
 
-      {/* Files / Git — flexible, takes whatever's left after the footer.
-          Files scrolls inside this wrapper; Git manages its own panes +
+      {/* Files / Scratchpad / Git: flexible, takes whatever's left after the footer.
+          Files & Scratchpad scroll inside their wrappers; Git manages its own panes +
           scrolling so it gets the bare flex-1 height with no overflow. */}
       {view === "files" ? (
         <div className="min-h-0 flex-1 overflow-auto py-1">
           <FileTree taskId={task.id} reloadToken={fileTreeReload + fileTreeNonce + fsRevision + focusReload} refreshToken={fileTreeReload} />
+        </div>
+      ) : view === "scratchpad" ? (
+        <div className="min-h-0 flex-1 overflow-auto py-1">
+          <ScratchpadPanel taskId={task.id} projectId={task.project_id} reloadToken={fileTreeReload + fileTreeNonce + fsRevision + focusReload} />
         </div>
       ) : (
         <div className="min-h-0 flex-1">

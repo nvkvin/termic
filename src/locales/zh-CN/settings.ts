@@ -591,6 +591,7 @@ export default {
       setting: "设置 {{field}}",
       pref: "偏好 {{key}}",
       theme: "主题 {{name}}",
+      scratchpad: "便签本 {{target}}",
     },
     conflictsTitle: "两台机器都改过",
     conflictsHint: "自上次同步以来，这些文件在这里和另一台机器上都被修改了。termic 保留了这台机器的版本。为每个文件选择一个版本，同步就会继续。",

@@ -1324,16 +1324,22 @@ the selector, the default tab without --yes), 4 app not running, \
     },
 }
 
-/// Which task a pad verb acts on. Shared by every `scratchpad` subcommand.
+/// Which task, project or scope a pad verb acts on. Shared by every `scratchpad` subcommand.
 #[derive(clap::Args, Debug, Clone, Default)]
 pub struct PadTarget {
     /// Task name, task id, or qualified project/name. Omitted: your own
     /// task ($TERMIC_TASK_ID), then the current directory.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "global")]
     pub task: Option<String>,
-    /// Project name, to disambiguate. Requires --task.
-    #[arg(long, requires = "task")]
+    /// Project name, to disambiguate a task or target a project scratchpad.
+    #[arg(long, conflicts_with = "global")]
     pub project: Option<String>,
+    /// Target scope: "task" (default when task is present), "project", "profile", or "global".
+    #[arg(long, value_parser = ["task", "project", "profile", "global"])]
+    pub scope: Option<String>,
+    /// Act on the global scratchpad. Shorthand for --scope global.
+    #[arg(long, conflicts_with_all = ["task", "project", "scope"])]
+    pub global: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -2657,7 +2663,31 @@ fn resolve_pad_content(c: &str) -> Result<String, CliError> {
 
 /// The task a pad verb targets: explicit, else the caller's own task.
 fn pad_task(t: &PadTarget) -> Option<String> {
-    t.task.clone().or_else(|| std::env::var("TERMIC_TASK_ID").ok().filter(|s| !s.is_empty()))
+    if t.global || t.scope.as_deref() == Some("global") {
+        return None;
+    }
+    if t.scope.as_deref() == Some("project") && t.task.is_none() {
+        return None;
+    }
+    t.task.clone().or_else(|| {
+        if t.project.is_some() && t.scope.as_deref() != Some("task") {
+            None
+        } else {
+            std::env::var("TERMIC_TASK_ID").ok().filter(|s| !s.is_empty())
+        }
+    })
+}
+
+fn pad_scope(t: &PadTarget) -> Option<String> {
+    if t.global {
+        Some("global".to_string())
+    } else if t.scope.is_some() {
+        t.scope.clone()
+    } else if t.project.is_some() && t.task.is_none() {
+        Some("project".to_string())
+    } else {
+        None
+    }
 }
 
 fn execute_pad(
@@ -2672,11 +2702,13 @@ fn execute_pad(
         PadCmd::List { target } => proto::Command::PadList {
             task: pad_task(target),
             project: target.project.clone(),
+            scope: pad_scope(target),
             cwd,
         },
         PadCmd::New { target, title, .. } => proto::Command::PadNew {
             task: pad_task(target),
             project: target.project.clone(),
+            scope: pad_scope(target),
             title: title.clone(),
             content,
             cwd,
@@ -2684,6 +2716,7 @@ fn execute_pad(
         PadCmd::Write { pad, target, append, .. } => proto::Command::PadWrite {
             task: pad_task(target),
             project: target.project.clone(),
+            scope: pad_scope(target),
             pad: pad.clone(),
             content: content.unwrap_or_default(),
             append: *append,
@@ -2692,6 +2725,7 @@ fn execute_pad(
         PadCmd::Read { pad, target } => proto::Command::PadRead {
             task: pad_task(target),
             project: target.project.clone(),
+            scope: pad_scope(target),
             pad: pad.clone(),
             cwd,
         },
@@ -3916,9 +3950,20 @@ mod tests {
         assert!(matches!(&r.cmd, Cmd::Pad(PadCmd::Read { pad, .. }) if pad == "p1"));
         assert!(Cli::try_parse_from(["termic", "pad", "list"]).is_ok());
 
-        // A pad selector is required for write/read; --project needs --task.
+        // A pad selector is required for write/read.
         assert!(Cli::try_parse_from(["termic", "pad", "read"]).is_err());
-        assert!(Cli::try_parse_from(["termic", "pad", "list", "--project", "web"]).is_err());
+        // --project without --task targets the project's scratchpad.
+        let proj_list = Cli::try_parse_from(["termic", "pad", "list", "--project", "web"]).unwrap();
+        let Cmd::Pad(PadCmd::List { target: proj_target }) = &proj_list.cmd else { panic!("not pad list") };
+        assert_eq!(proj_target.project.as_deref(), Some("web"));
+
+        // --global targets the global scratchpad.
+        let glob_list = Cli::try_parse_from(["termic", "pad", "list", "--global"]).unwrap();
+        let Cmd::Pad(PadCmd::List { target: glob_target }) = &glob_list.cmd else { panic!("not pad list") };
+        assert!(glob_target.global);
+        // --global conflicts with --task and --project.
+        assert!(Cli::try_parse_from(["termic", "pad", "list", "--global", "--task", "t1"]).is_err());
+        assert!(Cli::try_parse_from(["termic", "pad", "list", "--global", "--project", "web"]).is_err());
         // `pad` alone is not a verb.
         assert!(Cli::try_parse_from(["termic", "pad"]).is_err());
         // The canonical name parses to the same command as the alias.

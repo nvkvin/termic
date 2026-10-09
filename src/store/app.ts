@@ -2750,7 +2750,7 @@ export const useApp = create<AppState>((set, get) => ({
         // that lands in it afterwards.
         syntax: undefined, syntaxAuto: undefined,
           ...revealPatch,
-        } as Tab : t);
+        } as unknown as Tab : t);
         const newTree = setLeafActiveTabId(tree, activePaneLeaf.id, previewTab.id);
         return { tabs: { ...s.tabs, [taskId]: next }, splitTree: { ...s.splitTree, [taskId]: newTree } };
       }
@@ -2792,7 +2792,7 @@ export const useApp = create<AppState>((set, get) => ({
         // that lands in it afterwards.
         syntax: undefined, syntaxAuto: undefined,
         ...revealPatch,
-      } as Tab : t);
+      } as unknown as Tab : t);
       return { tabs: { ...s.tabs, [taskId]: next }, ...setActive(previewTab.id) };
     }
 

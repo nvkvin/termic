@@ -273,6 +273,14 @@ interface UIState {
    *  file, so the close flow can tell "saved, now close the tab" from
    *  "backed out, keep it". null = closed. */
   scratchSave: { taskId: string; tabId: string; resolve: (saved: boolean) => void } | null;
+  /** Active "Save to workspace" export request for a scratchpad file. */
+  scratchExport: {
+    scope: "global" | "project" | "profile";
+    projectId?: string;
+    scratchPath: string;
+    taskId: string;
+    defaultRel?: string;
+  } | null;
   /** Active Docker sandbox rebuild-nudge prompt, if any. Fired from
    *  `maybeRebuildDockerImageForLaunch` right before a Docker-mode task's
    *  agent spawns. The resolve callback fires with the user's choice
@@ -431,6 +439,15 @@ interface UIState {
    *  false on cancel/dismiss. */
   askScratchSave: (taskId: string, tabId: string) => Promise<boolean>;
   resolveScratchSave: (saved: boolean) => void;
+  /** Open the "Save to workspace" export dialog for a scratchpad file. */
+  openScratchExport: (req: {
+    scope: "global" | "project" | "profile";
+    projectId?: string;
+    scratchPath: string;
+    taskId: string;
+    defaultRel?: string;
+  }) => void;
+  closeScratchExport: () => void;
   /** Open the Docker sandbox rebuild-nudge prompt. Resolves "rebuild" or
    *  "skip" once the user answers (DockerRebuildPromptDialog). */
   /** "always" = rebuild now AND stop asking (persists docker_rebuild_auto). */
@@ -551,6 +568,7 @@ export const useUI = create<UIState>((set, get) => ({
   terminalDrop: null,
   scratchClose: null,
   scratchSave: null,
+  scratchExport: null,
   dockerRebuildPrompt: null,
   pendingPtyRestarts: new Set<string>(),
   taskFilters: {},
@@ -712,6 +730,8 @@ export const useUI = create<UIState>((set, get) => ({
     d?.resolve(saved);
     set({ scratchSave: null });
   },
+  openScratchExport: (req) => set({ scratchExport: req }),
+  closeScratchExport: () => set({ scratchExport: null }),
   askDockerRebuild: (taskName, lastBuiltDate) =>
     new Promise(resolve => set({ dockerRebuildPrompt: { taskName, lastBuiltDate, resolve } })),
   resolveDockerRebuildPrompt: (choice) => {

@@ -17,7 +17,7 @@ import { basicSetup } from "codemirror";
 import { search } from "@codemirror/search";
 import { lintGutter, setDiagnostics } from "@codemirror/lint";
 import { indentUnit } from "@codemirror/language";
-import { taskFileRead, fileReadExternal, taskFileWrite, scratchRead, scratchWrite, scratchSetMeta, revealPath } from "@/lib/ipc";
+import { taskFileRead, fileReadExternal, taskFileWrite, scratchRead, scratchWrite, scratchSetMeta, revealPath, scratchFileRead, scratchFileWrite } from "@/lib/ipc";
 import { langForId, langForPath } from "@/lib/languageExts";
 import { PLAIN_TEXT, effectiveLanguageId, normalizeLanguageId } from "@/lib/languages";
 import { detectSyntaxFromContent } from "@/lib/detectSyntax";
@@ -34,6 +34,7 @@ import { reviewCommentsExtension, dispatchSelectionComment } from "./reviewComme
 import { inlineBlameExtension, invalidateBlame, refreshBlame, markBlameStale } from "./inlineBlameExt";
 import { bindingMatches } from "@/lib/shortcuts";
 import { padDiskGen, padDiskSettled, registerLivePad, trackPadDiskWrite } from "@/lib/scratchLive";
+import { scratchTargetId } from "@/lib/scratchTabs";
 import { useApp } from "@/store/app";
 import { useUI } from "@/store/ui";
 import { usePrefs, resolveTheme } from "@/store/prefs";
@@ -315,19 +316,23 @@ export function EditorPane({ task, tab, active, onContent }: {
         // A pad's file can be written while this editor loads it (see
         // lib/scratchLive): wait out writes already in flight, and note the
         // generation so one that starts during the load is caught below.
-        const pad = tab.type === "scratch" ? [task.id, tab.scratchId] as const : null;
+        const isScratchTree = tab.type === "scratch" && !!tab.path;
+        const scratchTarget = tab.type === "scratch" ? scratchTargetId(tab, task.id) : task.id;
+        const pad = (tab.type === "scratch" && !tab.path) ? [scratchTarget, tab.scratchId] as const : null;
         if (pad) await padDiskSettled(...pad);
         let padGen = pad ? padDiskGen(...pad) : 0;
         const [loaded, byPath] = await Promise.all([
-          tab.type === "scratch"
-            ? scratchRead(task.id, tab.scratchId)
-            // An out-of-task file has no task-relative form, so it cannot go
-            // through the contained read (GH #240).
-            : tab.type === "external"
-              ? fileReadExternal(tab.path)
-              : taskFileRead(task.id, tab.path),
-          (tab.type === "edit" || tab.type === "external") && !tab.syntax
-            ? langForPath(tab.path) : Promise.resolve(null),
+          isScratchTree
+            ? scratchFileRead(tab.scope ?? "global", tab.projectId, tab.path!)
+            : tab.type === "scratch"
+              ? scratchRead(scratchTarget, tab.scratchId)
+              // An out-of-task file has no task-relative form, so it cannot go
+              // through the contained read (GH #240).
+              : tab.type === "external"
+                ? fileReadExternal(tab.path)
+                : taskFileRead(task.id, tab.path),
+          (tab.type === "edit" || tab.type === "external" || isScratchTree) && !tab.syntax
+            ? langForPath(tab.path!) : Promise.resolve(null),
         ]);
         if (!alive || !hostRef.current) return;
         let content = loaded;
@@ -366,7 +371,7 @@ export function EditorPane({ task, tab, active, onContent }: {
           dirtyRef.current = true;
           useApp.getState().patchTab(task.id, tab.id, { dirty: true });
         };
-        if (tab.type === "scratch") dirtyRef.current = true;
+        if (tab.type === "scratch" && !tab.path) dirtyRef.current = true;
         // ── scratchpad crash safety (GH #244) ──────────────────────────
         // The buffer write and the title derivation both ride the TYPING
         // path, so both are debounced together and both bail when their
@@ -374,11 +379,11 @@ export function EditorPane({ task, tab, active, onContent }: {
         // "saving": the dirty dot stays on, because nothing has been written
         // anywhere the user chose.
         const flushScratch = (v: EditorView) => {
-          if (tab.type !== "scratch") return;
+          if (tab.type !== "scratch" || tab.path) return;
           const text = v.state.doc.toString();
           if (text !== lastFlushedRef.current) {
             lastFlushedRef.current = text;
-            trackPadDiskWrite(task.id, tab.scratchId, scratchWrite(task.id, tab.scratchId, text)).catch(() => {});
+            trackPadDiskWrite(scratchTarget, tab.scratchId, scratchWrite(scratchTarget, tab.scratchId, text)).catch(() => {});
           }
           // Re-sniff the syntax as the buffer fills. An edit tab resolves
           // this once at mount because its PATH answers, but a pad is always
@@ -404,7 +409,7 @@ export function EditorPane({ task, tab, active, onContent }: {
           }
           lastTitleRef.current = derived;
           useApp.getState().patchTab(task.id, tab.id, { title: derived });
-          scratchSetMeta(task.id, tab.scratchId, { title: derived }).catch(() => {});
+          scratchSetMeta(scratchTarget, tab.scratchId, { title: derived }).catch(() => {});
         };
         const scheduleScratchFlush = (v: EditorView) => {
           if (flushTimerRef.current !== null) window.clearTimeout(flushTimerRef.current);
@@ -431,6 +436,21 @@ export function EditorPane({ task, tab, active, onContent }: {
         // is the only path that clears `dirty`. Returns true so
         // CodeMirror treats the key as handled and preventDefault's it.
         const saveDoc = (v: EditorView): boolean => {
+          if (tab.type === "scratch" && tab.path) {
+            const scope = tab.scope ?? "global";
+            const name = tab.path.split("/").pop() || tab.path;
+            const text = v.state.doc.toString();
+            scratchFileWrite(scope, tab.projectId, tab.path, text)
+              .then(() => {
+                dirtyRef.current = false;
+                useApp.getState().patchTab(task.id, tab.id, { dirty: false });
+                useUI.getState().pushToast(t("editor.savedToast", { name }), "success");
+              })
+              .catch((e) => {
+                useUI.getState().pushToast(String(e), "error");
+              });
+            return true;
+          }
           // A pad has nowhere to save TO yet. ⌘S opens the promote picker
           // instead of writing to the scratch store: quietly filing the note
           // under `<data_dir>/scratch/` would report success and put it
@@ -574,11 +594,11 @@ export function EditorPane({ task, tab, active, onContent }: {
         });
         viewRef.current = view;
         elog("view created");
-        if (tab.type === "scratch") {
+        if (tab.type === "scratch" && !tab.path) {
           // An agent's `termic scratchpad write` lands IN this buffer: the human sees
           // it at once, Cmd+Z takes it back, and the immediate flush makes the
           // file agree with the window.
-          unregisterPadRef.current = registerLivePad(task.id, tab.scratchId, {
+          unregisterPadRef.current = registerLivePad(scratchTarget, tab.scratchId, {
             text: () => view.state.doc.toString(),
             write: (text, append) => {
               const len = view.state.doc.length;
@@ -642,7 +662,7 @@ export function EditorPane({ task, tab, active, onContent }: {
         // set; seed the derivation state so a RESTORED pad whose first line
         // has not changed does not write an identical title back on the first
         // keystroke.
-        if (tab.type === "scratch") lastTitleRef.current = deriveScratchTitle(content);
+        if (tab.type === "scratch" && !tab.path) lastTitleRef.current = deriveScratchTitle(content);
         if (tab.type === "edit" && tab.revealAt) {
           revealLine(view, tab.revealAt.line, tab.revealAt.col);
           useApp.getState().consumeReveal(task.id, tab.id);

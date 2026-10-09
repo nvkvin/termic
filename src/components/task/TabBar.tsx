@@ -9,9 +9,9 @@ import { useTabStripDrag } from "./useTabStripDrag";
 import { Button } from "@/components/ui/Button";
 import { DropdownRoot, DropdownTrigger, DropdownMenu } from "@/components/ui/Dropdown";
 import { NewTabMenuItems } from "./NewTabMenuItems";
-import { newScratchTab } from "@/lib/scratchTabs";
+import { newScratchTab, openOrCreateScopedScratchTab } from "@/lib/scratchTabs";
 import { CliIcon, CLI_BRAND_COLOR, CLI_LABEL, resolveIconId } from "@/icons/cli";
-import { Plus, X, GitCompare, FileText, SquareSplitVertical, SquareSplitHorizontal, TerminalSquare, Bell, Megaphone, Pin, Repeat, RotateCw, Square, Play, AlertTriangle } from "lucide-react";
+import { Plus, X, GitCompare, FileText, NotepadText, SquareSplitVertical, SquareSplitHorizontal, TerminalSquare, Bell, Megaphone, Pin, Repeat, RotateCw, Square, Play, AlertTriangle } from "lucide-react";
 import { Spinner } from "@/components/ui/Spinner";
 import { ptyKill } from "@/lib/ipc";
 import { usePrefs } from "@/store/prefs";
@@ -247,7 +247,13 @@ export function TabBar({ task }: { task: Task }) {
               taskId={task.id}
               onSpawnCli={spawnTab}
               onSpawnShell={spawnShellTab}
-              onScratchpad={() => { setOpen(false); void newScratchTab(task.id); }}
+              onScratchpad={(scope) => {
+                setOpen(false);
+                void newScratchTab(task.id, {
+                  scope: scope === "global" || scope === "profile" || scope === "project" ? scope : "task",
+                  projectId: scope === "project" ? task.project_id : undefined,
+                });
+              }}
               onResume={resumeAndFocus}
               onMore={() => { setOpen(false); setView("history", { projectId: task.project_id }); }}
             />
@@ -500,11 +506,12 @@ export function TabPill({ task, tab, active, paneFocused, compact, onSelect, onC
     >
       {/* Work-state badge moved to the trailing slot — see below. */}
       {/* Icon slot: Terminals get CLI brand icons, Edit/Diff tabs get dynamic Catppuccin file icons if path is available, else fallback / none */}
-      {(tab.type === "terminal" || fileIcon || tab.type === "diff") && (
+      {(tab.type === "terminal" || fileIcon || tab.type === "diff" || tab.type === "scratch") && (
         <span className={cn("shrink-0 flex items-center justify-center", color)}>
           {tab.type === "terminal" && <CliIcon cli={iconId} className="h-4 w-4" />}
           {(tab.type === "edit" || tab.type === "dir" || tab.type === "external") && fileIcon && <img src={fileIcon} alt="" className="h-4 w-4 shrink-0 file-icon" />}
           {tab.type === "diff" && (fileIcon ? <img src={fileIcon} alt="" className="h-4 w-4 shrink-0 file-icon" /> : <GitCompare className="h-4 w-4" />)}
+          {tab.type === "scratch" && <NotepadText className="h-3.5 w-3.5" />}
         </span>
       )}
       {/* Running message queue (ralph loop) — subtle accent marker. */}
@@ -544,13 +551,29 @@ export function TabPill({ task, tab, active, paneFocused, compact, onSelect, onC
         // be reached by a pointer: you hover the mark and get "Close tab". The
         // name is the one part of the pill nothing covers.
         <span
-          className={cn("min-w-0 flex-1 truncate", tab.preview && "italic")}
+          className={cn("min-w-0 flex-1 truncate flex items-center gap-1", tab.preview && "italic")}
           title={[
+            tab.type === "scratch" && tab.scope === "global"
+              ? "[Global]"
+              : tab.type === "scratch" && tab.scope === "profile"
+              ? "[Profile]"
+              : tab.type === "scratch" && tab.scope === "project"
+              ? "[Project]"
+              : "",
             tab.liveTitle && !tab.customTitle ? tab.liveTitle : "",
             delegatedText,
           ].filter(Boolean).join("\n") || undefined}
         >
-          {visibleTitle}
+          {tab.type === "scratch" && tab.scope === "global" && (
+            <span className="shrink-0 text-[10px] font-semibold text-[var(--color-accent)] opacity-80">[G]</span>
+          )}
+          {tab.type === "scratch" && tab.scope === "profile" && (
+            <span className="shrink-0 text-[10px] font-semibold text-[var(--color-accent)] opacity-80">[Pr]</span>
+          )}
+          {tab.type === "scratch" && tab.scope === "project" && (
+            <span className="shrink-0 text-[10px] font-semibold text-[var(--color-accent)] opacity-80">[P]</span>
+          )}
+          <span className="truncate">{visibleTitle}</span>
         </span>
       )}
       {/* Run tabs (GH #54): inline run controls, always visible — the pill IS

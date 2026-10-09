@@ -140,6 +140,7 @@ Decided while building, not by the questions above:
 - **A profile created by hand starts unlinked.** `profile_create`
   seeded the new profile's settings from the root's, sync binding
   included, which pointed two profiles at one folder.
+- **Scratchpads sync.** Global scratchpad (`scratch/`) syncs machine-wide directly at the repository root alongside custom themes. Profile scratchpads (`profiles/<sync-id>/scratch/`) and project scratchpads (`profiles/<sync-id>/scratch/projects/<project-sync-id>/`) sync per profile alongside their respective project configs, mapping project sync IDs to local IDs. Untitled scratchpad indexes merge non-destructively so active local notes are preserved.
 - **Not built:** the public-repo warning through `gh` / `glab`, and
   creating the repo from termic.
 - **Known limit:** git merges by line, and sorted keys put related
