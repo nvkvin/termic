@@ -179,9 +179,7 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     hint: `Open a new pane below the focused pane (horizontal divider). Also: ${kbd("⇧⌘D")} by default.`,
     defaultBinding: B("d", { cmd: true, shift: true }) },
   { id: "toggle-terminal", group: "Terminal", label: "Toggle terminal panel",
-    hint: IS_LINUX
-      ? "Show + focus the bottom split, or hide it and return to the agent. From inside a terminal use Super+J: Ctrl+J there belongs to the shell."
-      : "Show + focus the bottom split, or hide it and return to the agent",
+    hint: "Show + focus the bottom split, or hide it and return to the agent",
     defaultBinding: B("j", { cmd: true }) },
   // Copy / paste are LINUX/WINDOWS ONLY and handled locally in the terminal
   // panes (TerminalPane / AuxTerminal `attachCustomKeyEventHandler`), gated to
@@ -433,6 +431,34 @@ export function eventCmd(e: KeyboardEvent): boolean {
   return e.metaKey || e.ctrlKey || superIsHeld();
 }
 
+const TERMINAL_OWN: ReadonlySet<ShortcutId> = new Set<ShortcutId>(["terminal-copy", "terminal-paste", "find-in-files"]);
+
+/** Off macOS: is this key one of the app's chords that a TERMINAL should let
+ *  go? The rule is the one the terminals always stated: Ctrl is the app's
+ *  Cmd there, plain Ctrl+letter belongs to the shell (Ctrl+P is readline's
+ *  previous line), and a chord that also carries Shift or Alt does not.
+ *
+ *  It used to be applied to four hand-picked shortcuts, so Ctrl+Alt+Left
+ *  (pane left), Ctrl+Alt+P (prompt palette) and every other Ctrl+Alt chord
+ *  went to the PTY as an escape sequence instead. That mattered more on
+ *  Linux than it looks: GNOME keeps Super+Alt+arrows for itself, so the
+ *  Super form of those is not there to fall back on.
+ *
+ *  Always false on macOS, where Cmd is its own key and the terminals pass a
+ *  short explicit list (`PASS_TO_APP`). */
+export function isAppChordInTerminal(e: KeyboardEvent, binds: Partial<BindingMap>): boolean {
+  if (IS_MAC) return false;
+  for (const d of SHORTCUT_DEFS) {
+    // The terminal's OWN: copy, paste, and Ctrl+Shift+F, which inside a
+    // terminal is that terminal's find. Their handlers sit around the call
+    // sites in no fixed order, so they are excluded here, not by position.
+    if (TERMINAL_OWN.has(d.id)) continue;
+    const b = binds[d.id];
+    if (b && b.cmd && (b.shift || b.alt) && bindingMatches(e, b)) return true;
+  }
+  return false;
+}
+
 /** Tab, including Shift+Tab on Linux. X gives Shift+Tab its own keysym
  *  (ISO_Left_Tab) and WebKitGTK reports it as `key: "Unidentified"`, so a
  *  check on `key` alone never saw ⌃⇧⇥ there. `code` is the physical key. */
@@ -582,11 +608,20 @@ export function keyGlyph(key: string): string {
 
 /** Ordered glyph chips for a binding, e.g. ["⌥","⌘","↑"] or ["⌘","1…9"].
  *  Modifier order matches the app's historic strings: ⌥, ⇧, ⌘, then key. */
-export function bindingGlyphs(b: Binding): string[] {
+export function bindingGlyphs(b: Binding, isMac: boolean = IS_MAC): string[] {
   const out: string[] = [];
-  if (b.alt) out.push("⌥");
-  if (b.shift) out.push("⇧");
-  if (b.cmd) out.push("⌘");
+  if (isMac) {
+    if (b.alt) out.push("⌥");
+    if (b.shift) out.push("⇧");
+    if (b.cmd) out.push("⌘");
+  } else {
+    // The same Ctrl, Alt, Shift order `bindingText` prints off macOS. The
+    // key chips are these glyphs drawn one per chip, and in the macOS order
+    // the Shortcuts page read "Shift Ctrl A" and "Alt Ctrl Up" on Linux.
+    if (b.cmd) out.push("⌘");
+    if (b.alt) out.push("⌥");
+    if (b.shift) out.push("⇧");
+  }
   out.push(keyGlyph(b.key));
   return out;
 }
@@ -595,7 +630,7 @@ export function bindingGlyphs(b: Binding): string[] {
  *  (`⌥⌘P`), the Windows / Linux convention elsewhere (`Ctrl+Alt+P`), where
  *  ⌘ and ⌥ are keys nobody has. */
 export function bindingText(b: Binding, isMac: boolean = IS_MAC): string {
-  if (isMac) return bindingGlyphs(b).join("");
+  if (isMac) return bindingGlyphs(b, true).join("");
   // Windows / Linux order: Ctrl, Alt, Shift, then the key (Microsoft's
   // style guide, and what VS Code and Windows Terminal print). The glyph
   // order above is the macOS one (⌥⇧⌘), which read "Shift+Ctrl+P".

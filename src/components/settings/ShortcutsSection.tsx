@@ -32,6 +32,7 @@ import {
 } from "@/lib/shortcuts";
 import { groupLabel } from "@/components/dialogs/ShortcutsHelpDialog";
 import type { CtrlTabMode, DoubleShiftMode } from "@/store/prefs";
+import { IS_LINUX } from "@/lib/platform";
 
 // Terminal copy/paste are native (⌘C / ⌘V) on macOS and only wired/rebindable
 // on Linux/Windows, so hide their rows from the macOS shortcuts list.
@@ -116,6 +117,14 @@ export function ShortcutsSection() {
           <p className="text-[12.5px] text-[var(--color-fg-faint)]">
             {t("shortcuts.sub")}
           </p>
+          {/* Linux only. Windows follows the same rule with the Windows key,
+              but which Win chords the shell keeps for itself there has not
+              been measured, so it is not promised on that page. */}
+          {IS_LINUX && (
+            <p data-testid="shortcuts-terminal-note" className="text-[12.5px] text-[var(--color-fg-dim)]">
+              {t("shortcuts.terminalNote", { key: "Super" })}
+            </p>
+          )}
         </div>
         <Button
           variant="ghost"

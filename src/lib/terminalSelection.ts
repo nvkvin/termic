@@ -8,6 +8,7 @@
 
 import type { Terminal } from "@xterm/xterm";
 import { usePrefs } from "@/store/prefs";
+import { writeClipboardText } from "@/lib/clipboard";
 
 /** Attach copy-on-select to a terminal. Returns a disposer for cleanup. */
 export function attachCopyOnSelect(term: Terminal, host: HTMLElement): () => void {
@@ -20,7 +21,7 @@ export function attachCopyOnSelect(term: Terminal, host: HTMLElement): () => voi
         if (!term.hasSelection()) return; // plain click clears selection: leave clipboard alone
         sel = term.getSelection();
       } catch { return; }
-      if (sel) navigator.clipboard.writeText(sel).catch(() => {});
+      if (sel) writeClipboardText(sel).catch(() => {});
     }, 0);
   };
   host.addEventListener("mouseup", onMouseUp);

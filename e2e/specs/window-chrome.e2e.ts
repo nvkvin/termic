@@ -4,19 +4,32 @@
 // platform asserts its own shape, so a change that leaks the buttons onto
 // macOS fails there too.
 //
-// Maximize and minimize are asked of the window MANAGER, and the Linux CI
-// display (Xvfb) has none, so those two cases run on Windows only. What Linux
-// can assert without one, it does: no frame, and the buttons in the corner.
+// Maximize and minimize are asked of the window MANAGER. The Linux CI display
+// (Xvfb) has none, so there those two cases are skipped; run the suite with one
+// on the display (`openbox &` inside the session is enough) and they run on
+// Linux too. What Linux can assert without one, it always does: no frame, and
+// the buttons in the corner.
 //
 // Close is not clicked: it would end the session every later spec runs in.
 // It is the same `close()` the Rust CloseRequested handler already covers.
 
+import { execFileSync } from "node:child_process";
 import net from "node:net";
 import path from "node:path";
 import { controlConnect, requireTermicApi, snap, waitForAppShell, waitVisible } from "../helpers";
 import { dataDir } from "../../wdio.conf.js";
 
 const isWindows = process.platform === "win32";
+/** Something is managing windows: always on Windows, on Linux only when the
+ *  X display has a window manager (EWMH's _NET_SUPPORTING_WM_CHECK). */
+const hasWindowManager = isWindows || (() => {
+  if (process.platform !== "linux" || !process.env.DISPLAY) return false;
+  try {
+    return /window id # 0x[0-9a-f]+/.test(
+      execFileSync("xprop", ["-root", "_NET_SUPPORTING_WM_CHECK"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }),
+    );
+  } catch { return false; }
+})();
 /** Platforms where the app draws its own caption buttons. */
 const drawsControls = isWindows || process.platform === "linux";
 
@@ -77,7 +90,7 @@ describe("window chrome", () => {
     await snap("window-controls.png");
   });
 
-  (isWindows ? it : it.skip)("maximize toggles, and the button says which way", async () => {
+  (hasWindowManager ? it : it.skip)("maximize toggles, and the button says which way", async () => {
     const was = await windowState("is_maximized");
     await clickControl("maximize");
     await browser.waitUntil(async () => (await windowState("is_maximized")) === !was, {
@@ -96,7 +109,7 @@ describe("window chrome", () => {
     });
   });
 
-  (isWindows ? it : it.skip)("minimize minimizes, and raise brings it back", async () => {
+  (hasWindowManager ? it : it.skip)("minimize minimizes, and raise brings it back", async () => {
     await clickControl("minimize");
     await browser.waitUntil(() => windowState("is_minimized"), {
       timeout: 5_000, timeoutMsg: "the minimize button did not minimize the window",

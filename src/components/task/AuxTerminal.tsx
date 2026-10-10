@@ -35,9 +35,10 @@ import { TerminalFindBar } from "@/components/task/TerminalFindBar";
 import { isTerminalCloseCombo, isTerminalFindCombo } from "@/lib/terminalFind";
 import { usePrefs, useResolvedThemeFull, currentTerminalStack, currentTerminalTheme, currentColorFgBg, currentMinimumContrastRatio } from "@/store/prefs";
 import { useApp } from "@/store/app";
-import { IS_MAC, bindingMatches, superIsHeld } from "@/lib/shortcuts";
+import { IS_MAC, bindingMatches, isAppChordInTerminal, superIsHeld } from "@/lib/shortcuts";
 import { IS_LINUX, IS_WINDOWS } from "@/lib/platform";
 import { isConsoleHostTitle } from "@/lib/terminalTitle";
+import { readClipboardText, writeClipboardText } from "@/lib/clipboard";
 
 // Theme is no longer a module-level constant - see TerminalPane for why.
 // `currentTerminalTheme()` picks the matching palette at mount; the
@@ -189,13 +190,6 @@ export function AuxTerminal({ taskId, tabId, taskPath, active, autoFocus, onExit
       if (e.type === "keydown" && (e.isComposing || e.keyCode === 229)) {
         return false;
       }
-      // Linux: Super is held, so this key is an app shortcut (Super+J) and
-      // not text. WebKitGTK reports the chord as a bare letter, which xterm
-      // would send to the PTY; returning false leaves it for useShortcuts.
-      // Keypress too, or the letter is typed after the shortcut fired.
-      if (superIsHeld() && (e.type === "keydown" || e.type === "keypress")) {
-        return false;
-      }
       // Linux/Windows terminal copy/paste. macOS keeps native ⌘C / ⌘V (this
       // whole block is skipped), so standard Mac behavior is untouched. Defaults
       // are Ctrl+Shift+C / Ctrl+Shift+V — the Shift keeps plain Ctrl+C as SIGINT
@@ -203,7 +197,7 @@ export function AuxTerminal({ taskId, tabId, taskPath, active, autoFocus, onExit
       if (!IS_MAC && e.type === "keydown") {
         const binds = usePrefs.getState().shortcuts;
         if (bindingMatches(e, binds["terminal-copy"]) && term.hasSelection()) {
-          navigator.clipboard.writeText(term.getSelection()).catch(() => {});
+          writeClipboardText(term.getSelection()).catch(() => {});
           e.preventDefault();
           e.stopPropagation();
           return false;
@@ -212,12 +206,25 @@ export function AuxTerminal({ taskId, tabId, taskPath, active, autoFocus, onExit
         const winPaste = IS_WINDOWS && e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey
           && (e.key === "v" || e.key === "V");
         if (winPaste || bindingMatches(e, binds["terminal-paste"])) {
-          navigator.clipboard.readText().then(t => term.paste(t)).catch(() => {});
+          readClipboardText().then(t => term.paste(t)).catch(() => {});
           e.preventDefault();
           e.stopPropagation();
           return false;
         }
       }
+      // Linux: Super is held, so this key is an app shortcut (Super+J) and
+      // not text. WebKitGTK reports the chord as a bare letter, which xterm
+      // would send to the PTY; returning false leaves it for useShortcuts.
+      // Keypress too, or the letter is typed after the shortcut fired.
+      // AFTER copy / paste above: those are the terminal's own, and
+      // Super+Shift+V has to paste here like Ctrl+Shift+V does.
+      if (superIsHeld() && (e.type === "keydown" || e.type === "keypress")) {
+        return false;
+      }
+      // Off macOS, a chord with Shift or Alt on it is the app's, not the
+      // shell's (isAppChordInTerminal). After copy / paste and find above,
+      // which are this terminal's own.
+      if (e.type === "keydown" && isAppChordInTerminal(e, usePrefs.getState().shortcuts)) return false;
       // Ctrl+Shift+W off macOS closes the tab; see isTerminalCloseCombo.
       if (e.type === "keydown" && isTerminalCloseCombo(e, IS_MAC)) return false;
       if (e.type === "keydown" && isTerminalFindCombo(e, IS_MAC)) {

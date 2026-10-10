@@ -28,7 +28,7 @@ import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
 import { isTerminalCli, visibleCliIds, workDoneCapable, defaultCliFirst } from "@/lib/agents";
 import { settingsLoad } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
-import { SEATBELT_AVAILABLE } from "@/lib/platform";
+import { IS_MAC, SEATBELT_AVAILABLE } from "@/lib/platform";
 import { mergeLists, projectYoloDefault, yoloForCreate } from "@/lib/projectSandboxDefault";
 import { SANDBOX_PRESETS, presetHint, presetLabel } from "@/lib/sandboxPresets";
 import { selectionToFields, type CadenceKind, type SandboxSelection } from "@/lib/types";
@@ -234,7 +234,7 @@ export function ScheduleDialog() {
       <div className="flex" data-testid="schedule-dialog">
       <div className="flex min-w-0 flex-1 flex-col gap-4">
         <p className="text-[12px] leading-snug text-[var(--color-fg-faint)]" data-testid="schedule-ceiling">
-          {tch("scheduled.ceiling")}
+          {IS_MAC ? tch("scheduled.ceiling") : tch("scheduled.ceilingSystem")}
           {profilesExist && <> {tch("scheduled.ceilingProfile")}</>}
         </p>
 

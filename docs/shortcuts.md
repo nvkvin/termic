@@ -45,12 +45,54 @@ and `e2e/specs/shortcuts-linux.e2e.ts` presses every binding that way:
   Shift's effect back out, and a recorded binding stores the key, not the
   character.
 
-The desktop takes some Super chords before any application sees them. GNOME's
-defaults: Super+L (lock), Super+D, Super+N, Super+P, Super+O, Super+V,
-Super+A, Super+S, Super+H, Super+M, Super+Tab and Super+1-9. Those Termic
-shortcuts need Ctrl (outside a terminal) or a rebind. Alt was considered as a
-second stand-in and rejected: inside a terminal Alt+letter belongs to the
-agent (Claude Code's Alt+T and Alt+P, readline's Alt+B / F / D).
+Settings → Shortcuts says so on Linux (`shortcuts.terminalNote`), and draws its
+key chips in the platform's order: `bindingGlyphs` emits Ctrl, Alt, Shift off
+macOS, the order `bindingText` already printed, where the chips used to read
+"Shift Ctrl A". Copy and paste in a terminal are the terminal's own (they are
+handled in its key handler, before the Super guard), so Super+Shift+V pastes
+like Ctrl+Shift+V does.
+
+**Off macOS a terminal gives the app every chord that carries Shift or Alt
+with Ctrl** (`isAppChordInTerminal`), and keeps plain Ctrl+letter for the
+shell. That was always the stated rule and used to be applied to four
+hand-picked shortcuts, so Ctrl+Alt+Left (pane left) or Ctrl+Alt+P (prompt
+palette) pressed in a terminal went to the PTY as an escape sequence. The
+terminal's own three are excluded: copy, paste, and Ctrl+Shift+F, which there
+is that terminal's find.
+
+**The desktop takes some chords before any application sees them**, and which
+ones is a fact about the desktop, read here from GNOME's own settings on
+Ubuntu 26.04 (`gsettings list-recursively | grep '<Super>'`), not from memory:
+
+- Super+1 to 9 and Super+0 (dock applications), Super+A, D, H, L (lock), M, N,
+  O, P, Q, S, V, Super+Tab, Super+Space, Super+arrows, Super+Page Up / Down.
+- Super+Alt+Up / Down and Super+Alt+Left / Right.
+- Ctrl+Alt+Up / Down (workspaces), Ctrl+Alt+T, Ctrl+Alt+Tab.
+
+What that costs Termic on that desktop:
+
+| Shortcut | Default | From inside a terminal |
+| --- | --- | --- |
+| Previous / next task | Ctrl+Alt+Up / Down | Nowhere: GNOME keeps both this and the Super form. Alt+Up / Down (sidebar row) does the same job outside a terminal; otherwise rebind |
+| Pane left / right | Ctrl+Alt+Left / Right | Ctrl+Alt+Left / Right (the Super form is GNOME's) |
+| Jump to tab 1 to 9 | Ctrl+1 to 9 | Not reachable: Super+digit is the dock's |
+| Focus main agent, split right, new task, file finder, task finder | Ctrl+L, D, N, P, O | Not reachable: the shell keeps the Ctrl form and GNOME the Super one |
+| Zoom reset | Ctrl+0 | Not reachable (Super+0 is the dock's) |
+| Everything else | | Super+key, or Ctrl+Shift / Ctrl+Alt+key |
+
+Those rows are a property of the default bindings on one desktop, not a bug in
+the matcher, and every one is rebindable in Settings → Shortcuts. Choosing
+Linux-specific defaults that avoid them is an open decision.
+
+A grabbed chord must not leave Super "held". Measured under a window manager
+that grabs Super+L and Super+Alt+Down (openbox with those two bound): the page
+sees Super go down, never sees the grabbed key, sees Super come up, and the
+next plain `j` is typed. Where the key-up is lost instead (the compositor
+takes the focus with it), losing focus clears the flag.
+
+Alt was considered as a second stand-in for Cmd and rejected: inside a
+terminal Alt+letter belongs to the agent (Claude Code's Alt+T and Alt+P,
+readline's Alt+B / F / D).
 
 ## Code navigation keys
 

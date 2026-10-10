@@ -1920,7 +1920,10 @@ fn bind_listener(preferred: Option<u16>, addr: IpAddr) -> Result<TcpListener, Bi
         // Never an OS-assigned port when one of ours is free: the OS hands
         // out the dynamic range, which is the one Windows later reserves
         // out from under us (see bind_failure).
+        // into_iter(): `find_map` takes `&mut self`, and calling it on the
+        // const itself mutates a temporary copy, which rustc warns about.
         None => AUTO_PORTS
+            .into_iter()
             .find_map(|p| TcpListener::bind((addr, p)).ok())
             .map_or_else(|| TcpListener::bind((addr, 0)).map_err(BindFailure::Io), Ok),
     }

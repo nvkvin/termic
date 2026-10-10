@@ -32,6 +32,7 @@ import { describeLastBuildDate } from "@/lib/dockerDailyRebuild";
 import { cn, cleanLines } from "@/lib/utils";
 import { formatDockerArgv } from "@/lib/dockerArgv";
 import { Loader2, CircleCheck, CircleAlert, ChevronDown, Lock, X, Container } from "lucide-react";
+import { SEATBELT_AVAILABLE } from "@/lib/platform";
 
 export function DockerSection() {
   const { t } = useTranslation("settings");
@@ -325,7 +326,7 @@ export function DockerSection() {
     <div className="flex flex-col gap-7">
       <SectionTitle title={t("rail.docker")} badge={t("shared.experimental")} />
       <p className="text-[12.5px] text-[var(--color-fg-dim)]">
-        {t("docker.intro")}
+        {SEATBELT_AVAILABLE ? t("docker.intro") : t("docker.introNoSeatbelt")}
       </p>
 
       {/* Always visible, not a <details>: the sandbox dialog tried collapsing
@@ -347,7 +348,7 @@ export function DockerSection() {
           {t("docker.fsBody")}
         </div>
         <div>
-          <b className="text-[var(--color-fg)]"><u>{t("docker.netLabel")}</u></b>{t("docker.netBody")}
+          <b className="text-[var(--color-fg)]"><u>{t("docker.netLabel")}</u></b>{SEATBELT_AVAILABLE ? t("docker.netBody") : t("docker.netBodyNoSeatbelt")}
         </div>
         <div>
           <b className="text-[var(--color-fg)]">{t("docker.loginsLabel")}</b>
@@ -372,7 +373,7 @@ export function DockerSection() {
             <div>
               <div className="text-[14px] font-medium">{t("docker.firstRun.title")}</div>
               <div className="mt-0.5 text-[12.5px] text-[var(--color-fg-dim)]">
-                {t("docker.firstRun.hint")}
+                {SEATBELT_AVAILABLE ? t("docker.firstRun.hint") : t("docker.firstRun.hintNoSeatbelt")}
               </div>
             </div>
             <div>

@@ -35,7 +35,8 @@ make dev            # vite HMR + Rust auto-rebuild
   the WebKitGTK dev packages (the one step that asks for sudo), Rust and Node.
   `WITH_E2E=1` adds what `make e2e` needs to run headless under Xvfb.
   `make install` and `make beta` build an AppImage and put it in
-  `~/Applications` (`scripts/install-app-linux.sh`).
+  `~/Applications` (`scripts/install-app-linux.sh`); `make reset` and
+  `make reset_dev` know the XDG paths (`scripts/reset-linux.sh`).
 - Rust toolchain ([rustup](https://rustup.rs/))
 - Node.js 20+
 

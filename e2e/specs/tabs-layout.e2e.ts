@@ -1242,6 +1242,20 @@ describe("tab context menu", () => {
     // true depends on the window width, and the suite pins no window size.
     expect(before).toBeGreaterThanOrEqual(looseBefore);
 
+    // s2 is a REAL shell, and a shell may set its own title when its first
+    // prompt appears: Ubuntu's stock ~/.bashrc does (PS1 carries an OSC 0 with
+    // user@host: dir). Written after one of the titles below, it replaced it
+    // and "live title never became y" failed about one run in three on such a
+    // machine. Let the shell say its piece first: the title has to hold still
+    // across several reads before this starts writing its own.
+    let settled = 0, last: string | null | undefined;
+    await browser.waitUntil(async () => {
+      const now = await tabLiveTitle(s2);
+      settled = now === last ? settled + 1 : 0;
+      last = now;
+      return settled >= 5;
+    }, { timeout: 10_000, interval: 150, timeoutMsg: "the shell's own title never settled" });
+
     for (const title of ["x", "a considerably longer live title than before", "y"]) {
       await browser.execute((wid, id, t) => {
         window.__termic!.useApp.getState().setTabLiveTitle(wid, id, t);

@@ -322,6 +322,8 @@ export default {
     title: "Scheduled",
     newSchedule: "New schedule",
     ceiling: "Runs happen only while Termic is running (a window, or the menu bar). Missed runs are skipped.",
+    // Windows and Linux have a system tray, not a menu bar.
+    ceilingSystem: "Runs happen only while Termic is running (a window, or the system tray). Missed runs are skipped.",
     ceilingProfile: "A schedule in a profile runs only while that profile's window is open.",
     empty: "No schedules yet.",
     emptyHint: "A schedule runs an agent in a project on a cadence, like a morning triage or a daily dashboard check. Each run writes a report you can read here.",

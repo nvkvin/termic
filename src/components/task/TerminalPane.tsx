@@ -34,7 +34,7 @@ import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { SearchAddon } from "@xterm/addon-search";
 import { loadTerminalRenderer, awaitTerminalFonts } from "@/lib/terminalRenderer";
 import { resyncViewportAfterReveal } from "@/lib/xtermViewportSync";
-import { IS_MAC, bindingMatches, superIsHeld, type ShortcutId } from "@/lib/shortcuts";
+import { IS_MAC, bindingMatches, isAppChordInTerminal, superIsHeld, type ShortcutId } from "@/lib/shortcuts";
 import { registerTerminalDropTarget } from "@/lib/terminalDrop";
 import { HOOK_OSC_TITLE, HOOK_OSC_READY_BODY, HOOK_OSC_SESSION_PREFIX, HOOK_OSC_WORKING_BODY, HOOK_OSC_DONE_BODY, HOOK_OSC_DELEGATED_PREFIX, hookOscSessionId, sessionHolder } from "@/lib/agentHooks";
 import { parseDelegatedBody, delegatedVerdict, isAgentOwned, delegatedChipText, DELEGATED_DETACHED_GRACE_MS, type DelegatedWork } from "@/lib/delegatedWork";
@@ -72,6 +72,7 @@ import { MessageQueueButton } from "./MessageQueueButton";
 import { ReviewCommentsBar } from "./ReviewCommentsBar";
 import { IS_LINUX, IS_WINDOWS } from "@/lib/platform";
 import { isConsoleHostTitle } from "@/lib/terminalTitle";
+import { readClipboardText, writeClipboardText } from "@/lib/clipboard";
 
 interface Props { task: Task; tab: TerminalTab; active: boolean; }
 
@@ -1391,13 +1392,6 @@ const captureArmedRef = useRef(false);
       if (e.type === "keydown" && (e.isComposing || e.keyCode === 229)) {
         return false;
       }
-      // Linux: Super is held, so this key is an app shortcut (Super+J) and
-      // not text. WebKitGTK reports the chord as a bare letter, which xterm
-      // would send to the PTY; returning false leaves it for useShortcuts.
-      // Keypress too, or the letter is typed after the shortcut fired.
-      if (superIsHeld() && (e.type === "keydown" || e.type === "keypress")) {
-        return false;
-      }
       // Open find in terminal (TerminalFindBar). See isTerminalFindCombo.
       // BEFORE the pass-through below: off macOS the combo is Ctrl+Shift+F,
       // which is also find-in-files (⇧⌘F with Ctrl for Cmd), and inside a
@@ -1422,6 +1416,9 @@ const captureArmedRef = useRef(false);
         })) {
           return false; // let the global handler take it (file finder, find-in-files, …)
         }
+        // The same rule for EVERY shortcut, not only the four above: a chord
+        // with Shift or Alt on it is the app's (isAppChordInTerminal).
+        if (isAppChordInTerminal(e, binds)) return false;
       }
       // ctrl+V inside a DOCKER task: attach the clipboard image, the way the
       // agent would if it could reach the pasteboard.
@@ -1455,7 +1452,7 @@ const captureArmedRef = useRef(false);
             // the keystroke it was going to get anyway and let it answer.
             // On Windows Ctrl+V is paste (below), so paste the text instead.
             if (IS_WINDOWS) {
-              navigator.clipboard.readText().then(t => term.paste(t)).catch(() => {});
+              readClipboardText().then(t => term.paste(t)).catch(() => {});
               return;
             }
             const pid = ptyRef.current;
@@ -1472,7 +1469,7 @@ const captureArmedRef = useRef(false);
         IS_WINDOWS && e.type === "keydown" && e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey
         && (e.key === "v" || e.key === "V")
       ) {
-        navigator.clipboard.readText().then(t => term.paste(t)).catch(() => {});
+        readClipboardText().then(t => term.paste(t)).catch(() => {});
         e.preventDefault();
         e.stopPropagation();
         return false;
@@ -1487,17 +1484,26 @@ const captureArmedRef = useRef(false);
         // Copy only when there's a selection; otherwise fall through so the
         // combo isn't swallowed.
         if (bindingMatches(e, binds["terminal-copy"]) && term.hasSelection()) {
-          navigator.clipboard.writeText(term.getSelection()).catch(() => {});
+          writeClipboardText(term.getSelection()).catch(() => {});
           e.preventDefault();
           e.stopPropagation();
           return false;
         }
         if (bindingMatches(e, binds["terminal-paste"])) {
-          navigator.clipboard.readText().then(t => term.paste(t)).catch(() => {});
+          readClipboardText().then(t => term.paste(t)).catch(() => {});
           e.preventDefault();
           e.stopPropagation();
           return false;
         }
+      }
+      // Linux: Super is held, so this key is an app shortcut (Super+J) and
+      // not text. WebKitGTK reports the chord as a bare letter, which xterm
+      // would send to the PTY; returning false leaves it for useShortcuts.
+      // Keypress too, or the letter is typed after the shortcut fired.
+      // AFTER copy / paste above: those are the terminal's own, and
+      // Super+Shift+V has to paste here like Ctrl+Shift+V does.
+      if (superIsHeld() && (e.type === "keydown" || e.type === "keypress")) {
+        return false;
       }
       const isEnter = e.key === "Enter" || e.code === "Enter" || e.code === "NumpadEnter";
       if (e.type === "keydown" && e.shiftKey && isEnter && !e.altKey && !e.ctrlKey && !e.metaKey) {
@@ -4881,7 +4887,7 @@ function CopyButton({ value, title, className }: { value: string; title: string;
       type="button"
       onClick={(e) => {
         e.stopPropagation();
-        navigator.clipboard.writeText(value).then(() => {
+        writeClipboardText(value).then(() => {
           setCopied(true);
           setTimeout(() => setCopied(false), 1200);
         }).catch(() => {});

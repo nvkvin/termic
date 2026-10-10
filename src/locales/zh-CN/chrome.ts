@@ -321,6 +321,7 @@ export default {
     title: "定时任务",
     newSchedule: "新建定时任务",
     ceiling: "只有在 Termic 运行时（窗口或菜单栏）才会执行。错过的执行会被跳过。",
+    ceilingSystem: "只有在 Termic 运行时（窗口或系统托盘）才会执行。错过的执行会被跳过。",
     ceilingProfile: "配置文件中的定时任务只在该配置文件的窗口打开时执行。",
     empty: "还没有定时任务。",
     emptyHint: "定时任务按周期在项目中运行智能体，例如每天早上整理问题或检查仪表盘。每次执行都会写一份报告，可以在这里查看。",

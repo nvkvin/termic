@@ -39,7 +39,7 @@ export default {
   general: {
     language: {
       title: "Language",
-      hint: "Interface language. System default follows the macOS language: Chinese shows Simplified Chinese, anything else shows English.",
+      hint: "Interface language. System default follows your system language: Chinese shows Simplified Chinese, anything else shows English.",
       system: "System default",
       en: "English",
       zhCN: "简体中文",
@@ -483,6 +483,8 @@ export default {
 
   shortcuts: {
     sub: "Click a shortcut to rebind it. Press Esc while recording to cancel.",
+    // Linux only: {{key}} is "Super".
+    terminalNote: "Inside a terminal, Ctrl+letter belongs to the shell. Hold {{key}} instead of Ctrl there: {{key}}+J toggles the terminal panel, {{key}}+T opens a tab. Chords with Shift or Alt work with Ctrl too. If one does nothing, your desktop keeps it for itself ({{key}}+L locks the screen on GNOME): rebind it here.",
     resetAll: "Reset all",
     conflict: "Conflicts with another shortcut",
     reservedTab: "Tab belongs to the recently-used-tabs gesture.",
@@ -835,15 +837,19 @@ export default {
 
   docker: {
     intro: "The same agents you configure in Settings → Agents & Terminals, run inside a container instead of under Seatbelt. One image serves all of them; pick Docker per task from its sandbox dialog.",
+    // Off macOS there is no Seatbelt to compare with (SEATBELT_AVAILABLE).
+    introNoSeatbelt: "The same agents you configure in Settings → Agents & Terminals, run inside a container instead of directly on this computer. One image serves all of them; pick Docker per task from its sandbox dialog.",
     fsLabel: "Filesystem: ",
-    fsBody: "only what termic mounts: the worktree, its git metadata, and your git name and email so commits you make in there are yours. The rest of your Mac is invisible.",
+    fsBody: "only what termic mounts: the worktree, its git metadata, and your git name and email so commits you make in there are yours. Nothing else on this computer is visible.",
     netLabel: "Network: unrestricted for now",
     netBody: ", unlike Seatbelt's host allowlist. An allow-list for Docker mode is planned.",
+    netBodyNoSeatbelt: ". An allow-list for Docker mode is planned.",
     loginsLabel: "Logins: ",
     loginsBody: "kept per agent, so you log in once rather than once per task. Never your real <1>~/.claude</1>.",
     firstRun: {
       title: "Docker sandbox",
       hint: "Runs agents inside a container instead of the macOS seatbelt. Needs a one-time image build, a few minutes, and Docker running. Existing tasks are unaffected: you pick Docker per task afterwards.",
+      hintNoSeatbelt: "Runs agents inside a container. Needs a one-time image build, a few minutes, and Docker running. Existing tasks are unaffected: you pick Docker per task afterwards.",
       building: "Building the image…",
       enableAndBuild: "Enable Docker sandboxing and build image",
       notInstalled: "Docker isn't installed. Install Docker Desktop, then come back.",

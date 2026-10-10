@@ -34,7 +34,7 @@ import { cn } from "@/lib/utils";
 import { getAllLeaves, computeLeafBounds, focusedTabId } from "@/lib/splitTree";
 import type { PaneLeaf, Rect } from "@/lib/splitTree";
 import { openPath, revealPath, scratchPathReveal } from "@/lib/ipc";
-import { copyToClipboard } from "@/lib/clipboard";
+import { copyToClipboard, writeClipboardText } from "@/lib/clipboard";
 import { absUnder } from "@/lib/osPath";
 import { fileIconUrl } from "@/lib/explorer/iconResolver";
 import { ResizeHandle } from "@/components/ui/ResizeHandle";
@@ -219,7 +219,7 @@ function EditorBreadcrumb({ task }: { task: Task }) {
   const folderAbs = absUnder(task.path, dir);
   const iconBtn = "shrink-0 rounded p-1 text-[var(--color-fg-faint)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]";
   const copyPath = () => {
-    navigator.clipboard.writeText(path)
+    writeClipboardText(path)
       .then(() => { setCopied(true); setTimeout(() => setCopied(false), 1200); })
       .catch(() => {});
   };

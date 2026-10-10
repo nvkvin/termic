@@ -37,6 +37,7 @@ import { GitPanel } from "./GitPanel";
 import { ResizeHandle } from "@/components/ui/ResizeHandle";
 import { useScriptRuns, useRunState } from "@/store/scriptRuns";
 import { kbd } from "@/lib/platform";
+import { writeClipboardText } from "@/lib/clipboard";
 
 /** Stable key for a composition member's `.termic.yaml` config maps.
  *  Inline members have no project id — key by their repo path (falling
@@ -833,7 +834,7 @@ function CopyUrlButton({ url }: { url: string }) {
   const [copied, setCopied] = useState(false);
   const doCopy = async () => {
     try {
-      await navigator.clipboard.writeText(url);
+      await writeClipboardText(url);
       setCopied(true);
       setTimeout(() => setCopied(false), 1200);
     } catch (err) {

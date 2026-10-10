@@ -49,6 +49,7 @@ import { useApp } from "@/store/app";
 import { usePrefs } from "@/store/prefs";
 import { useAgentContext, contextKey, type ContextEntry } from "@/store/agentContext";
 import { contextLevel, formatTokens, CONTEXT_WARN_PERCENT, footerSources, footerNeedsHooks, type FooterSources } from "@/lib/agentContext";
+import { writeClipboardText } from "@/lib/clipboard";
 
 /** How long a pulled reading stands before the chip asks again.
  *
@@ -931,7 +932,7 @@ function BlockedChip({ owner, className }: { owner: StatusLineOwner; className?:
             <button
               type="button"
               onClick={() => {
-                void navigator.clipboard.writeText(statusLineAgentPrompt(owner))
+                void writeClipboardText(statusLineAgentPrompt(owner))
                   .then(() => { setCopied(true); setTimeout(() => setCopied(false), 1600); })
                   .catch(() => {});
               }}

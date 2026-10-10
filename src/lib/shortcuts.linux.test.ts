@@ -1,7 +1,8 @@
 // @vitest-environment happy-dom
 import { describe, expect, it } from "vitest";
 import {
-  bindingFromEvent, bindingMatches, eventKeyToken, isTabKey, setSuperHeldForTests, superIsHeld,
+  DEFAULT_BINDINGS, bindingFromEvent, bindingMatches, eventKeyToken, isAppChordInTerminal, isTabKey,
+  setSuperHeldForTests, superIsHeld,
 } from "./shortcuts";
 import { IS_LINUX } from "./platform";
 
@@ -69,5 +70,43 @@ describe("Shift+Tab on Linux", () => {
     expect(eventKeyToken(shiftTab)).toBe("Tab");
     expect(isTabKey({ key: "Tab", code: "Tab" } as unknown as KeyboardEvent)).toBe(true);
     expect(isTabKey({ key: "Unidentified", code: "KeyQ" } as unknown as KeyboardEvent)).toBe(false);
+  });
+});
+
+describe("what a terminal hands to the app off macOS", () => {
+  const ev = (key: string, o: Partial<KeyboardEvent> = {}) => ({
+    key, code: "", metaKey: false, ctrlKey: true, shiftKey: false, altKey: false,
+    getModifierState: () => false, ...o,
+  }) as unknown as KeyboardEvent;
+  const app = (e: KeyboardEvent) => isAppChordInTerminal(e, DEFAULT_BINDINGS);
+
+  it("keeps plain Ctrl+letter for the shell", () => {
+    // Line feed, clear screen, previous line, kill line: all readline's.
+    for (const k of ["j", "l", "p", "k", "d", "w", "t", "n", "o", "b"]) expect(app(ev(k))).toBe(false);
+  });
+
+  it("gives up every chord that also carries Shift or Alt", () => {
+    expect(app(ev("ArrowLeft", { altKey: true }))).toBe(true);   // pane left
+    expect(app(ev("ArrowDown", { altKey: true }))).toBe(true);   // next task
+    expect(app(ev("p", { altKey: true }))).toBe(true);           // prompt palette
+    expect(app(ev("b", { altKey: true }))).toBe(true);           // right sidebar
+    expect(app(ev("P", { shiftKey: true }))).toBe(true);         // command palette
+    expect(app(ev("}", { shiftKey: true }))).toBe(true);         // next tab
+  });
+
+  it("leaves the terminal its own copy, paste and find", () => {
+    expect(app(ev("C", { shiftKey: true }))).toBe(false);
+    expect(app(ev("V", { shiftKey: true }))).toBe(false);
+    expect(app(ev("F", { shiftKey: true }))).toBe(false);
+  });
+
+  it("does not take Alt+Arrow, which has no Cmd in it", () => {
+    // Word movement in every shell. sidebar-prev / sidebar-next are bound to
+    // it and fire outside a terminal only.
+    expect(app(ev("ArrowUp", { ctrlKey: false, altKey: true }))).toBe(false);
+  });
+
+  it("does not take an unbound Ctrl+Alt chord from a TUI", () => {
+    expect(app(ev("x", { altKey: true }))).toBe(false);
   });
 });

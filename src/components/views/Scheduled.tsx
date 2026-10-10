@@ -17,6 +17,7 @@ import { cadenceText, nextRun, outcomeText, slotText } from "@/lib/schedules/dis
 import { lastEntry } from "@/lib/schedules/history";
 import { reportFolder } from "@/lib/schedules/runSpec";
 import type { ScheduleRun, Task } from "@/lib/types";
+import { IS_MAC } from "@/lib/platform";
 
 export function ScheduledView() {
   const { t, i18n } = useTranslation("chrome");
@@ -47,7 +48,7 @@ export function ScheduledView() {
       <div className="min-h-0 flex-1 overflow-auto px-6 py-4" data-testid="scheduled-list">
         <div className="mx-auto max-w-3xl">
           <p className="mb-3 px-3 text-[12px] leading-snug text-[var(--color-fg-faint)]" data-testid="scheduled-ceiling">
-            {t("scheduled.ceiling")}
+            {IS_MAC ? t("scheduled.ceiling") : t("scheduled.ceilingSystem")}
             {profilesExist && <> {t("scheduled.ceilingProfile")}</>}
           </p>
           {parents.length === 0 ? (

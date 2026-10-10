@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { dataDir } from "../../wdio.conf.js";
@@ -219,15 +219,22 @@ describe("settings rail", () => {
     ["cli", "CLI & MCP", "Enable CLI"],
   ];
 
-  // The Linux AppImage's launcher entry. The e2e binary is never an AppImage
-  // (no $APPIMAGE), so the row must be ABSENT here, on every platform this
+  // The Linux AppImage's launcher entry. The e2e binary is normally NOT an
+  // AppImage (no $APPIMAGE), so the row must be ABSENT, on every platform this
   // suite runs on including the Linux job.
   //
   // That is the assertion worth having: the feature writes into the user's
   // ~/.local/share, and a row offering to do that on a build where it cannot
   // work is how someone ends up with a desktop entry pointing at nothing. It
   // is gated on the environment, not on the OS, and this is what pins that.
-  it("hides the desktop-entry row on a build that is not an AppImage", async () => {
+  //
+  // The suite CAN be pointed at a packaged e2e AppImage (TERMIC_E2E_BINARY,
+  // see docs/e2e-tests.md), and then the premise flips: the row must be there
+  // and must work. That is the second case, and the only place the feature
+  // is driven for real.
+  const packaged = (process.env.TERMIC_E2E_BINARY ?? "").endsWith(".AppImage");
+
+  (packaged ? it.skip : it)("hides the desktop-entry row on a build that is not an AppImage", async () => {
     await browser.execute(() => window.__termic!.useApp.getState().openSettings("general"));
     await waitForText("Repos directory");
     const state = await browser.execute(() => ({
@@ -240,6 +247,86 @@ describe("settings rail", () => {
     const st = await browser.execute(async () => await window.__termic!.invoke("desktop_integration_status"));
     expect((st as { available: boolean }).available).toBe(false);
     await browser.execute(() => window.__termic!.useApp.getState().closeSettings());
+  });
+
+  (packaged ? it : it.skip)("on an AppImage, adds the desktop entry and removes it again", async () => {
+    type Status = { available: boolean; integrated: boolean; appimage_path: string; desktop_path: string };
+    const status = () => browser.execute(
+      async () => await window.__termic!.invoke("desktop_integration_status"),
+    ) as unknown as Promise<Status>;
+    const TOGGLE = '[data-testid="desktop-entry-toggle"]';
+
+    await browser.execute(() => window.__termic!.useApp.getState().openSettings("general"));
+    await waitVisible(TOGGLE);
+    const before = await status();
+    expect(before.available).toBe(true);
+    expect(before.appimage_path).toBe(process.env.TERMIC_E2E_BINARY);
+    // The run's own XDG data home (wdio.conf.ts), never the developer's
+    // ~/.local/share: if this fails, do not click anything.
+    expect(before.desktop_path.startsWith(path.join(dataDir, "xdg-data"))).toBe(true);
+    expect(before.integrated).toBe(false);
+
+    await browser.execute((sel) => (document.querySelector(sel) as HTMLElement).click(), TOGGLE);
+    await browser.waitUntil(async () => (await status()).integrated, {
+      timeout: 15_000, timeoutMsg: "adding the desktop entry never took",
+    });
+    const entry = readFileSync(before.desktop_path, "utf8");
+    expect(entry).toContain(`Exec=${before.appimage_path} %u`);
+    expect(entry).toContain("MimeType=x-scheme-handler/termic;");
+    // What GNOME matches the window to; a mismatch here is the generic cog
+    // in the dock (docs/gotchas.md, the AppImage environment entry).
+    expect(entry).toContain("StartupWMClass=Termic");
+    expect(entry).toContain("X-AppImage-Integrate=false");
+    const icon = path.join(dataDir, "xdg-data", "icons/hicolor/256x256/apps", `${path.basename(before.desktop_path, ".desktop")}.png`);
+    expect(existsSync(icon)).toBe(true);
+    await snap("settings-desktop-entry-added.png");
+
+    await browser.execute((sel) => (document.querySelector(sel) as HTMLElement).click(), TOGGLE);
+    await browser.waitUntil(async () => !(await status()).integrated, {
+      timeout: 15_000, timeoutMsg: "removing the desktop entry never took",
+    });
+    expect(existsSync(before.desktop_path)).toBe(false);
+    expect(existsSync(icon)).toBe(false);
+    await browser.execute(() => window.__termic!.useApp.getState().closeSettings());
+  });
+
+  // The bug that started the Linux pass, pinned where it lives: an AppImage's
+  // own environment (LD_LIBRARY_PATH and friends, all pointing into its mount)
+  // reaching the agents it spawns. Read from /proc, which is what the agent
+  // really got, not what the app meant to give it.
+  (packaged ? it : it.skip)("on an AppImage, an agent gets the host's environment and a CLI outside the mount", async () => {
+    const id = await openTask("e2e-appimage-env");
+    let env: Record<string, string> | null = null;
+    await browser.waitUntil(() => {
+      for (const pid of readdirSync("/proc").filter(n => /^[0-9]+$/.test(n))) {
+        let raw: string;
+        try { raw = readFileSync(`/proc/${pid}/environ`, "utf8"); } catch { continue; }
+        if (!raw.includes(`TERMIC_TASK_ID=${id}`)) continue;
+        env = Object.fromEntries(raw.split("\0").filter(Boolean).map(kv => {
+          const i = kv.indexOf("=");
+          return [kv.slice(0, i), kv.slice(i + 1)];
+        }));
+        return true;
+      }
+      return false;
+    }, { timeout: 20_000, timeoutMsg: "no process carrying this task's id ever appeared" });
+    const e = env!;
+    // The app itself still has these (its WebKit helpers need them); a child
+    // must not. Any value under an AppImage mount is ours, whatever its name.
+    for (const k of ["LD_LIBRARY_PATH", "APPDIR", "APPIMAGE", "GTK_PATH", "GIO_EXTRA_MODULES", "PYTHONHOME", "GDK_BACKEND"]) {
+      expect(e[k]).toBeUndefined();
+    }
+    const leaked = Object.entries(e).filter(([, v]) => /\/\.mount_/.test(v)).map(([k]) => k);
+    expect(leaked).toEqual([]);
+    // Hooks write here, so it had better be a real terminal device.
+    expect(e.TERMIC_PTY).toMatch(/^\/dev\/pts\/[0-9]+$/);
+    // The mount's path changes every launch and dies with the app; the CLI an
+    // agent is handed must outlive both.
+    expect(e.TERMIC_CLI).toBe(path.join(dataDir, "bin", "termic-cli"));
+    expect(statSync(e.TERMIC_CLI).mode & 0o111).not.toBe(0);
+    const help = execSync(`"${e.TERMIC_CLI}" --version`, { encoding: "utf8", env: { ...process.env, LD_LIBRARY_PATH: "" } });
+    expect(help).toMatch(/[0-9]+\.[0-9]+\.[0-9]+/);
+    await archiveTask(id);
   });
 
   describe("choosing a language server", () => {

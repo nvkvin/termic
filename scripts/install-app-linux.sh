@@ -45,8 +45,10 @@ mkdir -p "$DEST_DIR"
 running_pids() {
   local p
   for p in /proc/[0-9]*; do
+    # Braces, so the redirect's own failure is silenced too: another user's
+    # process passes the -r test and is still refused at open().
     [ -r "$p/environ" ] || continue
-    if tr '\0' '\n' < "$p/environ" 2>/dev/null | grep -qxF "APPIMAGE=$DEST"; then
+    if { tr '\0' '\n' < "$p/environ"; } 2>/dev/null | grep -qxF "APPIMAGE=$DEST"; then
       echo "${p#/proc/}"
     fi
   done

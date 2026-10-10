@@ -5000,15 +5000,76 @@ pub fn cli_rpc_progress(id: String, payload: String) -> Result<(), String> {
 /// Where the bundled sidecar lives: next to the app binary
 /// (Contents/MacOS/termic-cli in a bundle, target/<profile>/termic-cli
 /// in dev, both placed by tauri's externalBin machinery).
+///
+/// A Linux AppImage is the exception, and gets a COPY at a stable path
+/// instead: see `appimage_cli_path`.
 pub(crate) fn bundled_cli_path() -> Result<PathBuf, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let dir = exe.parent().ok_or("app binary has no parent dir")?;
     let p = dir.join(format!("termic-cli{}", std::env::consts::EXE_SUFFIX));
-    if p.is_file() {
-        Ok(p)
-    } else {
-        Err(format!("the termic-cli binary was not found at {}", p.display()))
+    if !p.is_file() {
+        return Err(format!("the termic-cli binary was not found at {}", p.display()));
     }
+    Ok(appimage_cli_path(&p).unwrap_or(p))
+}
+
+/// Inside an AppImage the sidecar lives in the image's mount,
+/// `/tmp/.mount_TermicXXXXXX/usr/bin/termic-cli`, which exists only while
+/// the app runs and has a different name on every launch. A `termic` on PATH
+/// linked there was a dead link the moment the app quit ("No such file or
+/// directory" where "Termic is not running" was meant), and so was the
+/// `$TERMIC_CLI` an agent had been handed if it outlived the app.
+///
+/// So the sidecar is copied once per launch to `<data dir>/bin/termic-cli`
+/// and THAT is what gets linked and exported. It is self-contained (libc and
+/// libgcc only), so it runs fine outside the image. Keeping the basename
+/// `termic-cli` is deliberate: `replaceable` recognises our links by it.
+///
+/// `None` anywhere else, and on any failure: the bundled path still works
+/// for as long as this process lives, which is no worse than before.
+fn appimage_cli_path(bundled: &Path) -> Option<PathBuf> {
+    static STABLE: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    STABLE
+        .get_or_init(|| {
+            crate::linux_desktop::appimage_path()?;
+            let dir = crate::global_dir().ok()?.join("bin");
+            match copy_if_changed(bundled, &dir.join("termic-cli")) {
+                Ok(dst) => Some(dst),
+                Err(e) => {
+                    dlog(&format!("[cli] could not keep a copy of the sidecar outside the AppImage: {e}"));
+                    None
+                }
+            }
+        })
+        .clone()
+}
+
+/// Make `dst` a copy of `src`, touching nothing when it already is one.
+///
+/// Compared by content, not by size and time: `fs::copy` does not keep the
+/// modified time on Linux, so a stamp would say "changed" on every launch.
+/// Replaced by rename, because an agent parked in `termic wait` is executing
+/// the old file, which cannot be written to ("Text file busy") and can be
+/// renamed over.
+fn copy_if_changed(src: &Path, dst: &Path) -> std::io::Result<PathBuf> {
+    let want = std::fs::read(src)?;
+    if std::fs::read(dst).is_ok_and(|have| have == want) {
+        return Ok(dst.to_path_buf());
+    }
+    if let Some(dir) = dst.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = dst.with_extension("new");
+    std::fs::write(&tmp, &want)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
+    }
+    std::fs::rename(&tmp, dst).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })?;
+    Ok(dst.to_path_buf())
 }
 
 /// The command name to install on PATH. There is ONE release command,
@@ -5657,7 +5718,7 @@ fn install_at(name: &str, system: bool) -> Result<String, String> {
         if already || symlink_replacing(&src, &primary).is_ok() {
             return Ok(format!("installed at {}", primary.display()));
         }
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         if admin_symlink(&src, name).is_ok() {
             return Ok(format!("installed at {}", primary.display()));
         }
@@ -5689,6 +5750,39 @@ fn admin_symlink(src: &Path, name: &str) -> Result<(), String> {
         .map(|o| o.status.success())
         .map_err(|e| e.to_string())?;
     if ok { Ok(()) } else { Err("administrator prompt declined".into()) }
+}
+
+/// The Linux form of the same prompt: `pkexec`, polkit's graphical password
+/// dialog, which is what every desktop there uses for this.
+///
+/// Before this the button said "asks for your password" on Linux too and
+/// asked for nothing: there is no osascript, so the system install quietly
+/// became the per-user one.
+///
+/// `--disable-internal-agent` matters. With no polkit agent in the session
+/// (a bare window manager, ssh, a test display) pkexec otherwise falls back
+/// to prompting on the controlling terminal and waits there forever; with
+/// it, it fails at once and the caller falls back to the user directory.
+/// Never run by the e2e build, which must not raise a dialog on the desktop
+/// of whoever is running the suite.
+#[cfg(target_os = "linux")]
+fn admin_symlink(src: &Path, name: &str) -> Result<(), String> {
+    if cfg!(feature = "e2e") {
+        return Err("not prompting in the e2e build".into());
+    }
+    let dst = system_bin().join(name);
+    // No shell: the two paths are arguments, so nothing in them is parsed.
+    // `-n` is GNU's spelling of BSD's `-h` (do not follow an existing link).
+    let ok = crate::proc_ctl::command("pkexec")
+        .arg("--disable-internal-agent")
+        .args(["ln", "-sfn"])
+        .arg(src)
+        .arg(&dst)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map(|o| o.status.success())
+        .map_err(|e| e.to_string())?;
+    if ok { Ok(()) } else { Err("administrator prompt declined or unavailable".into()) }
 }
 
 /// Current install state for the Settings UI: where the CLI is installed
@@ -8455,6 +8549,41 @@ mod tests {
     }
 
     #[cfg(unix)] // unix paths / tools; the Windows behaviour differs by design
+    #[test]
+    fn the_appimage_sidecar_copy_is_made_once_and_refreshed_when_it_changes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("mount/usr/bin/termic-cli");
+        std::fs::create_dir_all(src.parent().unwrap()).unwrap();
+        std::fs::write(&src, b"v1").unwrap();
+        let dst = tmp.path().join("data/bin/termic-cli");
+
+        // First launch: the directory does not exist yet.
+        assert_eq!(copy_if_changed(&src, &dst).unwrap(), dst);
+        assert_eq!(std::fs::read(&dst).unwrap(), b"v1");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&dst).unwrap().permissions().mode();
+            assert_eq!(mode & 0o111, 0o111, "the copy must be executable: {mode:o}");
+        }
+
+        // Same content: left alone, down to the inode. An agent may be
+        // executing it, and a rewrite per launch would be churn for nothing.
+        #[cfg(unix)]
+        let before = { use std::os::unix::fs::MetadataExt; std::fs::metadata(&dst).unwrap().ino() };
+        copy_if_changed(&src, &dst).unwrap();
+        #[cfg(unix)]
+        { use std::os::unix::fs::MetadataExt; assert_eq!(std::fs::metadata(&dst).unwrap().ino(), before); }
+
+        // An updated app ships a different sidecar, same length or not.
+        std::fs::write(&src, b"v2").unwrap();
+        copy_if_changed(&src, &dst).unwrap();
+        assert_eq!(std::fs::read(&dst).unwrap(), b"v2");
+        assert!(!dst.with_extension("new").exists(), "no .new dropping left behind");
+        // And the link check that keeps `termic` on PATH still knows it is ours.
+        assert_eq!(dst.file_name().unwrap(), "termic-cli");
+    }
+
     #[test]
     fn symlink_atomic_replaces_without_a_gap() {
         let tmp = tempfile::tempdir().unwrap();

@@ -72,6 +72,36 @@ dbus-run-session -- xvfb-run -a -s "-screen 0 1440x900x24" npm run test:e2e
 On a Wayland desktop also pass `env -u WAYLAND_DISPLAY GDK_BACKEND=x11`, or
 GTK ignores the virtual display and opens every window on your real one.
 
+**Against a packaged AppImage.** `TERMIC_E2E_BINARY` can name an e2e AppImage
+instead of the bare binary, and the whole suite then drives the app in the form
+users run it, which is the only way to see an AppImage-only bug (the
+bundled-library environment reaching agents was one):
+
+```sh
+node scripts/tauri-env.mjs VITE_E2E=1 -- build --debug --features e2e --bundles appimage \
+  --config '{"bundle":{"createUpdaterArtifacts":false}}'
+TERMIC_E2E_BINARY=$PWD/src-tauri/target/debug/bundle/appimage/Termic_<version>_amd64.AppImage npm run test:e2e
+```
+
+It takes about twice as long. Three cases in `settings.e2e.ts` key off it: the
+desktop-entry row must be ABSENT on the bare binary, and on an AppImage it must
+add and remove a correct entry, and an agent's environment (read from `/proc`)
+must carry nothing from the image's mount.
+
+**With a window manager.** Xvfb alone has none, which is why maximize and
+minimize are skipped on the Linux CI job. Put one on the display and
+`window-chrome.e2e.ts` runs them on Linux too (it looks for EWMH's
+`_NET_SUPPORTING_WM_CHECK`), and the real-key spec is exercised with focus
+managed the way a desktop manages it:
+
+```sh
+dbus-run-session -- xvfb-run -a -s "-screen 0 1600x1000x24" \
+  sh -c 'openbox & sleep 1; npm run test:e2e'
+```
+
+Give openbox a config with an empty `<keyboard>` section, or its own default
+bindings (Super+D, Ctrl+Alt+arrows) take chords the spec is trying to press.
+
 The run gets its own `XDG_DATA_HOME` and `XDG_CACHE_HOME` under
 `.e2e/profile/` (`wdio.conf.ts`). `TERMIC_DATA_DIR` alone is not isolation on
 Linux: WebKitGTK keeps localStorage, which is every pref, under

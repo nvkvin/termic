@@ -38,7 +38,7 @@ export default {
   general: {
     language: {
       title: "语言",
-      hint: "界面语言。「跟随系统」会使用 macOS 的系统语言：中文环境显示简体中文，其他语言显示英文。",
+      hint: "界面语言。「跟随系统」会使用系统语言：中文环境显示简体中文，其他语言显示英文。",
       system: "跟随系统",
       en: "English",
       zhCN: "简体中文",
@@ -482,6 +482,7 @@ export default {
 
   shortcuts: {
     sub: "点击一个快捷键即可重新绑定。录制时按 Esc 取消。",
+    terminalNote: "在终端里，Ctrl+字母归 shell 使用。此时请用 {{key}} 代替 Ctrl：{{key}}+J 切换终端面板，{{key}}+T 打开标签页。带 Shift 或 Alt 的组合键用 Ctrl 也可以。如果某个组合键没有反应，说明它被桌面环境占用（在 GNOME 上 {{key}}+L 是锁屏）：请在这里重新绑定。",
     resetAll: "全部重置",
     conflict: "与另一个快捷键冲突",
     reservedTab: "Tab 键属于「最近使用的标签页」手势。",
@@ -833,15 +834,18 @@ export default {
 
   docker: {
     intro: "就是你在「设置 → 智能体与终端」里配置的那些智能体，只是改为在容器中运行，而不是 Seatbelt 之下。一个镜像服务所有智能体；在每个任务的沙箱对话框里按任务选择 Docker。",
+    introNoSeatbelt: "就是你在「设置 → 智能体与终端」里配置的那些智能体，只是改为在容器中运行，而不是直接在这台电脑上运行。一个镜像服务所有智能体；在每个任务的沙箱对话框里按任务选择 Docker。",
     fsLabel: "文件系统：",
-    fsBody: "只有 termic 挂载的内容：工作树、它的 git 元数据，以及你的 git 用户名和邮箱（这样你在里面做的提交算你的）。你 Mac 的其余部分都不可见。",
+    fsBody: "只有 termic 挂载的内容：工作树、它的 git 元数据，以及你的 git 用户名和邮箱（这样你在里面做的提交算你的）。这台电脑上的其余内容都不可见。",
     netLabel: "网络：暂不设限",
     netBody: "，与 Seatbelt 的主机白名单不同。Docker 模式的允许列表已在计划中。",
+    netBodyNoSeatbelt: "。Docker 模式的允许列表已在计划中。",
     loginsLabel: "登录：",
     loginsBody: "按智能体保留，所以你只需登录一次，而不是每个任务一次。永远不是你真实的 <1>~/.claude</1>。",
     firstRun: {
       title: "Docker 沙箱",
       hint: "让智能体在容器中运行，而不是 macOS seatbelt 之下。需要一次性的镜像构建、几分钟时间和正在运行的 Docker。已有任务不受影响：之后按任务选择 Docker。",
+      hintNoSeatbelt: "让智能体在容器中运行。需要一次性的镜像构建、几分钟时间和正在运行的 Docker。已有任务不受影响：之后按任务选择 Docker。",
       building: "正在构建镜像…",
       enableAndBuild: "启用 Docker 沙箱并构建镜像",
       notInstalled: "未安装 Docker。请先安装 Docker Desktop，再回来。",

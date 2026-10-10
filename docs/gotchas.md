@@ -1149,6 +1149,39 @@ Three things to carry forward:
   every link goes through `openWebUrl` (Rust, `spawn_os_open`) instead. Do
   not add a new `openUrl` call without the `IS_LINUX` branch.
 
+## WebKitGTK refuses `navigator.clipboard.readText()`, gesture or not
+
+Ctrl+Shift+V pasted nothing into a terminal on Linux. The handler was
+`navigator.clipboard.readText().then(t => term.paste(t)).catch(() => {})`, and
+the read rejects with `NotAllowedError` there every time, measured inside a
+REAL key press (xdotool through the X server), which is as much of a user
+gesture as exists. The `.catch(() => {})` made it silent. Writing from a key
+handler does work, which is why copy looked fine and nobody suspected the pair.
+
+Everything goes through `readClipboardText` / `writeClipboardText` in
+`src/lib/clipboard.ts` now: the Rust clipboard plugin first, the web API as the
+fallback. The plugin has no gesture requirement either, which also covers
+copy-on-select, whose write runs from a timer.
+
+Two things to carry forward:
+
+- **Do not call `navigator.clipboard` directly.** WKWebView gates it on
+  activation and focus, WebKitGTK refuses reads outright, and a failure is a
+  rejected promise that every call site swallows.
+- **A synthetic key cannot find this.** WebDriver builds the event in the page;
+  the suite's paste test passed for as long as it existed.
+  `e2e/specs/shortcuts-linux.e2e.ts` presses the real keys.
+
+## A conditional key inside `t()` hangs the typecheck
+
+`t(IS_MAC ? "scheduled.ceiling" : "scheduled.ceilingSystem")` type-checks
+correctly and never finishes: `tsc -b` ran past five minutes on five such
+calls, and returned in its usual time once each was written as
+`IS_MAC ? t("a") : t("b")`. The typed-keys overloads have to resolve the
+union of both literal keys against the whole resource tree. Call `t` once per
+key, which is what every existing platform variant in the tree already does
+(`GeneralSection`'s tray label).
+
 ## `getComputedStyle` during a transition returns the value mid-flight
 
 An e2e probe read `getComputedStyle(tab).backgroundColor` to decide which of

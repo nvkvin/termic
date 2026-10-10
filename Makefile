@@ -496,6 +496,9 @@ reset: ## DESTRUCTIVE: wipe every byte of termic state on this machine (config, 
 	sleep 1; \
 	for t in "$${TARGETS[@]}"; do rm -rf "$$t"; done; \
 	echo "✓ Wiped. Worktrees on disk are untouched."
+else ifdef IS_LINUX
+reset: ## DESTRUCTIVE: wipe every byte of termic state on this machine (config, caches, webview data, window state). Confirms first.
+	@bash scripts/reset-linux.sh all
 else
 reset: ## DESTRUCTIVE: wipe every byte of termic state on this machine (config, caches, webview data, window state). Confirms first.
 	@BUNDLE_ID="com.simion.termic"; \
@@ -581,6 +584,9 @@ reset_dev: ## DESTRUCTIVE (dev profile only): wipe the dev data dir + ~/termic_d
 	echo "  (the dev webview's localStorage is not separate on Windows: WebView2 keys it by"; \
 	echo "   bundle identifier, which dev shares with the release build, so it is left alone)"; \
 	echo "✓ Dev profile reset. Production 'termic' data untouched."
+else ifdef IS_LINUX
+reset_dev: ## DESTRUCTIVE (dev profile only): wipe the dev data dir + ~/termic_dev. Production 'termic' data is untouched. No prompt.
+	@bash scripts/reset-linux.sh dev
 else
 reset_dev: ## DESTRUCTIVE (dev profile only): wipe the dev data dir + ~/termic_dev. Production 'termic' data is untouched. No prompt.
 	@DEV_DATA="$$HOME/Library/Application Support/termic_dev"; \
