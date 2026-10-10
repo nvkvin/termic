@@ -8548,7 +8548,8 @@ mod tests {
         assert_eq!(reconcile_target("termic", Some(cur.clone()), &legacy), Some(cur));
     }
 
-    #[cfg(unix)] // unix paths / tools; the Windows behaviour differs by design
+    // Unix only: the copy exists for a Linux AppImage and nowhere else.
+    #[cfg(unix)]
     #[test]
     fn the_appimage_sidecar_copy_is_made_once_and_refreshed_when_it_changes() {
         let tmp = tempfile::tempdir().unwrap();
@@ -8584,6 +8585,7 @@ mod tests {
         assert_eq!(dst.file_name().unwrap(), "termic-cli");
     }
 
+    #[cfg(unix)] // unix paths / tools; the Windows behaviour differs by design
     #[test]
     fn symlink_atomic_replaces_without_a_gap() {
         let tmp = tempfile::tempdir().unwrap();
