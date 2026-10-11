@@ -2799,6 +2799,9 @@ describe("the forge pickers: work that pulled you in", () => {
     // does not matter: on this remote it can only answer a non-"ok" status,
     // and the section draws for "ok" with rows and nothing else.
     expect(await browser.execute(() => !!document.querySelector('[data-testid="pr-review-section"]'))).toBe(false);
+    // No For you / All open chips either: the sentence already says why the
+    // forge cannot be reached, and All open would only fail the same way.
+    expect(await browser.execute(() => !!document.querySelector('[data-testid="pr-scope"]'))).toBe(false);
     await snap("pr-pane-no-forge.png");
   });
 

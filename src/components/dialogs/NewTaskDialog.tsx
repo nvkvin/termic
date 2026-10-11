@@ -39,6 +39,10 @@ import { scoped } from "@/lib/profileScope";
 
 const CLIS = ["claude", "codex", "agy", "grok", "opencode"] as const;
 
+// One page of the repo's open PRs for "All open", the same size as the issue
+// list. A repo with more says so under the list and points at the number box.
+const PR_OPEN_LIMIT = 50;
+
 // Remember the user's last-used task type + sandbox mode across opens —
 // most people always work one way (always worktree, always enforce), so
 // re-deriving from project defaults every time fights their habit. Stored
@@ -431,18 +435,26 @@ export function NewTaskDialog() {
   const [checkoutBranch, setCheckoutBranch] = useState("");
   const [checkoutRefs, setCheckoutRefs] = useState<BranchContext | null>(null);
   const [checkoutLoading, setCheckoutLoading] = useState(false);
-  // Pull request mode. Deliberately not a general PR browser: the lists are
-  // only YOUR open PRs and the ones waiting on your review, and anything else
-  // is reached by typing its number. "Every
-  // open PR" does not scale (1,300 of them on the maintainer's work repo), and
-  // a list that long is slower to fetch, slower to read and rarely the one you
-  // came for.
+  // Pull request mode. Opens on lists about YOU: your open PRs and the ones
+  // waiting on your review. "Every open PR" is not the default because it
+  // does not scale (1,300 of them on the maintainer's work repo), and the
+  // newest page of that is rarely the one you came for. It is one click away
+  // ("All open"), fetched only on that click and capped at a page, and
+  // anything older is reached by typing its number.
   const [prMode, setPrMode] = useState(false);
   const [prLookup, setPrLookup] = useState<PrPickList | null>(null);
   // The second list: open PRs waiting on YOUR review. Still scoped to you, so
   // it stays as small as the first. Fetched beside it, never blocking it.
   const [prReviewLookup, setPrReviewLookup] = useState<PrPickList | null>(null);
   const [prLoading, setPrLoading] = useState(false);
+  // "For you" (the two lists above) or "All open". Starts on "For you" every
+  // time the column is entered, like the issue chips start on All.
+  const [prView, setPrView] = useState<"you" | "open">("you");
+  const [prOpenLookup, setPrOpenLookup] = useState<PrPickList | null>(null);
+  const [prOpenLoading, setPrOpenLoading] = useState(false);
+  // A slow "All open" answer must not overwrite a newer one, or land after
+  // the user went back to "For you": same sequence guard as the issue scopes.
+  const prOpenSeq = useRef(0);
   const [prQuery, setPrQuery] = useState("");
   const [prBusy, setPrBusy] = useState(0);
   // Resume-args override, set at create so it applies from the FIRST spawn.
@@ -704,6 +716,9 @@ export function NewTaskDialog() {
     setPrMode(false);
     setPrLookup(null);
     setPrReviewLookup(null);
+    setPrView("you");
+    setPrOpenLookup(null);
+    setPrOpenLoading(false);
     setPrQuery("");
     setPrLoading(false);
     setPrBusy(0);
@@ -907,6 +922,10 @@ export function NewTaskDialog() {
     setCheckoutMode(false);
     setErr(null);
     setPrQuery("");
+    setPrView("you");
+    setPrOpenLookup(null);
+    setPrOpenLoading(false);
+    prOpenSeq.current++;
     setPrLoading(true);
     // Same stale guard as enterIssues: a lookup landing in a re-opened
     // dialog would show the previous project's PRs.
@@ -918,7 +937,7 @@ export function NewTaskDialog() {
     // A failure here only hides the section: the list above already says
     // why the forge cannot be reached, and saying it twice is noise.
     setPrReviewLookup(null);
-    projectForgePrs(projectId, { review: true })
+    projectForgePrs(projectId, { scope: "review" })
       .then(l => { if (!stale()) setPrReviewLookup(l); })
       .catch(() => {});
   }
@@ -927,8 +946,38 @@ export function NewTaskDialog() {
     setPrMode(false);
     setPrLookup(null);
     setPrReviewLookup(null);
+    setPrView("you");
+    setPrOpenLookup(null);
+    setPrOpenLoading(false);
+    prOpenSeq.current++;
     setPrQuery("");
     setErr(null);
+  }
+
+  /** "All open" is fetched on the click, never on entry: someone who never
+   *  asks for the repo's list pays nothing for it. Refetched on each click,
+   *  like the issue scopes, so a PR opened a minute ago shows up. Going back
+   *  to "For you" needs no fetch, its lists are already loaded. */
+  function choosePrView(next: "you" | "open") {
+    if (next === prView || !projectId) return;
+    setPrView(next);
+    setErr(null);
+    if (next === "you") {
+      prOpenSeq.current++;
+      setPrOpenLoading(false);
+      return;
+    }
+    const reopened = staleFor(projectId, useUI.getState().newTaskSeed);
+    const seq = ++prOpenSeq.current;
+    const stale = () => reopened() || seq !== prOpenSeq.current;
+    setPrOpenLookup(null);
+    setPrOpenLoading(true);
+    projectForgePrs(projectId, { scope: "open", limit: PR_OPEN_LIMIT })
+      .then(l => { if (!stale()) setPrOpenLookup(l); })
+      .catch(e => { if (!stale()) setPrOpenLookup({
+        provider: null, remote_url: "", status: "error", message: String(e), prs: [],
+      }); })
+      .finally(() => { if (!stale()) setPrOpenLoading(false); });
   }
 
   /** Where this task comes from. Derived from the mode flags rather than
@@ -2243,35 +2292,94 @@ export function NewTaskDialog() {
             </Button>
           </div>
 
-          {prLoading ? (
-            <div className="flex items-center gap-2 px-1 py-4 text-[12.5px] text-[var(--color-fg-faint)]">
-              <Loader2 className="h-4 w-4 animate-spin text-[var(--color-accent)]" /> {t("newTask.loadingPrs")}
+          {/* Chips only once the forge has answered: a lookup that failed
+              already says why, and an "All open" under it would only fail
+              the same way a second time. */}
+          {prLookup?.status === "ok" && (
+            <div data-testid="pr-scope" className="flex flex-wrap items-center gap-1">
+              {([
+                ["you", t("newTask.prScopeYou")],
+                ["open", t("newTask.prScopeOpen")],
+              ] as const).map(([v, label]) => (
+                <button
+                  key={v}
+                  type="button"
+                  data-pr-scope={v}
+                  aria-pressed={prView === v}
+                  onClick={() => choosePrView(v)}
+                  className={cn(
+                    "rounded-md px-2 py-1 text-[12px] transition-colors",
+                    prView === v
+                      ? "bg-[var(--color-bg-3)] text-[var(--color-fg)]"
+                      : "text-[var(--color-fg-dim)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]",
+                  )}
+                >
+                  {label}
+                </button>
+              ))}
             </div>
-          ) : prLookup && prLookup.status !== "ok" ? (
-            <div className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)] px-3 py-3 text-[12.5px] text-[var(--color-fg-dim)]">
-              {prLookup.message}
-            </div>
-          ) : (prLookup?.prs.length ?? 0) === 0 ? (
-            <div className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)] px-3 py-3 text-[12.5px] text-[var(--color-fg-dim)]">
-              {t("newTask.prNoneOfYours")}
-            </div>
-          ) : (
-            <ul className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto">
-              {(prLookup?.prs ?? []).map(prRow)}
-            </ul>
           )}
-          {/* BELOW yours, not above: it lands on its own clock, and a list
-              that arrives late must not push down the rows you may be
-              about to click. Shown only when there is something in it. */}
-          {prReviewLookup?.status === "ok" && prReviewLookup.prs.length > 0 && (
-            <div data-testid="pr-review-section" className="flex min-w-0 flex-col gap-1.5">
-              <div className="text-[11px] uppercase tracking-[0.1em] text-[var(--color-fg-faint)]">
-                {t("newTask.prReviewTitle")}
+
+          {prView === "open" ? (
+            prOpenLoading ? (
+              <div className="flex items-center gap-2 px-1 py-4 text-[12.5px] text-[var(--color-fg-faint)]">
+                <Loader2 className="h-4 w-4 animate-spin text-[var(--color-accent)]" /> {t("newTask.loadingOpenPrs")}
               </div>
-              <ul className="flex min-h-0 flex-col gap-1 overflow-y-auto">
-                {prReviewLookup.prs.map(prRow)}
-              </ul>
-            </div>
+            ) : prOpenLookup && prOpenLookup.status !== "ok" ? (
+              <div className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)] px-3 py-3 text-[12.5px] text-[var(--color-fg-dim)]">
+                {prOpenLookup.message}
+              </div>
+            ) : (prOpenLookup?.prs.length ?? 0) === 0 ? (
+              <div className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)] px-3 py-3 text-[12.5px] text-[var(--color-fg-dim)]">
+                {t("newTask.prNoneOpen")}
+              </div>
+            ) : (
+              <>
+                <ul data-testid="pr-open-list" className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto">
+                  {(prOpenLookup?.prs ?? []).map(prRow)}
+                </ul>
+                {/* A full page means there may be more: say so, and where
+                    the rest are, rather than letting the list pass for all. */}
+                {(prOpenLookup?.prs.length ?? 0) >= PR_OPEN_LIMIT && (
+                  <p data-testid="pr-open-capped" className="text-[12px] leading-snug text-[var(--color-fg-faint)]">
+                    {t("newTask.prOpenCapped", { count: PR_OPEN_LIMIT })}
+                  </p>
+                )}
+              </>
+            )
+          ) : (
+            <>
+              {prLoading ? (
+                <div className="flex items-center gap-2 px-1 py-4 text-[12.5px] text-[var(--color-fg-faint)]">
+                  <Loader2 className="h-4 w-4 animate-spin text-[var(--color-accent)]" /> {t("newTask.loadingPrs")}
+                </div>
+              ) : prLookup && prLookup.status !== "ok" ? (
+                <div className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)] px-3 py-3 text-[12.5px] text-[var(--color-fg-dim)]">
+                  {prLookup.message}
+                </div>
+              ) : (prLookup?.prs.length ?? 0) === 0 ? (
+                <div className="rounded-md border border-[var(--color-border-soft)] bg-[var(--color-bg)] px-3 py-3 text-[12.5px] text-[var(--color-fg-dim)]">
+                  {t("newTask.prNoneOfYours")}
+                </div>
+              ) : (
+                <ul className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto">
+                  {(prLookup?.prs ?? []).map(prRow)}
+                </ul>
+              )}
+              {/* BELOW yours, not above: it lands on its own clock, and a list
+                  that arrives late must not push down the rows you may be
+                  about to click. Shown only when there is something in it. */}
+              {prReviewLookup?.status === "ok" && prReviewLookup.prs.length > 0 && (
+                <div data-testid="pr-review-section" className="flex min-w-0 flex-col gap-1.5">
+                  <div className="text-[11px] uppercase tracking-[0.1em] text-[var(--color-fg-faint)]">
+                    {t("newTask.prReviewTitle")}
+                  </div>
+                  <ul className="flex min-h-0 flex-col gap-1 overflow-y-auto">
+                    {prReviewLookup.prs.map(prRow)}
+                  </ul>
+                </div>
+              )}
+            </>
           )}
           {prBusy > 0 && (
             <div className="flex items-center gap-2 text-[12px] text-[var(--color-fg-faint)]">

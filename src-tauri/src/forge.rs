@@ -1781,12 +1781,13 @@ fn parse_github_issues(v: &serde_json::Value) -> Vec<ForgeIssue> {
 
 /// One pull request, enough for the picker and for composing a prompt.
 ///
-/// Deliberately NOT a general PR search. The picker lists only PRs about the
-/// signed-in user (their own, and the ones waiting on their review), because
-/// "every open PR" is unusable at real scale: the
-/// maintainer's day job has ~1,300 of them, and a list that long is slower to
-/// fetch, slower to read and never what you wanted anyway. Anything else is
-/// reached by typing its number, which is one API call rather than a page.
+/// Scoped to the signed-in user BY DEFAULT: the picker opens on their own
+/// PRs and the ones waiting on their review, because "every open PR" is
+/// unusable at real scale. The maintainer's day job has ~1,300 of them, and
+/// the newest page of that is rarely the one you came for. The repo's open
+/// PRs are one click away (`PrScope::Open`), fetched only on that click and
+/// capped at one page, which is what a small team repo wants. Anything
+/// older is reached by typing its number, one API call rather than a page.
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct ForgePr {
     pub provider: String,
@@ -1810,31 +1811,81 @@ pub struct ForgePr {
 const PR_JSON_FIELDS: &str =
     "number,title,url,body,author,headRefName,isCrossRepository,isDraft,updatedAt";
 
-/// The signed-in user's own open PRs. See `ForgePr` for why it is only theirs.
+/// Which PRs the picker asks for. `Mine` and `Review` are about the signed-in
+/// user and are what the picker shows on entry; `Open` is the repo's newest
+/// open PRs, fetched only when the user asks for them (see `ForgePr`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrScope {
+    Mine,
+    Review,
+    Open,
+}
+
+impl PrScope {
+    /// The IPC spelling. Anything unknown is the user's own list, so an older
+    /// webview that sends nothing keeps today's behaviour.
+    pub fn parse(s: Option<&str>) -> Self {
+        match s {
+            Some("review") => PrScope::Review,
+            Some("open") => PrScope::Open,
+            _ => PrScope::Mine,
+        }
+    }
+}
+
+pub fn pr_list(provider: &str, cwd: &Path, limit: u32, scope: PrScope) -> Result<Vec<ForgePr>, ForgeError> {
+    match scope {
+        PrScope::Mine => pr_list_mine(provider, cwd, limit),
+        PrScope::Review => pr_list_review_requested(provider, cwd, limit),
+        PrScope::Open => pr_list_open(provider, cwd, limit),
+    }
+}
+
+/// Run one `gh pr list` and parse it. Every GitHub list is the same call
+/// with different filters, newest first (gh's default order).
+fn github_pr_list(bin: &str, cwd: &Path, args: &[&str]) -> Result<Vec<ForgePr>, ForgeError> {
+    let o = run(bin, args, Some(cwd)).map_err(|e| ForgeError::Other(e.to_string()))?;
+    if !o.status.success() {
+        return Err(classify_failure(GITHUB, &o));
+    }
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout)
+        .map_err(|e| ForgeError::Other(format!("gh returned unparseable JSON: {e}")))?;
+    Ok(parse_github_prs(&v))
+}
+
+/// The signed-in user's own open PRs. See `ForgePr` for why this is the
+/// default list.
 pub fn pr_list_mine(provider: &str, cwd: &Path, limit: u32) -> Result<Vec<ForgePr>, ForgeError> {
     let cli = cli_for_provider(provider);
     let bin = reprobe_bin(cli).ok_or(ForgeError::CliMissing(cli))?;
     match provider {
-        GITLAB => Err(ForgeError::Other(
-            "Picking a merge request is not wired up for GitLab yet. Paste the number instead.".into(),
-        )),
-        AZURE => azure_pr_list(&bin, cwd, limit),
+        GITLAB => gitlab_mr_list(&bin, cwd, GITLAB_MR_MINE, limit),
+        AZURE => azure_pr_list(&bin, cwd, limit, true),
         _ => {
             let n = limit.to_string();
-            let o = run(
-                &bin,
-                &["pr", "list", "--author", "@me", "--state", "open", "--limit", &n,
-                  "--json", PR_JSON_FIELDS],
-                Some(cwd),
-            )
-            .map_err(|e| ForgeError::Other(e.to_string()))?;
-            if !o.status.success() {
-                return Err(classify_failure(GITHUB, &o));
-            }
-            let v: serde_json::Value = serde_json::from_slice(&o.stdout)
-                .map_err(|e| ForgeError::Other(format!("gh returned unparseable JSON: {e}")))?;
-            Ok(parse_github_prs(&v))
+            github_pr_list(&bin, cwd, &["pr", "list", "--author", "@me", "--state", "open", "--limit", &n,
+                "--json", PR_JSON_FIELDS])
         }
+    }
+}
+
+/// `gh pr list` arguments for the repo's open PRs: no author and no search
+/// filter, so the order is gh's default, newest first, which is also
+/// GitHub's own default list. (`--search sort:updated-desc` was measured and
+/// does not come back in updated order, so "most active first" is not on
+/// offer.) Split out so the query is pinned by a test.
+fn open_pr_args(limit: &str) -> [&str; 8] {
+    ["pr", "list", "--state", "open", "--limit", limit, "--json", PR_JSON_FIELDS]
+}
+
+/// The repo's open PRs, one capped page, for the picker's "All open".
+pub fn pr_list_open(provider: &str, cwd: &Path, limit: u32) -> Result<Vec<ForgePr>, ForgeError> {
+    let cli = cli_for_provider(provider);
+    let bin = reprobe_bin(cli).ok_or(ForgeError::CliMissing(cli))?;
+    match provider {
+        GITLAB => gitlab_mr_list(&bin, cwd, GITLAB_MR_ALL, limit),
+        AZURE => azure_pr_list(&bin, cwd, limit, false),
+        _ => github_pr_list(&bin, cwd, &open_pr_args(&limit.to_string())),
     }
 }
 
@@ -1849,23 +1900,18 @@ fn review_requested_args(limit: &str) -> [&str; 10] {
 
 /// Open PRs somebody asked the signed-in user to review. The second list the
 /// picker shows, still scoped to the user rather than the repo, so it stays
-/// small for the same reason `pr_list_mine` does. GitHub only: GitLab has no
-/// picker list at all yet, and Azure's reviewer filter wants an identity id
-/// rather than `@me`. Both answer an empty list, which the picker hides.
+/// small for the same reason `pr_list_mine` does. GitHub and GitLab only:
+/// Azure's reviewer filter wants an identity id rather than `@me`, so it
+/// answers an empty list, which the picker hides.
 pub fn pr_list_review_requested(provider: &str, cwd: &Path, limit: u32) -> Result<Vec<ForgePr>, ForgeError> {
-    if provider != GITHUB {
+    if provider == AZURE {
         return Ok(Vec::new());
     }
     let bin = reprobe_bin(cli_for_provider(provider)).ok_or(ForgeError::CliMissing(cli_for_provider(provider)))?;
-    let n = limit.to_string();
-    let o = run(&bin, &review_requested_args(&n), Some(cwd))
-        .map_err(|e| ForgeError::Other(e.to_string()))?;
-    if !o.status.success() {
-        return Err(classify_failure(GITHUB, &o));
+    if provider == GITLAB {
+        return gitlab_mr_list(&bin, cwd, GITLAB_MR_REVIEWS, limit);
     }
-    let v: serde_json::Value = serde_json::from_slice(&o.stdout)
-        .map_err(|e| ForgeError::Other(format!("gh returned unparseable JSON: {e}")))?;
-    Ok(parse_github_prs(&v))
+    github_pr_list(&bin, cwd, &review_requested_args(&limit.to_string()))
 }
 
 /// One PR by number, for the "paste a number" path. The number may be typed,
@@ -1875,9 +1921,7 @@ pub fn pr_by_number(provider: &str, cwd: &Path, number: u64) -> Result<Option<Fo
     let cli = cli_for_provider(provider);
     let bin = reprobe_bin(cli).ok_or(ForgeError::CliMissing(cli))?;
     if provider == GITLAB {
-        return Err(ForgeError::Other(
-            "Opening a merge request by number is not wired up for GitLab yet.".into(),
-        ));
+        return gitlab_mr_show(&bin, cwd, number);
     }
     if provider == AZURE {
         return azure_pr_show(&bin, cwd, number);
@@ -1920,22 +1964,105 @@ fn parse_github_prs(v: &serde_json::Value) -> Vec<ForgePr> {
         .collect()
 }
 
-/// `az repos pr list`, scoped to the repo (an org-level list would drag in
-/// PRs from every repo in the project) and to the signed-in user: the
-/// extension resolves `--creator me` to the current identity client-side.
-fn azure_pr_list(bin: &str, cwd: &Path, limit: u32) -> Result<Vec<ForgePr>, ForgeError> {
+/// GitLab's `scope` values for the picker lists. The first two are about the
+/// signed-in user, resolved server-side, so neither needs a `glab api user`
+/// round trip first. `reviews_for_me` is MRs where the user is a reviewer;
+/// `all` is the repo's open MRs, for "All open".
+const GITLAB_MR_MINE: &str = "created_by_me";
+const GITLAB_MR_REVIEWS: &str = "reviews_for_me";
+const GITLAB_MR_ALL: &str = "all";
+
+/// The REST path for one MR list, newest first like every GitHub list. The
+/// REST API, not `glab mr list`, for the same reason the issue list uses it:
+/// the CLI's JSON output has moved around across versions, while the
+/// endpoint has not. Split out so the query is pinned by a test without a
+/// `glab` on the machine.
+fn gitlab_mr_list_path(scope: &str, limit: u32) -> String {
+    format!("projects/:id/merge_requests?state=opened&scope={scope}&order_by=created_at&sort=desc&per_page={limit}")
+}
+
+fn gitlab_mr_list(bin: &str, cwd: &Path, scope: &str, limit: u32) -> Result<Vec<ForgePr>, ForgeError> {
+    let path = gitlab_mr_list_path(scope, limit);
+    let o = run(bin, &["api", &path], Some(cwd)).map_err(|e| ForgeError::Other(e.to_string()))?;
+    if !o.status.success() {
+        // A server that does not accept a scope value answers 400 ("scope
+        // does not have a valid value"). Only the review list falls back:
+        // an empty list hides its section instead of putting a red line
+        // under the user's own MRs, while a refused list of their own MRs is
+        // a real error worth showing.
+        if scope == GITLAB_MR_REVIEWS && stderr_of(&o).contains("400") {
+            return Ok(Vec::new());
+        }
+        return Err(classify_failure(GITLAB, &o));
+    }
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout)
+        .map_err(|e| ForgeError::Other(format!("glab returned unparseable JSON: {e}")))?;
+    Ok(parse_gitlab_mrs(&v))
+}
+
+fn gitlab_mr_show(bin: &str, cwd: &Path, number: u64) -> Result<Option<ForgePr>, ForgeError> {
+    let path = format!("projects/:id/merge_requests/{number}");
+    let o = run(bin, &["api", &path], Some(cwd)).map_err(|e| ForgeError::Other(e.to_string()))?;
+    if !o.status.success() {
+        // A wrong number is a 404, and an answer rather than a failure, the
+        // same as `gh pr view`'s "no pull requests found".
+        if stderr_of(&o).contains("404") {
+            return Ok(None);
+        }
+        return Err(classify_failure(GITLAB, &o));
+    }
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout)
+        .map_err(|e| ForgeError::Other(format!("glab returned unparseable JSON: {e}")))?;
+    // One object here, an array from the list. Reuse one parser.
+    Ok(parse_gitlab_mrs(&serde_json::Value::Array(vec![v])).into_iter().next())
+}
+
+fn parse_gitlab_mrs(v: &serde_json::Value) -> Vec<ForgePr> {
+    v.as_array()
+        .unwrap_or(&Vec::new())
+        .iter()
+        .map(|i| ForgePr {
+            provider: GITLAB.into(),
+            // `iid` is the per-project number users see; `id` is global.
+            number: i["iid"].as_u64().unwrap_or(0),
+            title: i["title"].as_str().unwrap_or("").trim().to_string(),
+            url: i["web_url"].as_str().unwrap_or("").to_string(),
+            body: i["description"].as_str().unwrap_or("").trim().to_string(),
+            author: i["author"]["username"].as_str().unwrap_or("").to_string(),
+            head_ref: i["source_branch"].as_str().unwrap_or("").to_string(),
+            // A fork MR's source project is not the target. Both ids are on
+            // every MR; a row missing one is treated as same-repo.
+            cross_repository: match (i["source_project_id"].as_u64(), i["target_project_id"].as_u64()) {
+                (Some(s), Some(t)) => s != t,
+                _ => false,
+            },
+            // `work_in_progress` is the older spelling, kept by newer servers.
+            draft: i["draft"].as_bool().unwrap_or(false) || i["work_in_progress"].as_bool().unwrap_or(false),
+            updated_at: norm_time(i["updated_at"].as_str().unwrap_or("")),
+        })
+        .filter(|p| p.number > 0)
+        .collect()
+}
+
+/// `az repos pr list` arguments, always scoped to the repo (an org-level list
+/// would drag in PRs from every repo in the project) and, for `mine`, to the
+/// signed-in user: the extension resolves `--creator me` to the current
+/// identity client-side. Without it this is "All open", in the CLI's own
+/// order. Split out so the creator filter is pinned by a test.
+fn azure_pr_list_args<'a>(org: &'a str, project: &'a str, repo: &'a str, top: &'a str, mine: bool) -> Vec<&'a str> {
+    let mut a = vec!["repos", "pr", "list", "--repository", repo, "--org", org, "--project", project];
+    if mine {
+        a.extend(["--creator", "me"]);
+    }
+    a.extend(["--status", "active", "--top", top, "--output", "json"]);
+    a
+}
+
+fn azure_pr_list(bin: &str, cwd: &Path, limit: u32, mine: bool) -> Result<Vec<ForgePr>, ForgeError> {
     let (org, project, repo) = azure_scope(cwd)?;
     let top = limit.to_string();
-    let o = run(
-        bin,
-        &[
-            "repos", "pr", "list", "--repository", &repo,
-            "--org", &org, "--project", &project,
-            "--creator", "me", "--status", "active", "--top", &top, "--output", "json",
-        ],
-        Some(cwd),
-    )
-    .map_err(|e| ForgeError::Other(e.to_string()))?;
+    let o = run(bin, &azure_pr_list_args(&org, &project, &repo, &top, mine), Some(cwd))
+        .map_err(|e| ForgeError::Other(e.to_string()))?;
     if !o.status.success() {
         return Err(classify_failure(AZURE, &o));
     }
@@ -2447,12 +2574,109 @@ code.internal.acme.com configured to use ssh protocol.\n";
     }
 
     #[test]
-    fn review_requested_is_github_only_and_empty_elsewhere() {
-        // GitLab and Azure answer an empty list without ever looking for a
-        // CLI, so the picker simply shows no second section for them.
+    fn review_requested_is_empty_on_azure() {
+        // Azure answers an empty list without ever looking for a CLI, so the
+        // picker simply shows no second section for it.
         let cwd = std::env::temp_dir();
-        assert_eq!(pr_list_review_requested(GITLAB, &cwd, 10).unwrap(), Vec::new());
         assert_eq!(pr_list_review_requested(AZURE, &cwd, 10).unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn gitlab_mr_lists_ask_for_the_users_open_mrs() {
+        // The scope IS the feature, as `review-requested:@me` is on GitHub:
+        // resolved server-side to the signed-in user, open only, newest
+        // first like every gh list, one page.
+        assert_eq!(
+            gitlab_mr_list_path(GITLAB_MR_MINE, 30),
+            "projects/:id/merge_requests?state=opened&scope=created_by_me&order_by=created_at&sort=desc&per_page=30"
+        );
+        assert!(gitlab_mr_list_path(GITLAB_MR_REVIEWS, 30).contains("&scope=reviews_for_me&"));
+        assert!(gitlab_mr_list_path(GITLAB_MR_ALL, 50).contains("&scope=all&"));
+        assert!(gitlab_mr_list_path(GITLAB_MR_ALL, 50).ends_with("&per_page=50"));
+    }
+
+    #[test]
+    fn pr_scope_parsing_defaults_to_mine() {
+        assert_eq!(PrScope::parse(Some("review")), PrScope::Review);
+        assert_eq!(PrScope::parse(Some("open")), PrScope::Open);
+        // An older webview sends nothing, and a typo must not widen the list
+        // to the whole repo.
+        assert_eq!(PrScope::parse(None), PrScope::Mine);
+        assert_eq!(PrScope::parse(Some("all")), PrScope::Mine);
+    }
+
+    #[test]
+    fn all_open_asks_gh_for_every_open_pr_unfiltered() {
+        // No --author and no --search: either would quietly turn "All open"
+        // back into a list about the user, and --search also loses gh's
+        // newest-first order.
+        let joined = open_pr_args("50").join(" ");
+        assert_eq!(joined, format!("pr list --state open --limit 50 --json {PR_JSON_FIELDS}"));
+    }
+
+    #[test]
+    fn azure_creator_filter_is_only_on_the_users_list() {
+        let mine = azure_pr_list_args("https://dev.azure.com/acme", "web", "app", "30", true).join(" ");
+        assert!(mine.contains("--repository app --org https://dev.azure.com/acme --project web --creator me --status active --top 30"));
+        let all = azure_pr_list_args("https://dev.azure.com/acme", "web", "app", "50", false).join(" ");
+        assert!(!all.contains("--creator"));
+        // Still the repo, never the org: an org-level list is every repo's PRs.
+        assert!(all.contains("--repository app") && all.contains("--status active --top 50"));
+    }
+
+    #[test]
+    fn gitlab_mr_parsing() {
+        // Synthetic, transcribed shape, never a paste (see CLAUDE.md on
+        // fixtures). Three rows: a same-repo MR, a fork MR still flagged
+        // with the older `work_in_progress` spelling, and a malformed one.
+        let v: serde_json::Value = serde_json::from_str(r#"[
+            {"id": 90012, "iid": 12, "title": "  Fix the login redirect  ",
+             "web_url": "https://gitlab.example.io/acme/web/-/merge_requests/12",
+             "description": " needs a second pair of eyes ", "author": {"username": "alice"},
+             "source_branch": "fix-login", "source_project_id": 7, "target_project_id": 7,
+             "draft": false, "work_in_progress": false, "updated_at": "2026-09-30T08:00:00.123Z"},
+            {"id": 90013, "iid": 13, "title": "Bump deps",
+             "web_url": "https://gitlab.example.io/acme/web/-/merge_requests/13",
+             "description": null, "author": {"username": "bob"},
+             "source_branch": "deps", "source_project_id": 99, "target_project_id": 7,
+             "work_in_progress": true, "updated_at": "2026-09-29T08:00:00+02:00"},
+            {"id": 90000, "title": "malformed", "author": {"username": "x"}}
+        ]"#).unwrap();
+        let prs = parse_gitlab_mrs(&v);
+        assert_eq!(prs.len(), 2);
+        assert_eq!(prs[0].provider, GITLAB);
+        // iid (what the user sees and what refs/merge-requests/<n> uses),
+        // never the global id.
+        assert_eq!(prs[0].number, 12);
+        assert_eq!(prs[0].title, "Fix the login redirect");
+        assert_eq!(prs[0].body, "needs a second pair of eyes");
+        assert_eq!(prs[0].author, "alice");
+        assert_eq!(prs[0].head_ref, "fix-login");
+        assert_eq!(prs[0].url, "https://gitlab.example.io/acme/web/-/merge_requests/12");
+        assert!(!prs[0].cross_repository);
+        assert!(!prs[0].draft);
+        assert_eq!(prs[0].updated_at, "2026-09-30T08:00:00Z");
+        // The fork + draft row decides the local branch name and the badge.
+        assert!(prs[1].cross_repository);
+        assert!(prs[1].draft);
+        assert_eq!(prs[1].body, "");
+        assert_eq!(prs[1].updated_at, "2026-09-29T06:00:00Z");
+    }
+
+    #[test]
+    fn a_single_gitlab_mr_parses_like_a_list_of_one() {
+        // `merge_requests/<iid>` returns ONE object; gitlab_mr_show wraps it.
+        let one: serde_json::Value = serde_json::from_str(r#"
+            {"iid": 99, "title": "Paste me", "web_url": "https://gitlab.example.io/acme/web/-/merge_requests/99",
+             "description": "b", "author": {"username": "alice"}, "source_branch": "paste-me",
+             "source_project_id": 7, "target_project_id": 7, "draft": true,
+             "updated_at": "2026-09-30T08:00:00Z"}
+        "#).unwrap();
+        let prs = parse_gitlab_mrs(&serde_json::Value::Array(vec![one]));
+        assert_eq!(prs.len(), 1);
+        assert_eq!(prs[0].number, 99);
+        assert_eq!(prs[0].head_ref, "paste-me");
+        assert!(prs[0].draft);
     }
 
     #[test]

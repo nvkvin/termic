@@ -1339,6 +1339,10 @@ export interface ForgePr {
   updated_at: string;
 }
 
+/** Which PRs `project_forge_prs` lists (forge.rs `PrScope`): the user's own,
+ *  the ones waiting on their review, or the repo's open PRs, newest first. */
+export type PrScope = "mine" | "review" | "open";
+
 /** One PR-picker round-trip. `not-found` is the by-number path's "no such
  *  PR", which is an answer rather than a failure. Mirrors `PrPickList` in
  *  src-tauri/src/lib.rs. */

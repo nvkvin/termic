@@ -9,7 +9,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   Project, ProjectMember, Task, CreateTaskArgs, CreateMultiArgs, CreateMultiMember, Settings, DiscoveredRepo,
   ImportableWorktree, CliInfo, ChangeFile, Changes, GitStatus, CheckoutResult, UpdateMode, UpdateResult, UpdateInfo, UpdateAllItem, FileEntry, Agent, RepoConfig,
-  SandboxMode, TaskDiffSummary, TaskDiffStat, DesktopIntegration, CliInstallStatus, McpStatus, BranchContext, PrPickList, BlameFile, GitCommit, GitCompare, GitFile, GitLogPage, GitRef,
+  SandboxMode, TaskDiffSummary, TaskDiffStat, DesktopIntegration, CliInstallStatus, McpStatus, BranchContext, PrPickList, PrScope, BlameFile, GitCommit, GitCompare, GitFile, GitLogPage, GitRef,
   ForgeCliStatus, ForgeProvider, PrLookup, MemberPrLookup, PrComment, IssueLookup, IssueScope, AgentHookStatus, HookPlan,
   ProfileView, ProfilesView, ProfileDeletePreview, AgentAccountsView, ExternalAppInfo,
   SyncStatus, SyncConnectInfo, SyncChange, SyncPrefsSnapshot, SyncRunResult,
@@ -994,11 +994,12 @@ export const projectForgeIssues = (projectId: string, limit?: number, scope?: Is
   invoke<IssueLookup>("project_forge_issues", { projectId, limit: limit ?? null, scope: scope ?? null });
 
 /** YOUR open PRs for a project's repo, or one PR by number. See `ForgePr` for
- *  why the list is only yours. `review` lists the open PRs waiting on your
- *  review instead (GitHub only; other forges answer an empty list). */
-export const projectForgePrs = (projectId: string, opts?: { limit?: number; number?: number; review?: boolean }) =>
+ *  why that is the default list. `scope: "review"` lists the open PRs waiting
+ *  on your review instead (GitHub and GitLab; Azure answers an empty list),
+ *  and `scope: "open"` the repo's open PRs, newest first. */
+export const projectForgePrs = (projectId: string, opts?: { limit?: number; number?: number; scope?: PrScope }) =>
   invoke<PrPickList>("project_forge_prs", {
-    projectId, limit: opts?.limit ?? null, number: opts?.number ?? null, review: opts?.review ?? null,
+    projectId, limit: opts?.limit ?? null, number: opts?.number ?? null, scope: opts?.scope ?? null,
   });
 
 /** Fetch a PR's head into a local branch and get its name back, so the

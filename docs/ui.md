@@ -1152,24 +1152,51 @@ the sandbox config get.
 It was inline above the form first. That put a 220px scrolling list inside a
 dialog you were already scrolling, and hid the effect of a pick below the fold.
 
-### The PR picker lists two things, both scoped to you
+### The PR picker opens on you, and the repo's list is one click away
 
-"From a PR" shows your own open PRs and, under them, the open PRs waiting
-on your review (`gh pr list --search review-requested:@me`, so a request to
-a team you are on counts, as on GitHub's own Review requests tab). Still not
-a repo-wide browser: both lists are about you, so they stay short on a busy
-repo, and anything else is reached by pasting its number.
+"From a PR" opens on **For you**: your own open PRs and, under them, the
+open PRs waiting on your review (`gh pr list --search review-requested:@me`,
+so a request to a team you are on counts, as on GitHub's own Review
+requests tab). Both lists are about you, so they stay short on a busy repo.
 
-The review list is a second `project_forge_prs` call (`review: true`) fired
+**All open** is the repo's open PRs, newest first, one page of 50. It is a
+chip, not the default, because on a repo with 1,300 open PRs the newest 50
+are rarely the one you came for, while on a small team repo they are
+exactly it. Three things keep it cheap for the first case:
+
+- It is fetched on the click, never on entry. Nobody who stays on For you
+  pays for it.
+- It is capped. A full page says so under the list ("Showing the newest
+  50") and points at the number box, which is the path for anything older.
+- It is the forge's own default order (`gh pr list` with no filter, GitLab
+  `order_by=created_at`, Azure the CLI's own order, not verified).
+  `--search sort:updated-desc` was measured on a 1,300-PR repo and does not
+  come back in updated order, so "most active first" is not on offer.
+
+The chips draw only for an `ok` lookup of your own list: a forge that
+cannot be reached is already explained there, and All open would fail the
+same way. The column starts back on For you every time it is entered, and
+a slow All open answer is dropped by a sequence number if you clicked back.
+
+On GitLab every list is one REST call through `glab api`
+(`merge_requests?scope=created_by_me`, `scope=reviews_for_me` for the MRs
+where you are a reviewer, and `scope=all` for All open), and a pasted
+number is `merge_requests/<iid>`.
+The REST API rather than `glab mr list` because the CLI's JSON has moved
+between versions, the same reason the issue list uses it. A server that
+does not accept a `scope` value answers 400; for `reviews_for_me` that
+reads as an empty review list, so the section hides instead of erroring
+under your own MRs.
+
+The review list is a second `project_forge_prs` call (`scope: "review"`) fired
 beside the first, never before it. It renders BELOW your own PRs, because it
 lands on its own clock and a list that arrives late must not push down a row
 you are about to click. It draws only for an `ok` status with rows: a forge
 that cannot be reached is already explained by the first list, and saying it
-twice is noise. GitHub only; GitLab has no picker list at all yet, and
-Azure's reviewer filter wants an identity id rather than `@me`, so both
-answer an empty list and the section stays hidden.
+twice is noise. Azure's reviewer filter wants an identity id rather than
+`@me`, so it answers an empty list and the section stays hidden there.
 
-Picking a PR from either list is the same pick: fetch the head, then check
+Picking a PR from any list is the same pick: fetch the head, then check
 it out. Firing a review at it is the prompt library's Review entry, by hand.
 
 The issue column has the matching half as chips over the list: **All**,
@@ -1179,8 +1206,9 @@ flag). Chips, not extra lists: the repo's list is long, so a list appended
 under it would sit below the fold, and a chip only changes the list when
 you click it. Each click refetches with a sequence number so a slow answer
 for a scope you already left cannot overwrite the one you picked. The
-column starts back on All every time it is entered. GitHub only, for the
-same reason as the review list.
+column starts back on All every time it is entered. GitHub only. GitLab's
+issues API can say "assigned to me" but has no mention filter, so wiring it
+means a per-forge chip set rather than the same three chips.
 
 ### The new-task dialog has TWO columns and TWO widths
 
