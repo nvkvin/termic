@@ -1304,8 +1304,9 @@ export interface ForgeIssue {
 /** One issue-list round-trip. Same status vocabulary as `PrLookup`, so the
  *  picker reuses the PR card's explain-yourself copy. Mirrors `IssueLookup`
  *  in src-tauri/src/lib.rs. */
-/** Which open issues `project_forge_issues` lists. The narrowed two are
- *  GitHub only (forge.rs `IssueScope`); other forges answer them empty. */
+/** Which open issues `project_forge_issues` lists. `assigned` is supported
+ *  on GitHub, GitLab, and Azure DevOps; `mentions` is GitHub only (other
+ *  forges answer it empty). */
 export type IssueScope = "all" | "assigned" | "mentions";
 
 export interface IssueLookup {

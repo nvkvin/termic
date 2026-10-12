@@ -1665,7 +1665,7 @@ fn invalidate_provider_cache() {
 /// list payload (each CLI's list call returns it) so picking an issue in
 /// the New Task dialog needs no second round-trip before the agent gets
 /// its prompt.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ForgeIssue {
     pub provider: String,
     pub number: u64,
@@ -1707,17 +1707,18 @@ impl IssueScope {
     }
 }
 
-/// GitHub only. GitLab and Azure answer the narrowed scopes with an empty
-/// list, and the picker shows no scope chips for them.
+/// GitHub, GitLab, and Azure DevOps support `All` and `Assigned`.
+/// `Mentions` is GitHub only; other forges answer it empty without
+/// probing CLI.
 pub fn issue_list(provider: &str, cwd: &Path, limit: u32, scope: IssueScope) -> Result<Vec<ForgeIssue>, ForgeError> {
-    if scope != IssueScope::All && provider != GITHUB {
+    if scope == IssueScope::Mentions && provider != GITHUB {
         return Ok(Vec::new());
     }
     let cli = cli_for_provider(provider);
     let bin = reprobe_bin(cli).ok_or(ForgeError::CliMissing(cli))?;
     match provider {
-        GITLAB => gitlab_issue_list(&bin, cwd, limit),
-        AZURE => azure_issue_list(&bin, cwd, limit),
+        GITLAB => gitlab_issue_list(&bin, cwd, limit, scope),
+        AZURE => azure_issue_list(&bin, cwd, limit, scope),
         _ => github_issue_list(&bin, cwd, limit, scope),
     }
 }
@@ -2134,12 +2135,23 @@ fn azure_pr(i: &serde_json::Value) -> Option<ForgePr> {
     })
 }
 
-fn gitlab_issue_list(bin: &str, cwd: &Path, limit: u32) -> Result<Vec<ForgeIssue>, ForgeError> {
+const GITLAB_ISSUE_ALL: &str = "all";
+const GITLAB_ISSUE_ASSIGNED: &str = "assigned_to_me";
+
+fn gitlab_issue_list_path(scope: IssueScope, limit: u32) -> String {
+    let scope_str = match scope {
+        IssueScope::Assigned => GITLAB_ISSUE_ASSIGNED,
+        _ => GITLAB_ISSUE_ALL,
+    };
+    format!(
+        "projects/:id/issues?state=opened&scope={scope_str}&per_page={limit}&order_by=updated_at&sort=desc"
+    )
+}
+
+fn gitlab_issue_list(bin: &str, cwd: &Path, limit: u32, scope: IssueScope) -> Result<Vec<ForgeIssue>, ForgeError> {
     // The REST API, not `glab issue list`: the CLI's JSON output has moved
     // around across versions, while the notes/issues endpoints have not.
-    let path = format!(
-        "projects/:id/issues?state=opened&per_page={limit}&order_by=updated_at&sort=desc"
-    );
+    let path = gitlab_issue_list_path(scope, limit);
     let o = run(bin, &["api", &path], Some(cwd)).map_err(|e| ForgeError::Other(e.to_string()))?;
     if !o.status.success() {
         let err = stderr_of(&o).to_lowercase();
@@ -2194,8 +2206,12 @@ fn parse_gitlab_issues(v: &serde_json::Value) -> Vec<ForgeIssue> {
 /// first. `NOT IN GROUP 'Completed'/'Removed'` are state CATEGORIES - they
 /// cover custom states mapped to those categories too, which enumerating
 /// state names would miss. Single quotes in the project name are doubled.
-fn azure_workitems_wiql(project: &str) -> String {
+fn azure_workitems_wiql(project: &str, scope: IssueScope) -> String {
     let project = project.replace('\'', "''");
+    let assigned_clause = match scope {
+        IssueScope::Assigned => " AND [System.AssignedTo] = @me",
+        _ => "",
+    };
     format!(
         "SELECT [System.Id], [System.Title], [System.Description], \
                 [System.ChangedDate], [System.CommentCount], [System.Tags], \
@@ -2203,16 +2219,16 @@ fn azure_workitems_wiql(project: &str) -> String {
          FROM workitems \
          WHERE [System.TeamProject] = '{project}' \
            AND [System.State] NOT IN GROUP 'Completed' \
-           AND [System.State] NOT IN GROUP 'Removed' \
+           AND [System.State] NOT IN GROUP 'Removed'{assigned_clause} \
          ORDER BY [System.ChangedDate] DESC"
     )
 }
 
-fn azure_issue_list(bin: &str, cwd: &Path, limit: u32) -> Result<Vec<ForgeIssue>, ForgeError> {
+fn azure_issue_list(bin: &str, cwd: &Path, limit: u32, scope: IssueScope) -> Result<Vec<ForgeIssue>, ForgeError> {
     // The WIQL needs the project name spelled out; resolve it before the
     // spawn so an unparseable remote fails cheap.
     let (org, project, _) = azure_scope(cwd)?;
-    let wiql = azure_workitems_wiql(&project);
+    let wiql = azure_workitems_wiql(&project, scope);
     let o = run(bin, &["boards", "query", "--wiql", &wiql, "--org", &org, "--output", "json"], Some(cwd))
         .map_err(|e| ForgeError::Other(e.to_string()))?;
     if !o.status.success() {
@@ -2553,12 +2569,22 @@ code.internal.acme.com configured to use ssh protocol.\n";
     }
 
     #[test]
-    fn narrowed_issue_scopes_are_github_only() {
+    fn mentions_issue_scope_is_empty_on_gitlab_and_azure() {
         let cwd = std::env::temp_dir();
-        for scope in [IssueScope::Assigned, IssueScope::Mentions] {
-            assert!(issue_list(GITLAB, &cwd, 10, scope).unwrap().is_empty());
-            assert!(issue_list(AZURE, &cwd, 10, scope).unwrap().is_empty());
-        }
+        assert_eq!(issue_list(GITLAB, &cwd, 10, IssueScope::Mentions).unwrap(), Vec::new());
+        assert_eq!(issue_list(AZURE, &cwd, 10, IssueScope::Mentions).unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn gitlab_issue_list_paths() {
+        assert_eq!(
+            gitlab_issue_list_path(IssueScope::All, 50),
+            "projects/:id/issues?state=opened&scope=all&per_page=50&order_by=updated_at&sort=desc"
+        );
+        assert_eq!(
+            gitlab_issue_list_path(IssueScope::Assigned, 30),
+            "projects/:id/issues?state=opened&scope=assigned_to_me&per_page=30&order_by=updated_at&sort=desc"
+        );
     }
 
     #[test]
@@ -3162,11 +3188,15 @@ code.internal.acme.com configured to use ssh protocol.\n";
 
     #[test]
     fn azure_wiql() {
-        let w = azure_workitems_wiql("O'Brien's Project");
+        let w = azure_workitems_wiql("O'Brien's Project", IssueScope::All);
         assert!(w.contains("[System.TeamProject] = 'O''Brien''s Project'"));
         assert!(w.contains("[System.State] NOT IN GROUP 'Completed'"));
         assert!(w.contains("[System.State] NOT IN GROUP 'Removed'"));
         assert!(w.contains("FROM workitems"));
+        assert!(!w.contains("[System.AssignedTo]"));
+
+        let assigned = azure_workitems_wiql("O'Brien's Project", IssueScope::Assigned);
+        assert!(assigned.contains("AND [System.AssignedTo] = @me"));
     }
 
     #[test]

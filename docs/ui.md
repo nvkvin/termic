@@ -1199,16 +1199,16 @@ twice is noise. Azure's reviewer filter wants an identity id rather than
 Picking a PR from any list is the same pick: fetch the head, then check
 it out. Firing a review at it is the prompt library's Review entry, by hand.
 
-The issue column has the matching half as chips over the list: **All**,
-**Assigned to you** (`--assignee @me`) and **Mentions you** (`--search
-mentions:@me`, a search qualifier because `gh issue list` has no mention
-flag). Chips, not extra lists: the repo's list is long, so a list appended
-under it would sit below the fold, and a chip only changes the list when
-you click it. Each click refetches with a sequence number so a slow answer
-for a scope you already left cannot overwrite the one you picked. The
-column starts back on All every time it is entered. GitHub only. GitLab's
-issues API can say "assigned to me" but has no mention filter, so wiring it
-means a per-forge chip set rather than the same three chips.
+The issue column has the matching half as chips over the list: **All**
+and **Assigned to you** across GitHub, GitLab (`scope=assigned_to_me`),
+and Azure DevOps (`[System.AssignedTo] = @me`), plus **Mentions you** on
+GitHub (`--search mentions:@me`, a search qualifier because `gh issue
+list` has no mention flag). Chips, not extra lists: the repo's list is
+long, so a list appended under it would sit below the fold, and a chip
+only changes the list when you click it. Each click refetches with a
+sequence number so a slow answer for a scope you already left cannot
+overwrite the one you picked. The column starts back on All every time it
+is entered.
 
 ### The new-task dialog has TWO columns and TWO widths
 

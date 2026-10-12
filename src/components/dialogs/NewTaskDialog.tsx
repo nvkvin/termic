@@ -2422,15 +2422,23 @@ export function NewTaskDialog() {
             {t("newTask.issueColumnIntro", { noun: paneNouns.noun, nouns: paneNouns.nouns })}
           </p>
           {/* Scope chips: chosen, never arriving on their own, so the list
-              below only changes when you click. GitHub only, the one forge
-              whose CLI can say "assigned to me" and "mentions me". */}
-          {paneProvider === "github" && (
+              below only changes when you click. GitHub offers All,
+              Assigned to you, and Mentions you; GitLab and Azure DevOps
+              offer All and Assigned to you. */}
+          {paneProvider && (
             <div data-testid="issue-scope" className="flex flex-wrap items-center gap-1">
-              {([
-                ["all", t("newTask.issueScopeAll")],
-                ["assigned", t("newTask.issueScopeAssigned")],
-                ["mentions", t("newTask.issueScopeMentions")],
-              ] as const).map(([sv, label]) => (
+              {(
+                paneProvider === "github"
+                  ? ([
+                      ["all", t("newTask.issueScopeAll")],
+                      ["assigned", t("newTask.issueScopeAssigned")],
+                      ["mentions", t("newTask.issueScopeMentions")],
+                    ] as const)
+                  : ([
+                      ["all", t("newTask.issueScopeAll")],
+                      ["assigned", t("newTask.issueScopeAssigned")],
+                    ] as const)
+              ).map(([sv, label]) => (
                 <button
                   key={sv}
                   type="button"

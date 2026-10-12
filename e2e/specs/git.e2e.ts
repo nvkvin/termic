@@ -2875,4 +2875,21 @@ describe("the forge pickers: work that pulled you in", () => {
     await waitVisible('[data-testid="issue-scope"]');
     expect(await pressedScope()).toEqual(["all"]);
   });
+
+  it("offers All / Assigned to you on GitLab and Azure DevOps", async () => {
+    await browser.execute((id) => {
+      const pr = window.__termic!.usePr;
+      pr.setState({ providerByProject: { ...pr.getState().providerByProject, [id]: "gitlab" } });
+    }, projectId);
+    await waitVisible('[data-testid="issue-scope"]');
+    const labels = await browser.execute(() =>
+      [...document.querySelectorAll('[data-testid="issue-scope"] [data-issue-scope]')]
+        .map((b) => (b as HTMLElement).innerText.trim()),
+    );
+    expect(labels).toEqual(["All", "Assigned to you"]);
+    await browser.execute((id) => {
+      const pr = window.__termic!.usePr;
+      pr.setState({ providerByProject: { ...pr.getState().providerByProject, [id]: "github" } });
+    }, projectId);
+  });
 });
