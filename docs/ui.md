@@ -974,10 +974,10 @@ the count, and the list is one click away in the tree.
   the four always add up to the first, and the spec asserts that sum. Not
   started (backlog) is the rest of the list; it stays in the query language
   and the filter menu.
-- **Tasks in action is the total:** it counts all non-backlog tasks and
-  toggles `-status:backlog` into the query. Clicking it clears granular
-  status clauses, so every started task shows at once. Clicking a column
-  chip while it is on replaces `-status:backlog` with that status.
+- **Tasks in action is the total:** it counts all tasks with an open
+  agent tab and toggles `is:open` into the query. Clicking it clears
+  granular status clauses, so every open task shows at once. Clicking a
+  column chip while it is on replaces `is:open` with that status.
 - **Settled wears a check mark** in the settled colour
   (`STATUS_MARK_COLOR.settled`, `var(--color-info)`) and writes
   `status:settled`.

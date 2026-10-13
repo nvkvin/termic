@@ -236,6 +236,7 @@ export default {
     filterChecks_passing: "Passing",
     filterChecks_failing: "Failing",
     filterChecks_pending: "Running",
+    filterFlag_open: "Open agent",
     filterFlag_changes: "Has changes",
     filterFlag_worktree: "Worktree",
     filterFlag_main: "Main checkout",

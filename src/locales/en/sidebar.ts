@@ -38,8 +38,8 @@ export default {
     settled: "Settled",
     tip: "{{label}}: filter to status:{{status}}",
     tipActive: "{{label}}: remove status:{{status}}",
-    tipAction: "{{label}}: filter to tasks in action (-status:backlog)",
-    tipActiveAction: "{{label}}: remove -status:backlog",
+    tipAction: "{{label}}: filter to tasks in action (is:open)",
+    tipActiveAction: "{{label}}: remove is:open",
     tipEmpty: "{{label}}: no tasks",
   },
   filterBar: {

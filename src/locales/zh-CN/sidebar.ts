@@ -38,8 +38,8 @@ export default {
     settled: "已完成",
     tip: "{{label}}：筛选 status:{{status}}",
     tipActive: "{{label}}：移除 status:{{status}}",
-    tipAction: "{{label}}：筛选活动中任务（-status:backlog）",
-    tipActiveAction: "{{label}}：移除 -status:backlog",
+    tipAction: "{{label}}：筛选活动中任务（is:open）",
+    tipActiveAction: "{{label}}：移除 is:open",
     tipEmpty: "{{label}}：没有任务",
   },
   filterBar: {

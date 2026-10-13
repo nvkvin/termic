@@ -171,7 +171,7 @@ export type StatusTabFacts = Readonly<Record<string, BoardTaskFacts>>;
 export const EMPTY_STATUS_FACTS: StatusTabFacts = Object.freeze({});
 
 function sameBoardFacts(a: BoardTaskFacts, b: BoardTaskFacts): boolean {
-  return a.attention === b.attention && a.working === b.working && a.untouched === b.untouched && a.done === b.done;
+  return a.attention === b.attention && a.working === b.working && a.untouched === b.untouched && a.done === b.done && a.open === b.open;
 }
 
 export function createStatusFactsSelector(): (s: AppState) => StatusTabFacts {

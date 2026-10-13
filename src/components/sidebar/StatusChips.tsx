@@ -33,12 +33,11 @@ import type { BoardStateColumn } from "@/lib/taskBoardState";
 import type { WorkStatePrefs } from "@/lib/taskWorkState";
 import { cn } from "@/lib/utils";
 
-/** A total and its parts. "Tasks in action" counts every task somebody has
- *  started (-status:backlog), and the four chips after the rule are the
+/** A total and its parts. "Tasks in action" counts every task with an open
+ *  agent tab (is:open), and the four chips after the rule are the
  *  board columns those tasks sit in, in the order a task moves through them:
  *  the agent works, it stops to ask you something, the result goes to
- *  review, or it is settled. A task is in exactly ONE column, so the four
- *  always add up to the first.
+ *  review, or it is settled.
  *
  *  That sum is the rule the row is built on, and why there is no Done chip.
  *  Done (the unread dot) is not a column: it cuts across them, so a task
@@ -139,8 +138,10 @@ export const StatusChips = memo(function StatusChips() {
     <div data-testid="status-chips" className="no-scrollbar flex min-w-0 flex-nowrap gap-1 overflow-x-auto">
       {STATUS_CHIPS.map(c => {
         const isAction = c === "action";
-        const clause = boardClauseState(query, "status", isAction ? "backlog" : c);
-        const on = isAction ? clause === "exclude" : clause === "include";
+        const clause = isAction
+          ? boardClauseState(query, "is", "open")
+          : boardClauseState(query, "status", c);
+        const on = clause === "include";
         const empty = (totals[c] ?? 0) === 0 && clause === null;
         const tip = empty
           ? t("statusChips.tipEmpty", { label: chipLabel(c, t) })
@@ -165,13 +166,13 @@ export const StatusChips = memo(function StatusChips() {
                 const curText = useUI.getState().sidebarQuery;
                 if (isAction) {
                   if (on) {
-                    setText(setBoardClause(curText, "status", "backlog", null));
+                    setText(setBoardClause(curText, "is", "open", null));
                   } else {
-                    setText(setBoardClause(stripBoardKey(curText, "status"), "status", "backlog", "exclude"));
+                    setText(setBoardClause(stripBoardKey(curText, "status"), "is", "open", "include"));
                   }
                 } else {
-                  const baseText = boardClauseState(parseBoardQuery(curText), "status", "backlog") === "exclude"
-                    ? setBoardClause(curText, "status", "backlog", null)
+                  const baseText = boardClauseState(parseBoardQuery(curText), "is", "open") === "include"
+                    ? setBoardClause(curText, "is", "open", null)
                     : curText;
                   setText(toggleBoardClause(baseText, "status", c));
                 }

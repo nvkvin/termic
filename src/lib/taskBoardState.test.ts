@@ -14,6 +14,7 @@ import {
   boardTaskFacts,
   taskBoardColumn,
   taskHasClearableWork,
+  taskHasOpenAgent,
 } from "./taskBoardState";
 import type { Agent, Tab, Task } from "./types";
 import type { WorkStatePrefs } from "./taskWorkState";
@@ -165,7 +166,7 @@ describe("boardColumnFromFacts", () => {
 
   it("the facts are raw: no pref can hide a signal from the cache", () => {
     const facts = boardTaskFacts([tab({ unread: { reason: "attention" } }), tab({ id: "tab2", workState: "working" })]);
-    expect(facts).toEqual({ attention: true, working: true, untouched: false, done: false });
+    expect(facts).toEqual({ attention: true, working: true, untouched: false, done: false, open: false });
     expect(boardTaskFacts([tab({ lastInputAt: 5 })]).untouched).toBe(false);
     expect(boardTaskFacts([]).untouched).toBe(true);
   });
@@ -456,5 +457,27 @@ describe("boardColumnCanHide", () => {
 
   it("is false for an unpinned empty column, which cannot be on screen anyway", () => {
     expect(boardColumnCanHide("working", [], 0)).toBe(false);
+  });
+});
+
+describe("taskHasOpenAgent", () => {
+  it("recognizes live agent tabs with a running pty", () => {
+    expect(taskHasOpenAgent([tab({ cli: "claude", ptyId: "p1" })])).toBe(true);
+    expect(taskHasOpenAgent([tab({ cli: "gemini", ptyId: "p2" })])).toBe(true);
+  });
+
+  it("ignores shells, custom commands, run tabs, and dead tabs", () => {
+    expect(taskHasOpenAgent([tab({ cli: "shell", ptyId: "p1" })])).toBe(false);
+    expect(taskHasOpenAgent([tab({ cli: "custom", ptyId: "p1" })])).toBe(false);
+    expect(taskHasOpenAgent([tab({ cli: "claude", runTab: { member: "" }, ptyId: "p1" })])).toBe(false);
+    expect(taskHasOpenAgent([tab({ cli: "claude", ptyId: undefined })])).toBe(false);
+    expect(taskHasOpenAgent([tab({ type: "edit" as const })])).toBe(false);
+  });
+
+  it("boardTaskFacts includes open", () => {
+    const factsLive = boardTaskFacts([tab({ cli: "claude", ptyId: "p1" })]);
+    expect(factsLive.open).toBe(true);
+    const factsDead = boardTaskFacts([tab({ cli: "claude" })]);
+    expect(factsDead.open).toBe(false);
   });
 });

@@ -60,7 +60,7 @@ const BOARD_ENUM_VALUES: Partial<Record<BoardQualifier, readonly string[]>> = {
   status: [...BOARD_STATE_COLUMNS, "archived", "done"],
   pr: ["open", "draft", "merged", "closed", "none"],
   checks: ["passing", "failing", "pending", "none"],
-  is: ["main", "worktree", "yolo", "docker", "sandboxed", "multi", "archived"],
+  is: ["main", "worktree", "yolo", "docker", "sandboxed", "multi", "archived", "open"],
   has: ["pr", "changes"],
   no: ["pr", "changes"],
 };
@@ -181,6 +181,8 @@ export interface BoardMatchCtx {
    *  columns (such a task is in settled, or in review with a PR). Session
    *  state: it does not survive a restart, exactly like the dot. */
   done?: boolean;
+  /** At least one agent terminal tab currently has an active, running PTY. */
+  open?: boolean;
   /** The live PR poll result, null when nothing has been fetched. */
   pr: PrLookup | null;
   /** From the diffStat store: null = not measured, which matches neither
@@ -235,6 +237,7 @@ function clauseValueMatches(task: Task, ctx: BoardMatchCtx, key: BoardQualifier,
         case "sandboxed": return !task.docker_sandbox_enabled && isSandboxEnforced(effectiveSandboxMode(task));
         case "multi": return (task.composition?.length ?? 0) > 0;
         case "archived": return task.archived;
+        case "open": return !!ctx.open;
         default: return false;
       }
     case "has": return hasFlag(task, ctx, v) === true;
@@ -255,11 +258,20 @@ export function boardTaskMatches(task: Task, ctx: BoardMatchCtx, q: BoardQuery):
   return true;
 }
 
-/** `q` without its clauses on `key`. The status chips count their column
- *  under the REST of the query, so turning one chip on does not zero the
- *  others. */
-export function dropBoardClauses(q: BoardQuery, key: BoardQualifier): BoardQuery {
-  return { ...q, clauses: q.clauses.filter(c => c.key !== key) };
+/** `q` without its clauses on `key` (or without `value` on `key`). The status
+ *  chips count their column under the REST of the query, so turning one chip
+ *  on does not zero the others. */
+export function dropBoardClauses(q: BoardQuery, key: BoardQualifier, value?: string): BoardQuery {
+  const v = value?.toLowerCase();
+  return {
+    ...q,
+    clauses: q.clauses.flatMap(c => {
+      if (c.key !== key) return [c];
+      if (!v) return [];
+      const kept = c.values.filter(val => val.toLowerCase() !== v);
+      return kept.length > 0 ? [{ ...c, values: kept }] : [];
+    }),
+  };
 }
 
 // ── Query text editing ──────────────────────────────────────────────────

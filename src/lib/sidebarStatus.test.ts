@@ -28,10 +28,10 @@ function task(id: string, projectId: string, over: Partial<Task> = {}): Task {
 }
 
 const F = {
-  untouched: { attention: false, working: false, untouched: true, done: false },
-  settled: { attention: false, working: false, untouched: false, done: false },
-  working: { attention: false, working: true, untouched: false, done: false },
-  attention: { attention: true, working: false, untouched: false, done: false },
+  untouched: { attention: false, working: false, untouched: true, done: false, open: false },
+  settled: { attention: false, working: false, untouched: false, done: false, open: false },
+  working: { attention: false, working: true, untouched: false, done: false, open: false },
+  attention: { attention: true, working: false, untouched: false, done: false, open: false },
 } satisfies Record<string, BoardTaskFacts>;
 
 const ids = (groups: ReturnType<typeof statusBuckets>) =>

@@ -223,6 +223,10 @@ describe("boardTaskMatches", () => {
     expect(matches("is:sandboxed", task({ sandbox_mode: "enforce" }))).toBe(true);
     expect(matches("is:sandboxed", task({ sandbox_mode: "enforce", docker_sandbox_enabled: true }))).toBe(false);
     expect(matches("is:archived", task({ archived: true }))).toBe(true);
+    expect(matches("is:open", task(), ctx({ open: true }))).toBe(true);
+    expect(matches("is:open", task(), ctx({ open: false }))).toBe(false);
+    expect(matches("-is:open", task(), ctx({ open: true }))).toBe(false);
+    expect(matches("-is:open", task(), ctx({ open: false }))).toBe(true);
     expect(matches("is:bogus")).toBe(false);
   });
 });
@@ -361,6 +365,7 @@ describe("boardSuggestions", () => {
 
   it("uses the enum for closed keys", () => {
     expect(boardSuggestions("is:y", values).map(s => s.label)).toEqual(["yolo"]);
+    expect(boardSuggestions("is:op", values).map(s => s.label)).toEqual(["open"]);
   });
 
   it("nothing after a space or for an unknown key", () => {
@@ -395,6 +400,12 @@ describe("dropBoardClauses (the status chips' counts)", () => {
     const q = dropBoardClauses(parseBoardQuery("login project:p1 -status:working"), "status");
     expect(q.clauses.map(c => c.key)).toEqual(["project"]);
     expect(q.terms.map(t => t.text)).toEqual(["login"]);
+  });
+
+  it("drops a specific value of a key while keeping others", () => {
+    const q = dropBoardClauses(parseBoardQuery("is:open,main status:working"), "is", "open");
+    expect(q.clauses.find(c => c.key === "is")?.values).toEqual(["main"]);
+    expect(q.clauses.find(c => c.key === "status")?.values).toEqual(["working"]);
   });
 });
 

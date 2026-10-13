@@ -236,6 +236,7 @@ export default {
     filterChecks_passing: "通过",
     filterChecks_failing: "失败",
     filterChecks_pending: "运行中",
+    filterFlag_open: "已打开智能体",
     filterFlag_changes: "有改动",
     filterFlag_worktree: "工作树",
     filterFlag_main: "主检出",

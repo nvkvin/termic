@@ -110,7 +110,7 @@ export function nextIdFlags(
 
 /** A task whose tabs never loaded this session: no evidence of anything, the
  *  same reading the board gives `EMPTY_TABS`. */
-const UNLOADED: BoardTaskFacts = Object.freeze({ attention: false, working: false, untouched: true, done: false });
+const UNLOADED: BoardTaskFacts = Object.freeze({ attention: false, working: false, untouched: true, done: false, open: false });
 
 /** One thing a bucket draws: a loose task, or a task group with its members
  *  (the tree's own grouping, in its own colour). */

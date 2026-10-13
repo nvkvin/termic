@@ -102,7 +102,7 @@ export function taskQueryNeeds(query: BoardQuery, menuOpen: boolean, alwaysColum
   // included, so while it is open this holds the same subscriptions a query
   // using them would.
   const watching = filtering || menuOpen;
-  const columns = alwaysColumns || menuOpen || boardQueryUses(query, "status");
+  const columns = alwaysColumns || menuOpen || boardQueryUses(query, "status") || boardQueryUses(query, "is", "open");
   return {
     filtering,
     watching,
@@ -219,6 +219,7 @@ export function useTaskQuery({ text, menuOpen, live, archived, workPrefs, always
       // counted under Needs you AND Done while showing only a bell.
       done: workPrefs.settledHighlight && !!statusFacts[w.id]?.done
         && !((workPrefs.attentionIndicator ?? true) && !!statusFacts[w.id]?.attention),
+      open: !!statusFacts[w.id]?.open,
       pr: usePr.getState().byTask[w.id]?.lookup ?? null,
       changed: stat ? stat.files_changed > 0 : null,
       facts: filterFacts[w.id],
@@ -238,17 +239,17 @@ export function useTaskQuery({ text, menuOpen, live, archived, workPrefs, always
     for (const w of live) if (columnOf.get(w.id) === column && boardTaskMatches(w, matchCtx(w), rest)) n++;
     return n;
   }, [query, live, columnOf, matchCtx]);
-  // The Action chip's numbers: all non-backlog tasks (attention, working, review, settled).
+  // The Action chip's numbers: all tasks with an open agent tab (is:open).
   const actionCount = useCallback((): { shown: number; total: number } => {
-    const rest = dropBoardClauses(query, "status");
+    const rest = dropBoardClauses(dropBoardClauses(query, "status"), "is", "open");
     let shown = 0, total = 0;
     for (const w of live) {
-      if (columnOf.get(w.id) === "backlog") continue;
+      if (!statusFacts[w.id]?.open) continue;
       total++;
       if (boardTaskMatches(w, matchCtx(w), rest)) shown++;
     }
     return { shown, total };
-  }, [query, live, columnOf, matchCtx]);
+  }, [query, live, statusFacts, matchCtx]);
 
   // `has:changes` on a task nothing drew: cards and rows ask for their own
   // diffstat when they mount, so a task filtered out from the start would
@@ -363,6 +364,7 @@ export function useTaskQuery({ text, menuOpen, live, archived, workPrefs, always
         id: "flags",
         title: t("board.filterSecFlags"),
         options: [
+          opt("is", "open", t("board.filterFlag_open")),
           opt("has", "changes", t("board.filterFlag_changes")),
           opt("is", "worktree", t("board.filterFlag_worktree")),
           opt("is", "main", t("board.filterFlag_main")),

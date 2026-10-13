@@ -8,7 +8,7 @@
 // Kept pure and hook-free so the precedence matrix is unit-testable without
 // mounting the board, and so BoardView stays a thin renderer over this file.
 
-import type { Agent, Tab, Task } from "./types";
+import type { Agent, Tab, Task, TerminalTab } from "./types";
 import {
   taskNeedsAttention,
   taskWorkDone,
@@ -62,11 +62,34 @@ export interface BoardTaskFacts {
    *  `status:done` need it per task without holding `tabs`, and this record
    *  is the one that already costs a re-render per work-state flip. */
   readonly done: boolean;
+  /** At least one agent terminal tab currently has an active, running PTY. */
+  readonly open: boolean;
 }
 
 /** A task whose tabs never loaded this session: no evidence of anything,
  *  the same reading `boardTaskFacts(EMPTY_TABS)` gives. */
-export const NO_TAB_FACTS: BoardTaskFacts = Object.freeze({ attention: false, working: false, untouched: true, done: false });
+export const NO_TAB_FACTS: BoardTaskFacts = Object.freeze({ attention: false, working: false, untouched: true, done: false, open: false });
+
+/** Whether any terminal tab is an agent (not shell, not custom command,
+ *  not a run script) with an active, running PTY. */
+export function taskHasOpenAgent(tabs: Tab[], agents?: Agent[]): boolean {
+  return tabs.some(t => {
+    if (
+      t.type !== "terminal"
+      || t.cli === "shell"
+      || t.cli === "custom"
+      || (t as TerminalTab).runTab
+      || !(t as TerminalTab).ptyId
+    ) {
+      return false;
+    }
+    if (agents && agents.length > 0) {
+      const entry = agents.find(x => x.id === t.cli);
+      if (entry?.kind === "terminal") return false;
+    }
+    return true;
+  });
+}
 
 // Both helpers apply their prefs; these make them report the raw fact. The
 // gates are re-applied in boardColumnFromFacts, against the caller's prefs.
@@ -78,6 +101,7 @@ export function boardTaskFacts(tabs: Tab[]): BoardTaskFacts {
     working: taskWorking(tabs, RAW_PREFS),
     untouched: taskUntouched(tabs),
     done: taskWorkDone(tabs, RAW_PREFS),
+    open: taskHasOpenAgent(tabs),
   };
 }
 
