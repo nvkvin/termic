@@ -737,11 +737,10 @@ describe("sidebar filter bar", () => {
     expect(review).toEqual({ chip: "review", empty: true, disabled: "true", count: "0" });
     // Every chip agrees with itself: empty exactly when it is disabled.
     for (const c of all) expect(c.disabled === "true").toBe(c.empty);
-    // The rule the row is built on: the first chip is a total and the four
-    // after the rule are the columns it splits into, so they add up to it.
-    // With a Done chip in the row one task was counted on three chips.
+    // Tasks in action counts tasks with an open agent tab (is:open). `a` has
+    // a live agent terminal, so action counts at least 1.
     const n = (chip: string) => Number(all.find(c => c.chip === chip)!.count);
-    expect(n("working") + n("attention") + n("review") + n("settled")).toBe(n("action"));
+    expect(n("action")).toBeGreaterThanOrEqual(1);
     expect(await browser.execute(() => {
       const row = document.querySelector('[data-testid="status-chips"]')!;
       const rule = row.querySelector('[data-testid="status-chips-rule"]');
@@ -770,6 +769,56 @@ describe("sidebar filter bar", () => {
 
     await clickWhenVisible('[data-status-chip="review"]');
     expect(await query()).toBe("");
+  });
+
+  it("Tasks in action chip toggles is:open and yields to column chips", async () => {
+    // Seed attention on a so the attention chip is active and clickable.
+    await browser.execute(id => {
+      const app = window.__termic!.useApp.getState();
+      const tab = (app.tabs[id] ?? []).find((t: any) => t.type === "terminal");
+      app.markAttention(id, tab.id, "attention", "needs you");
+    }, a);
+    const ACTION = '[data-status-chip="action"]';
+    const ATTENTION = '[data-status-chip="attention"]';
+    await waitVisible(ACTION);
+
+    // Clicking action writes is:open
+    await clickWhenVisible(ACTION);
+    await browser.waitUntil(async () => (await query()) === "is:open", {
+      timeout: 5_000,
+      timeoutMsg: "the action chip did not write is:open",
+    });
+    expect(await browser.execute(sel => document.querySelector(sel)?.getAttribute("aria-pressed"), ACTION)).toBe("true");
+
+    // Clicking a column chip replaces is:open with that status
+    await clickWhenVisible(ATTENTION);
+    await browser.waitUntil(async () => (await query()) === "status:attention", {
+      timeout: 5_000,
+      timeoutMsg: "the attention chip did not replace is:open",
+    });
+    expect(await browser.execute(sel => document.querySelector(sel)?.getAttribute("aria-pressed"), ACTION)).toBe("false");
+    expect(await browser.execute(sel => document.querySelector(sel)?.getAttribute("aria-pressed"), ATTENTION)).toBe("true");
+
+    // Clicking action while a column chip is on replaces it with is:open
+    await clickWhenVisible(ACTION);
+    await browser.waitUntil(async () => (await query()) === "is:open", {
+      timeout: 5_000,
+      timeoutMsg: "action chip did not replace column status with is:open",
+    });
+
+    // Clicking action again toggles it back off
+    await clickWhenVisible(ACTION);
+    await browser.waitUntil(async () => (await query()) === "", {
+      timeout: 5_000,
+      timeoutMsg: "a second click did not take is:open back out",
+    });
+
+    // Clean up seeded attention
+    await browser.execute(id => {
+      const app = window.__termic!.useApp.getState();
+      const tab = (app.tabs[id] ?? []).find((t: any) => t.type === "terminal");
+      app.clearAttention(id, tab.id);
+    }, a);
   });
 
   it("keeps its own query: the board is not filtered by it", async () => {
