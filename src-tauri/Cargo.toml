@@ -131,6 +131,9 @@ objc2-foundation = { version = "0.3", features = ["NSProcessInfo", "NSData"] }
 # from tauri.conf.json and has to be set at runtime. Also already in the tree
 # via tauri/wry.
 objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSImage", "NSResponder"] }
+# WKWebViewConfiguration to disable Apple Intelligence Writing Tools / Campo (GH #355).
+# Already in the tree via tauri/wry.
+objc2-web-kit = { version = "0.3", features = ["WKWebViewConfiguration"] }
 
 [dev-dependencies]
 tempfile = "3"

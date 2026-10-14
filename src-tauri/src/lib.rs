@@ -10100,6 +10100,50 @@ fn with_grayscale_text<'a>(
     builder
 }
 
+/// Disable Apple Intelligence Writing Tools on macOS (GH #355).
+///
+/// On macOS 15.1+ (Sequoia / Tahoe 26+), AppKit's CampoLightweightUI subsystem
+/// attempts to display a floating Writing Tools affordance when the mouse dwells
+/// over selectable text. When attaching to WKWebView text selections, an internal
+/// AppKit assertion fails (`NSCampoLightweightUIController.m:1429`), raising an
+/// NSInternalInconsistencyException across tao's `send_event` FFI boundary.
+/// Because Rust cannot unwind across extern "C" callbacks, this triggers
+/// `panic_cannot_unwind` and aborts the application (SIGABRT).
+///
+/// Setting `writingToolsBehavior = -1` (NSWritingToolsBehaviorNone) on
+/// WKWebViewConfiguration before the webview is created disables Writing Tools
+/// and completely eliminates the Campo assertion failure.
+#[cfg(target_os = "macos")]
+fn without_writing_tools<'a>(
+    builder: tauri::WebviewWindowBuilder<'a, tauri::Wry, AppHandle>,
+) -> tauri::WebviewWindowBuilder<'a, tauri::Wry, AppHandle> {
+    use objc2::msg_send;
+    use objc2::runtime::Bool;
+    use objc2_web_kit::WKWebViewConfiguration;
+
+    if let Some(mtm) = objc2::MainThreadMarker::new() {
+        unsafe {
+            let config = WKWebViewConfiguration::new(mtm);
+            let sel = objc2::sel!(setWritingToolsBehavior:);
+            let responds: Bool = msg_send![&config, respondsToSelector: sel];
+            if responds.as_bool() {
+                // NSWritingToolsBehaviorNone = -1
+                let _: () = msg_send![&config, setWritingToolsBehavior: -1isize];
+            }
+            builder.with_webview_configuration(config)
+        }
+    } else {
+        builder
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn without_writing_tools<'a>(
+    builder: tauri::WebviewWindowBuilder<'a, tauri::Wry, AppHandle>,
+) -> tauri::WebviewWindowBuilder<'a, tauri::Wry, AppHandle> {
+    builder
+}
+
 fn build_profile_window(app: &AppHandle, id: &ProfileId) -> tauri::Result<tauri::WebviewWindow> {
     use tauri::Manager;
     let label = id.window_label();
@@ -10155,7 +10199,7 @@ fn build_profile_window(app: &AppHandle, id: &ProfileId) -> tauri::Result<tauri:
     }
 
     dlog(&format!("[profile] build {label}: builder.build"));
-    let win = without_browser_accelerators(with_grayscale_text(builder)).build()?;
+    let win = without_browser_accelerators(with_grayscale_text(without_writing_tools(builder))).build()?;
     dlog(&format!("[profile] build {label}: built"));
     #[cfg(all(target_os = "macos", feature = "e2e"))]
     hide_window_from_user_in_e2e(&win);
@@ -10512,9 +10556,9 @@ fn procmon_open_window_main(app: &AppHandle) -> Result<(), String> {
     .title("Activity")
     .inner_size(880.0, 620.0)
     .min_inner_size(560.0, 320.0);
-    let win = without_browser_accelerators(with_grayscale_text(win))
-    .build()
-    .map_err(|e| e.to_string())?;
+    let win = without_browser_accelerators(with_grayscale_text(without_writing_tools(win)))
+        .build()
+        .map_err(|e| e.to_string())?;
     #[cfg(all(target_os = "macos", feature = "e2e"))]
     hide_window_from_user_in_e2e(&win);
     // Remember WHERE the monitor was, never how big. The window-state plugin
@@ -36287,5 +36331,26 @@ mod schedule_record_tests {
         let plan = archive_script_plan(&t, Some(&proj), false);
         assert_eq!(plan, vec![("make down".to_string(), member.path().to_path_buf())]);
         assert!(archive_script_plan(&t, Some(&proj), true).is_empty());
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn test_writing_tools_behavior_opt_out() {
+        use objc2::msg_send;
+        use objc2::runtime::Bool;
+        use objc2_web_kit::WKWebViewConfiguration;
+
+        if let Some(mtm) = objc2::MainThreadMarker::new() {
+            unsafe {
+                let config = WKWebViewConfiguration::new(mtm);
+                let sel = objc2::sel!(setWritingToolsBehavior:);
+                let responds: Bool = msg_send![&config, respondsToSelector: sel];
+                if responds.as_bool() {
+                    let _: () = msg_send![&config, setWritingToolsBehavior: -1isize];
+                    let val: isize = msg_send![&config, writingToolsBehavior];
+                    assert_eq!(val, -1, "writingToolsBehavior must be set to NSWritingToolsBehaviorNone (-1)");
+                }
+            }
+        }
     }
 }
