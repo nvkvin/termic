@@ -22,7 +22,7 @@ import { AppDialog } from "@/components/ui/Dialog";
 import { Tip } from "@/components/ui/Tooltip";
 import { Trash2, Plus, Check, AlertTriangle, RotateCcw, Copy, ChevronRight, ChevronDown, Info } from "lucide-react";
 import { AgentAccountsRow, AgentAccountsAction } from "@/components/settings/AgentAccountsRow";
-import { CliIcon, CLI_BRAND_COLOR, resolveIconId } from "@/icons/cli";
+import { CliIcon, CLI_BRAND_COLOR, resolveIconId, TOOL_ICONS } from "@/icons/cli";
 import { SignalInspector } from "./SignalInspector";
 import { AgentHookSource } from "./AgentHookSource";
 import { RecentHooks } from "./RecentHooks";
@@ -285,7 +285,7 @@ export function AgentsSection() {
       display_name: t("agents.newTerminalName", { n }),
       command: "",
       args: [],
-      icon_id: "lucide:terminal",
+      icon_id: "terminal",
       color: "#9aa0a6",
       builtin: false,
       kind: "terminal",
@@ -569,6 +569,8 @@ function AgentsTabs({
   const { t } = useTranslation("settings");
   // PATH-detection results (keyed by agent id) drive the install badge.
   const detectedClis = useApp(s => s.detectedClis);
+  // Category filter switch: All / AI Agents / CLI Tools & Terminals
+  const [filter, setFilter] = useState<"all" | "agents" | "terminals">("all");
   // Default to first agent; when the list churns (delete current,
   // add new) drift to a sensible neighbor instead of going blank.
   useEffect(() => {
@@ -583,8 +585,15 @@ function AgentsTabs({
   // `agents[0]` the moment the list arrives, landing the user on the wrong
   // card. Depending on `agents` re-applies it once the target is really there.
   useEffect(() => {
-    if (autoFocusId && agents.some(a => a.id === autoFocusId)) setActiveId(autoFocusId);
-  }, [autoFocusId, agents]);
+    if (autoFocusId && agents.some(a => a.id === autoFocusId)) {
+      setActiveId(autoFocusId);
+      const target = agents.find(a => a.id === autoFocusId);
+      if (target) {
+        if (isTerminalEntry(target) && filter === "agents") setFilter("all");
+        if (!isTerminalEntry(target) && filter === "terminals") setFilter("all");
+      }
+    }
+  }, [autoFocusId, agents, filter, setActiveId]);
 
   // Drag-to-reorder — same pointer-based pattern as TabBar (no HTML5 DnD;
   // WKWebView's native drag is unreliable and Tauri intercepts it).
@@ -710,6 +719,8 @@ function AgentsTabs({
   // and drag-reorder stays within a group (see maybeReorder).
   const agentEntries = agents.filter(a => !isTerminalEntry(a));
   const termEntries = agents.filter(isTerminalEntry);
+  const displayedAgents = filter === "terminals" ? [] : agentEntries;
+  const displayedTerms = filter === "agents" ? [] : termEntries;
 
   const pill = (a: Agent, first: boolean) => (
     <button
@@ -758,6 +769,51 @@ function AgentsTabs({
 
   return (
     <div className="flex flex-col">
+      {/* Category filter switch: All / AI Agents / CLI Tools & Terminals */}
+      <div className="mb-2.5 flex items-center justify-between">
+        <div className="flex items-center gap-1 rounded-md bg-[var(--color-bg-2)] p-0.5 text-[12px]">
+          <button
+            type="button"
+            data-testid="filter-all"
+            onClick={() => setFilter("all")}
+            className={cn(
+              "rounded px-2.5 py-1 font-medium transition-colors select-none",
+              filter === "all" ? "bg-[var(--color-bg-1)] text-[var(--color-fg)] shadow-xs" : "text-[var(--color-fg-faint)] hover:text-[var(--color-fg-dim)]"
+            )}
+          >
+            {t("agents.filterAll")} <span className="text-[10px] opacity-70">({agents.length})</span>
+          </button>
+          <button
+            type="button"
+            data-testid="filter-agents"
+            onClick={() => {
+              setFilter("agents");
+              if (active && isTerminalEntry(active) && agentEntries.length > 0) setActiveId(agentEntries[0].id);
+            }}
+            className={cn(
+              "rounded px-2.5 py-1 font-medium transition-colors select-none",
+              filter === "agents" ? "bg-[var(--color-bg-1)] text-[var(--color-fg)] shadow-xs" : "text-[var(--color-fg-faint)] hover:text-[var(--color-fg-dim)]"
+            )}
+          >
+            {t("agents.filterAgents")} <span className="text-[10px] opacity-70">({agentEntries.length})</span>
+          </button>
+          <button
+            type="button"
+            data-testid="filter-terminals"
+            onClick={() => {
+              setFilter("terminals");
+              if (active && !isTerminalEntry(active) && termEntries.length > 0) setActiveId(termEntries[0].id);
+            }}
+            className={cn(
+              "rounded px-2.5 py-1 font-medium transition-colors select-none",
+              filter === "terminals" ? "bg-[var(--color-bg-1)] text-[var(--color-fg)] shadow-xs" : "text-[var(--color-fg-faint)] hover:text-[var(--color-fg-dim)]"
+            )}
+          >
+            {t("agents.filterTerminals")} <span className="text-[10px] opacity-70">({termEntries.length})</span>
+          </button>
+        </div>
+      </div>
+
       {/* Tab strip — mirrors the Repository sub-tab style: bottom
           border under inactive tabs, accent underline beneath the
           active one. Keeps the visual language consistent across
@@ -776,39 +832,45 @@ function AgentsTabs({
         style={stripMask ? { maskImage: stripMask, WebkitMaskImage: stripMask } : undefined}
         className="no-scrollbar flex items-center gap-1 overflow-x-auto overflow-y-hidden"
       >
-        {agentEntries.map((a, idx) => pill(a, idx === 0))}
-        {termEntries.length > 0 && (
+        {displayedAgents.map((a, idx) => pill(a, idx === 0))}
+        {filter === "all" && termEntries.length > 0 && agentEntries.length > 0 && (
           <span className="ml-4 mr-1 shrink-0 select-none text-[10.5px] uppercase tracking-wider text-[var(--color-fg-faint)]">
             {t("agents.terminalsGroup")}
           </span>
         )}
-        {termEntries.map(a => pill(a, false))}
+        {displayedTerms.map((a, idx) => pill(a, displayedAgents.length === 0 && idx === 0))}
       </div>
       </div>
 
       {/* Active agent card. Mount-keyed by id so internal state
           (refs, drafts) resets cleanly when the user switches tabs. */}
       <div className="mt-3">
-        <AgentCard
-          key={active.id}
-          agent={active}
-          detected={detectedClis[active.id]}
-          onPatch={(p) => patchAgent(active.id, p)}
-          dockerSandboxOn={dockerSandboxOn}
-          onCommitId={(newDisplayName) => onCommitId(active.id, newDisplayName)}
-          onPatchCaps={(p) => patchCaps(active.id, p)}
-          onRemove={() => requestRemoveAgent(active.id)}
-          onClone={() => cloneAgent(active.id)}
-          extendsName={active.extends ? (agents.find(a => a.id === active.extends)?.display_name ?? active.extends) : undefined}
-          overrideCount={agentOverrides(agents, active.id).length}
-          inherited={inherited}
-          yoloNote={yoloArgsNote(builtinBaseId(active.id, agents))}
-          resetOverrides={resetOverrides}
-          autoFocus={autoFocusId === active.id}
-          onAutoFocusConsumed={onAutoFocusConsumed}
-          modified={isModified(active)}
-          onReset={defaults.find(d => d.id === active.id) ? () => resetAgent(active.id) : undefined}
-        />
+        {filter === "terminals" && termEntries.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-[var(--color-border-soft)] p-8 text-center text-[13px] text-[var(--color-fg-dim)]">
+            {t("agents.noTerminals")}
+          </div>
+        ) : (
+          <AgentCard
+            key={active.id}
+            agent={active}
+            detected={detectedClis[active.id]}
+            onPatch={(p) => patchAgent(active.id, p)}
+            dockerSandboxOn={dockerSandboxOn}
+            onCommitId={(newDisplayName) => onCommitId(active.id, newDisplayName)}
+            onPatchCaps={(p) => patchCaps(active.id, p)}
+            onRemove={() => requestRemoveAgent(active.id)}
+            onClone={() => cloneAgent(active.id)}
+            extendsName={active.extends ? (agents.find(a => a.id === active.extends)?.display_name ?? active.extends) : undefined}
+            overrideCount={agentOverrides(agents, active.id).length}
+            inherited={inherited}
+            yoloNote={yoloArgsNote(builtinBaseId(active.id, agents))}
+            resetOverrides={resetOverrides}
+            autoFocus={autoFocusId === active.id}
+            onAutoFocusConsumed={onAutoFocusConsumed}
+            modified={isModified(active)}
+            onReset={defaults.find(d => d.id === active.id) ? () => resetAgent(active.id) : undefined}
+          />
+        )}
       </div>
     </div>
   );
@@ -914,9 +976,56 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
           "BUILT-IN" over two rows. */}
       <header className="mb-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <span className={cn(CLI_BRAND_COLOR[agent.icon_id || inherited?.icon_id || agent.id] || "text-[var(--color-fg-dim)]")}>
-            <CliIcon cli={agent.icon_id || inherited?.icon_id || agent.id} className="h-4 w-4" />
-          </span>
+          {isTerminal || !agent.builtin ? (
+            <DropdownRoot>
+              <DropdownTrigger asChild>
+                <button
+                  type="button"
+                  data-testid="icon-picker-trigger"
+                  className={cn(
+                    "flex items-center gap-1 rounded border border-[var(--color-border-soft)] px-1.5 py-1 transition-colors hover:border-[var(--color-border)] hover:bg-[var(--color-bg-2)] cursor-pointer select-none",
+                    CLI_BRAND_COLOR[agent.icon_id || inherited?.icon_id || agent.id] || "text-[var(--color-fg-dim)]"
+                  )}
+                  title={t("agents.iconPicker")}
+                >
+                  <CliIcon cli={agent.icon_id || inherited?.icon_id || agent.id} className="h-4 w-4" />
+                  <ChevronDown className="h-3 w-3 opacity-60" />
+                </button>
+              </DropdownTrigger>
+              <DropdownMenu align="start" className="w-56 p-2">
+                <div className="mb-1.5 px-1 text-[11px] font-semibold text-[var(--color-fg-faint)]">
+                  {t("agents.iconPicker")}
+                </div>
+                <div className="grid grid-cols-4 gap-1.5">
+                  {TOOL_ICONS.map(icon => {
+                    const activeIcon = (agent.icon_id || (isTerminal ? "terminal" : agent.id)) === icon.id;
+                    return (
+                      <button
+                        key={icon.id}
+                        type="button"
+                        data-testid={`icon-pick-${icon.id}`}
+                        onClick={() => onPatch({ icon_id: icon.id })}
+                        title={icon.label}
+                        className={cn(
+                          "flex h-8 w-8 items-center justify-center rounded transition-colors cursor-pointer",
+                          activeIcon
+                            ? "bg-[var(--color-accent)]/20 ring-1 ring-[var(--color-accent)]"
+                            : "hover:bg-[var(--color-bg-2)]",
+                          CLI_BRAND_COLOR[icon.id] || "text-[var(--color-fg-dim)]"
+                        )}
+                      >
+                        <CliIcon cli={icon.id} className="h-4 w-4" />
+                      </button>
+                    );
+                  })}
+                </div>
+              </DropdownMenu>
+            </DropdownRoot>
+          ) : (
+            <span className={cn(CLI_BRAND_COLOR[agent.icon_id || inherited?.icon_id || agent.id] || "text-[var(--color-fg-dim)]")}>
+              <CliIcon cli={agent.icon_id || inherited?.icon_id || agent.id} className="h-4 w-4" />
+            </span>
+          )}
           <input
             ref={nameRef}
             value={agent.display_name}

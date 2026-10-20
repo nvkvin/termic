@@ -165,6 +165,136 @@ export function OmpIcon({ className }: Props) {
   );
 }
 
+export function DatabaseIcon({ className }: Props) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+      strokeLinecap="round" strokeLinejoin="round" className={cn("inline-block", className)} aria-hidden>
+      <ellipse cx="12" cy="5" rx="9" ry="3" />
+      <path d="M3 5V19A9 3 0 0 0 21 19V5" />
+      <path d="M3 12A9 3 0 0 0 21 12" />
+    </svg>
+  );
+}
+
+export function ServerIcon({ className }: Props) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+      strokeLinecap="round" strokeLinejoin="round" className={cn("inline-block", className)} aria-hidden>
+      <rect width="20" height="8" x="2" y="2" rx="2" ry="2" />
+      <rect width="20" height="8" x="2" y="14" rx="2" ry="2" />
+      <line x1="6" x2="6.01" y1="6" y2="6" />
+      <line x1="6" x2="6.01" y1="18" y2="18" />
+    </svg>
+  );
+}
+
+export function GlobeIcon({ className }: Props) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+      strokeLinecap="round" strokeLinejoin="round" className={cn("inline-block", className)} aria-hidden>
+      <circle cx="12" cy="12" r="10" />
+      <path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20" />
+      <path d="M2 12h20" />
+    </svg>
+  );
+}
+
+export function CpuIcon({ className }: Props) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+      strokeLinecap="round" strokeLinejoin="round" className={cn("inline-block", className)} aria-hidden>
+      <rect width="16" height="16" x="4" y="4" rx="2" />
+      <rect width="6" height="6" x="9" y="9" rx="1" />
+      <path d="M15 2v2M15 20v2M2 15h2M2 9h2M20 15h2M20 9h2M9 2v2M9 20v2" />
+    </svg>
+  );
+}
+
+export function BoxIcon({ className }: Props) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+      strokeLinecap="round" strokeLinejoin="round" className={cn("inline-block", className)} aria-hidden>
+      <path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z" />
+      <path d="m3.3 7 8.7 5 8.7-5M12 22V12" />
+    </svg>
+  );
+}
+
+export function GitBranchIcon({ className }: Props) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+      strokeLinecap="round" strokeLinejoin="round" className={cn("inline-block", className)} aria-hidden>
+      <line x1="6" x2="6" y1="3" y2="15" />
+      <circle cx="18" cy="6" r="3" />
+      <circle cx="6" cy="18" r="3" />
+      <path d="M18 9a9 9 0 0 1-9 9" />
+    </svg>
+  );
+}
+
+export function BugIcon({ className }: Props) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+      strokeLinecap="round" strokeLinejoin="round" className={cn("inline-block", className)} aria-hidden>
+      <rect width="8" height="14" x="8" y="6" rx="4" />
+      <path d="m19 7-3 2M5 7l3 2M19 19l-3-2M5 19l3-2M20 13h-4M4 13h4M10 4l1 2M14 4l-1 2" />
+    </svg>
+  );
+}
+
+export function FlameIcon({ className }: Props) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+      strokeLinecap="round" strokeLinejoin="round" className={cn("inline-block", className)} aria-hidden>
+      <path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z" />
+    </svg>
+  );
+}
+
+export function ShieldIcon({ className }: Props) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+      strokeLinecap="round" strokeLinejoin="round" className={cn("inline-block", className)} aria-hidden>
+      <path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" />
+    </svg>
+  );
+}
+
+export function WrenchIcon({ className }: Props) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+      strokeLinecap="round" strokeLinejoin="round" className={cn("inline-block", className)} aria-hidden>
+      <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
+    </svg>
+  );
+}
+
+export function LayersIcon({ className }: Props) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+      strokeLinecap="round" strokeLinejoin="round" className={cn("inline-block", className)} aria-hidden>
+      <path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z" />
+      <path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65" />
+      <path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65" />
+    </svg>
+  );
+}
+
+export const TOOL_ICONS: Array<{ id: string; label: string }> = [
+  { id: "terminal", label: "Terminal" },
+  { id: "database", label: "Database" },
+  { id: "server", label: "Server" },
+  { id: "globe", label: "Network / Web" },
+  { id: "cpu", label: "CPU / Build" },
+  { id: "box", label: "Container / Package" },
+  { id: "git", label: "Git" },
+  { id: "bug", label: "Debug" },
+  { id: "flame", label: "Performance" },
+  { id: "shield", label: "Security" },
+  { id: "wrench", label: "Utility" },
+  { id: "layers", label: "Stack / Layers" },
+];
+
 /** Pick the right icon for a CLI name; falls back to a generic terminal glyph. */
 export function CliIcon({ cli, className }: { cli: string; className?: string }) {
   switch (cli) {
@@ -179,6 +309,19 @@ export function CliIcon({ cli, className }: { cli: string; className?: string })
     case "cursor":   return <CursorIcon className={className} />;
     case "devin":    return <DevinIcon className={className} />;
     case "copilot": return <CopilotIcon className={className} />;
+    case "database": return <DatabaseIcon className={className} />;
+    case "server":   return <ServerIcon className={className} />;
+    case "globe":    return <GlobeIcon className={className} />;
+    case "cpu":      return <CpuIcon className={className} />;
+    case "box":      return <BoxIcon className={className} />;
+    case "git":      return <GitBranchIcon className={className} />;
+    case "bug":      return <BugIcon className={className} />;
+    case "flame":    return <FlameIcon className={className} />;
+    case "shield":   return <ShieldIcon className={className} />;
+    case "wrench":   return <WrenchIcon className={className} />;
+    case "layers":   return <LayersIcon className={className} />;
+    case "terminal":
+    case "lucide:terminal":
     case "shell":  return <ShellIcon className={className} />;
     case "custom": return <CustomCommandIcon className={className} />;
     // `data-cli-icon="fallback"` marks the generic glyph so a spec can assert
@@ -208,6 +351,18 @@ export const CLI_BRAND_COLOR: Record<string, string> = {
   muse:     "text-[var(--color-cli-muse)]",
   cursor:   "text-[var(--color-cli-cursor)]",
   devin:    "text-[var(--color-cli-devin)]",
+  database: "text-amber-500",
+  server:   "text-emerald-500",
+  globe:    "text-sky-500",
+  cpu:      "text-purple-500",
+  box:      "text-orange-500",
+  git:      "text-rose-500",
+  bug:      "text-red-500",
+  flame:    "text-amber-600",
+  shield:   "text-blue-500",
+  wrench:   "text-cyan-500",
+  layers:   "text-indigo-500",
+  terminal: "text-[var(--color-fg-dim)]",
 };
 
 /** Resolve an agent's stable ID to its icon_id using the live agent registry.
