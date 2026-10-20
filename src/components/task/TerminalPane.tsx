@@ -64,7 +64,7 @@ import { SudoTouchIdBanner } from "@/components/task/SudoTouchIdBanner";
 import { TerminalFindBar } from "@/components/task/TerminalFindBar";
 import { isTerminalCloseCombo, isTerminalFindCombo } from "@/lib/terminalFind";
 import * as ipc from "@/lib/ipc";
-import { wrapWithDotEnv, loadTaskDotEnv } from "@/lib/dotenv";
+import { wrapWithDotEnv, resolveDotEnvForTab } from "@/lib/dotenv";
 import { maybeRebuildDockerImageForLaunch } from "@/lib/dockerDailyRebuild";
 import { commandShell, loginShell, loginShellArgs } from "@/lib/loginShell";
 import { usePrefs, useResolvedThemeFull, currentTerminalStack, currentTerminalTheme, currentColorFgBg, currentMinimumContrastRatio } from "@/store/prefs";
@@ -2949,7 +2949,7 @@ const captureArmedRef = useRef(false);
         // away from while this awaited.
         if (isAgent) await maybeRebuildDockerImageForLaunch(task);
         if (cancelled) return;
-        const taskDotEnv = !isAgent ? await loadTaskDotEnv(task?.path) : {};
+        const taskDotEnv = await resolveDotEnvForTab(isAgent, task?.path);
         if (cancelled) return;
         const spawn = await ipc.ptySpawn({
           cwd: task.path,

@@ -58,3 +58,11 @@ export async function loadTaskDotEnv(taskPath?: string): Promise<Record<string, 
   }
   return env;
 }
+
+/** Resolve task dotenv variables for a tab.
+ *  CRITICAL INVARIANT: Agent tabs must NEVER receive task dotenv secrets,
+ *  preventing credential leakage into sandboxed agent environments. */
+export async function resolveDotEnvForTab(isAgent: boolean, taskPath?: string): Promise<Record<string, string>> {
+  if (isAgent) return {};
+  return loadTaskDotEnv(taskPath);
+}

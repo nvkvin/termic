@@ -1,5 +1,10 @@
 import { describe, it, expect, vi } from "vitest";
-import { parseDotEnv, wrapWithDotEnv, loadTaskDotEnv } from "./dotenv";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { parseDotEnv, wrapWithDotEnv, loadTaskDotEnv, resolveDotEnvForTab } from "./dotenv";
+
+const here = dirname(fileURLToPath(import.meta.url));
 
 vi.mock("./ipc", () => ({
   fileReadExternal: vi.fn(async (path: string) => {
@@ -71,5 +76,36 @@ INVALID LINE WITHOUT EQUALS
     expect(env.DB_PORT).toBe("9030");
     expect(env.LOCAL_ONLY).toBe("true");
     expect(env.FOO).toBe("bar baz");
+  });
+
+  describe("agent-exclusion invariant", () => {
+    it("never resolves dotenv variables for agent tabs", async () => {
+      const agentEnv = await resolveDotEnvForTab(true, "/path/to/task");
+      expect(agentEnv).toEqual({});
+    });
+
+    it("resolves dotenv variables for non-agent user terminal tabs", async () => {
+      const termEnv = await resolveDotEnvForTab(false, "/path/to/task");
+      expect(termEnv.STARROCKS_USER).toBe("override_user");
+      expect(termEnv.DB_PORT).toBe("9030");
+    });
+
+    it("pins the agent exclusion invariant in TerminalPane source", () => {
+      // Invariant: agent tabs must never receive host task .env secrets.
+      // Guard against silent regressions where someone removes the `isAgent` check
+      // or unconditionally merges `loadTaskDotEnv` into agent PTY spawns.
+      const terminalPaneSrc = readFileSync(
+        resolve(here, "../components/task/TerminalPane.tsx"),
+        "utf8"
+      );
+      // Assert that resolveDotEnvForTab or loadTaskDotEnv is gated by isAgent
+      const hasGatedCall =
+        /resolveDotEnvForTab\(\s*isAgent/m.test(terminalPaneSrc) ||
+        /!isAgent\s*\?\s*await loadTaskDotEnv/m.test(terminalPaneSrc);
+      expect(hasGatedCall).toBe(true);
+
+      // Assert that loadTaskDotEnv is NOT invoked directly without an agent check
+      expect(terminalPaneSrc).not.toMatch(/await loadTaskDotEnv\(task\?\.path\)/);
+    });
   });
 });
