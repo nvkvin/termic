@@ -27,6 +27,7 @@ import { resyncViewportAfterReveal } from "@/lib/xtermViewportSync";
 import { registerTerminalDropTarget } from "@/lib/terminalDrop";
 import { attachCopyOnSelect } from "@/lib/terminalSelection";
 import { setupImeReplacementBridge } from "@/lib/ime";
+import { loadTaskDotEnv } from "@/lib/dotenv";
 import * as ipc from "@/lib/ipc";
 import { loginShell, loginShellArgs } from "@/lib/loginShell";
 import { TerminalExitedBanner } from "@/components/task/TerminalExitedBanner";
@@ -273,12 +274,14 @@ export function AuxTerminal({ taskId, tabId, taskPath, active, autoFocus, onExit
       const shell = await loginShell();
       if (cancelled) return;
       try {
+        const taskDotEnv = await loadTaskDotEnv(taskPath);
+        if (cancelled) return;
         const { id: ptyId } = await ipc.ptySpawn({
           cwd: taskPath, cmd: shell, args: loginShellArgs(shell),
           // Signal terminal theme so prompts / status bars that honor
           // COLORFGBG (oh-my-zsh themes, starship, etc.) pick the right
-          // colors for the current chrome.
-          env: { COLORFGBG: currentColorFgBg() },
+          // colors for the current chrome, merged with task .env vars.
+          env: { COLORFGBG: currentColorFgBg(), ...taskDotEnv },
           // NEVER pass task_id here. The aux shell is a scratch
           // zsh for the user's own git/grep/etc work - sandboxing it
           // would block exactly the moves the user opened it for
