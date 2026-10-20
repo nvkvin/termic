@@ -2885,7 +2885,8 @@ const captureArmedRef = useRef(false);
           : isRegistryTerminal ? terminalLaunchCommand(tab.cli, task)
           : undefined;
         if (launchCmd) {
-          launchCmd = wrapWithDotEnv(launchCmd);
+          const cliOverrides = isAgent || isRegistryTerminal ? envForCli(tab.cli) : undefined;
+          launchCmd = wrapWithDotEnv(launchCmd, cliOverrides);
         }
         // Spotlight: the host Run tab executes at the REPO ROOT while this
         // task is spotlighted (the root serves the synced changes).

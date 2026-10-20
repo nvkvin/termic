@@ -1,7 +1,7 @@
 import * as ipc from "./ipc";
 
 /** Parse a simple .env file content into key-value environment variables.
- *  Supports unquoted, single-quoted, double-quoted values, and lines prefixed with "export ". */
+ *  Supports unquoted, single-quoted, double-quoted values, inline comments (#), and lines prefixed with "export ". */
 export function parseDotEnv(content: string): Record<string, string> {
   const out: Record<string, string> = {};
   for (const line of content.split("\n")) {
@@ -15,17 +15,32 @@ export function parseDotEnv(content: string): Record<string, string> {
     let val = clean.slice(eqIdx + 1).trim();
     if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
       val = val.slice(1, -1);
+    } else {
+      // Strip unquoted inline comments like `val # comment`
+      const commentIdx = val.search(/\s+#/);
+      if (commentIdx !== -1) {
+        val = val.slice(0, commentIdx).trim();
+      } else if (val.startsWith("#")) {
+        val = "";
+      }
     }
     out[key] = val;
   }
   return out;
 }
 
-/** Prefix a shell command to source .env and .env.local if present in the worktree. */
-export function wrapWithDotEnv(cmd: string): string {
+/** Prefix a shell command to source .env and .env.local if present in the worktree,
+ *  re-applying any explicit CLI environment overrides so settings trumps .env. */
+export function wrapWithDotEnv(cmd: string, overrides?: Record<string, string>): string {
   if (cmd.startsWith("[ -f .env ]")) return cmd;
-  const envPrefix = "[ -f .env ] && set -a && . ./.env 2>/dev/null && set +a; [ -f .env.local ] && set -a && . ./.env.local 2>/dev/null && set +a;";
-  return `${envPrefix} ${cmd}`;
+  let prefix = "[ -f .env ] && set -a && . ./.env 2>/dev/null && set +a; [ -f .env.local ] && set -a && . ./.env.local 2>/dev/null && set +a;";
+  if (overrides && Object.keys(overrides).length > 0) {
+    const exports = Object.entries(overrides)
+      .map(([k, v]) => `export ${k}="${String(v).replace(/"/g, '\\"')}";`)
+      .join(" ");
+    prefix = `${prefix} ${exports};`;
+  }
+  return `${prefix} ${cmd}`;
 }
 
 /** Load .env and .env.local from a task path and return parsed variables. */

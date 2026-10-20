@@ -22,24 +22,26 @@ EMPTY=
 }));
 
 describe("dotenv support", () => {
-  it("parses .env key-value pairs including quotes and export prefix", () => {
+  it("parses .env key-value pairs including quotes, inline comments, and export prefix", () => {
     const raw = `
 # Comment
-STARROCKS_USER=my_user
-STARROCKS_PASSWORD="super secret password"
+STARROCKS_USER=my_user # username for connection
+STARROCKS_PASSWORD="super secret # password"
 export HOST=localhost
-SINGLE='quoted value'
+SINGLE='quoted # value'
 EMPTY=
+COMMENT_ONLY=#only comment
 INVALID LINE WITHOUT EQUALS
 # Another comment
     `;
     const res = parseDotEnv(raw);
     expect(res).toEqual({
       STARROCKS_USER: "my_user",
-      STARROCKS_PASSWORD: "super secret password",
+      STARROCKS_PASSWORD: "super secret # password",
       HOST: "localhost",
-      SINGLE: "quoted value",
+      SINGLE: "quoted # value",
       EMPTY: "",
+      COMMENT_ONLY: "",
     });
   });
 
@@ -47,6 +49,12 @@ INVALID LINE WITHOUT EQUALS
     const wrapped = wrapWithDotEnv("harlequin");
     expect(wrapped).toContain("[ -f .env ] && set -a && . ./.env 2>/dev/null && set +a;");
     expect(wrapped).toContain("[ -f .env.local ] && set -a && . ./.env.local 2>/dev/null && set +a;");
+    expect(wrapped.endsWith(" harlequin")).toBe(true);
+  });
+
+  it("applies explicit environment overrides after sourcing", () => {
+    const wrapped = wrapWithDotEnv("harlequin", { STARROCKS_USER: "custom_user" });
+    expect(wrapped).toContain('export STARROCKS_USER="custom_user";');
     expect(wrapped.endsWith(" harlequin")).toBe(true);
   });
 

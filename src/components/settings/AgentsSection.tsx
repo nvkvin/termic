@@ -33,6 +33,7 @@ import { Toggle } from "@/components/settings/Controls";
 import { usePrefs, type LauncherVisibility } from "@/store/prefs";
 import { launcherVisibilityOf } from "@/lib/launcherUsage";
 import { DropdownRoot, DropdownTrigger, DropdownMenu, DropdownItem, DropdownSeparator } from "@/components/ui/Dropdown";
+import { PopoverRoot, PopoverTrigger, PopoverContent } from "@/components/ui/Popover";
 import { footerReports } from "@/lib/agentContext";
 
 export function AgentsSection() {
@@ -572,13 +573,31 @@ function AgentsTabs({
   // Category filter switch: All / AI Agents / CLI Tools & Terminals
   const [filter, setFilter] = useState<"all" | "agents" | "terminals">("all");
   // Default to first agent; when the list churns (delete current,
-  // add new) drift to a sensible neighbor instead of going blank.
+  // add new) drift to a sensible neighbor in the active filter category.
   useEffect(() => {
     if (agents.length === 0) { setActiveId(null); return; }
     if (!activeId || !agents.some(a => a.id === activeId)) {
-      setActiveId(agents[0].id);
+      if (filter === "terminals") {
+        const firstTerm = agents.find(isTerminalEntry);
+        if (firstTerm) {
+          setActiveId(firstTerm.id);
+        } else {
+          setFilter("all");
+          setActiveId(agents[0].id);
+        }
+      } else if (filter === "agents") {
+        const firstAgent = agents.find(a => !isTerminalEntry(a));
+        if (firstAgent) {
+          setActiveId(firstAgent.id);
+        } else {
+          setFilter("all");
+          setActiveId(agents[0].id);
+        }
+      } else {
+        setActiveId(agents[0].id);
+      }
     }
-  }, [agents, activeId]);
+  }, [agents, activeId, filter, setActiveId]);
   // Auto-jump to a freshly added agent so the user lands on its editor.
   // Waits for the agent to EXIST. A deep link is applied before the async
   // agent load finishes, and the effect above then resets the selection to
@@ -962,6 +981,7 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
   // of sight (the e2e case that removes from the card caught it).
   const hooksInstalled = useApp(s => s.agentHooksInstalled[agent.id] === true);
   const [patternsOpen, setPatternsOpen] = useState<boolean | null>(null);
+  const [iconPickerOpen, setIconPickerOpen] = useState(false);
   useEffect(() => { setPatternsOpen(null); }, [hooksInstalled]);
   const showPatterns = patternsOpen ?? !hooksInstalled;
   const tracked = agent.work_done !== false;
@@ -977,8 +997,8 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
       <header className="mb-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
           {isTerminal || !agent.builtin ? (
-            <DropdownRoot>
-              <DropdownTrigger asChild>
+            <PopoverRoot open={iconPickerOpen} onOpenChange={setIconPickerOpen}>
+              <PopoverTrigger asChild>
                 <button
                   type="button"
                   data-testid="icon-picker-trigger"
@@ -991,8 +1011,8 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
                   <CliIcon cli={agent.icon_id || inherited?.icon_id || agent.id} className="h-4 w-4" />
                   <ChevronDown className="h-3 w-3 opacity-60" />
                 </button>
-              </DropdownTrigger>
-              <DropdownMenu align="start" className="w-56 p-2">
+              </PopoverTrigger>
+              <PopoverContent side="bottom" align="start" className="w-56 p-2">
                 <div className="mb-1.5 px-1 text-[11px] font-semibold text-[var(--color-fg-faint)]">
                   {t("agents.iconPicker")}
                 </div>
@@ -1004,7 +1024,10 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
                         key={icon.id}
                         type="button"
                         data-testid={`icon-pick-${icon.id}`}
-                        onClick={() => onPatch({ icon_id: icon.id })}
+                        onClick={() => {
+                          onPatch({ icon_id: icon.id });
+                          setIconPickerOpen(false);
+                        }}
                         title={icon.label}
                         className={cn(
                           "flex h-8 w-8 items-center justify-center rounded transition-colors cursor-pointer",
@@ -1019,8 +1042,8 @@ function AgentCard({ agent, detected, onPatch, onCommitId, onPatchCaps, onRemove
                     );
                   })}
                 </div>
-              </DropdownMenu>
-            </DropdownRoot>
+              </PopoverContent>
+            </PopoverRoot>
           ) : (
             <span className={cn(CLI_BRAND_COLOR[agent.icon_id || inherited?.icon_id || agent.id] || "text-[var(--color-fg-dim)]")}>
               <CliIcon cli={agent.icon_id || inherited?.icon_id || agent.id} className="h-4 w-4" />
