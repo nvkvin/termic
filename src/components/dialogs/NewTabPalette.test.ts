@@ -19,6 +19,7 @@ import { useUI } from "@/store/ui";
 import { useApp } from "@/store/app";
 import { DEFAULT_BINDINGS, SHORTCUT_DEFS } from "@/lib/shortcuts";
 import { fuzzyMatch } from "@/lib/fuzzy";
+import { getScratchScopes } from "@/components/dialogs/NewTabPalette";
 import type { Agent, Task } from "@/lib/types";
 
 describe("NewTabPalette state and shortcut", () => {
@@ -120,5 +121,15 @@ describe("NewTabPalette fuzzy search logic", () => {
     const resumed = tabs.find(t => t.id === "old-tab-1");
     expect(resumed).toBeDefined();
     expect((resumed as any)?.paneId).toBe("pane-1");
+  });
+
+  it("omits project scratchpad scope when task has no project", () => {
+    const scopesNoProject = getScratchScopes(k => k, false);
+    expect(scopesNoProject.map(s => s.scope)).toEqual(["task", "profile", "global"]);
+    expect(scopesNoProject.some(s => s.scope === "project")).toBe(false);
+
+    const scopesWithProject = getScratchScopes(k => k, true);
+    expect(scopesWithProject.map(s => s.scope)).toEqual(["task", "project", "profile", "global"]);
+    expect(scopesWithProject.some(s => s.scope === "project")).toBe(true);
   });
 });

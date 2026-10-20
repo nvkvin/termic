@@ -39,6 +39,18 @@ export type NewTabPaletteItem = {
   run: () => void;
 };
 
+export function getScratchScopes(
+  t: (key: string) => string,
+  hasProject: boolean,
+): Array<{ scope: "task" | "project" | "profile" | "global"; title: string }> {
+  return [
+    { scope: "task", title: t("newTab.scratchpad") },
+    ...(hasProject ? [{ scope: "project" as const, title: t("newTab.scratchpadProject") }] : []),
+    { scope: "profile", title: t("newTab.scratchpadProfile") },
+    { scope: "global", title: t("newTab.scratchpadGlobal") },
+  ];
+}
+
 export function NewTabPalette() {
   const { t } = useTranslation("task");
   const paletteState = useUI(s => s.newTabPalette);
@@ -154,12 +166,8 @@ export function NewTabPalette() {
     }
 
     // 4. Scratchpads
-    const scratchScopes: Array<{ scope: "task" | "project" | "profile" | "global"; title: string }> = [
-      { scope: "task", title: t("newTab.scratchpad") },
-      { scope: "project", title: t("newTab.scratchpadProject") },
-      { scope: "profile", title: t("newTab.scratchpadProfile") },
-      { scope: "global", title: t("newTab.scratchpadGlobal") },
-    ];
+    const hasProject = !!task?.project_id;
+    const scratchScopes = getScratchScopes(t, hasProject);
     for (const sc of scratchScopes) {
       items.push({
         id: `scratch-${sc.scope}`,
