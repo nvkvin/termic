@@ -320,7 +320,7 @@ export interface AppState {
   setSplitRatio: (taskId: string, splitId: string, ratio: number) => void;
   /** Once the SplitLauncher in an empty leaf has chosen a cli, create the tab
    *  and wire it into the leaf. Returns the new tab id. */
-  addPaneTab: (taskId: string, paneId: string, cli: string) => string;
+  addPaneTab: (taskId: string, paneId: string, cli: string, opts?: { title?: string; command?: string; initialInput?: string }) => string;
   /** Switch which tab is visible in a split pane's mini tab strip. */
   setPaneActiveTab: (taskId: string, paneId: string, tabId: string) => void;
   /** Close a specific tab within a split pane (kills PTY if terminal). */
@@ -403,7 +403,7 @@ export interface AppState {
    *  `sessionId` so the agent resumes via `--resume <uuid>` (see
    *  `decideResume` in TerminalPane) instead of starting a new
    *  conversation. Removes the entry from `closedTabs` once reopened. */
-  resumeClosedTab: (taskId: string, entryId: string, opts?: { afterTabId?: string; beforeTabId?: string }) => void;
+  resumeClosedTab: (taskId: string, entryId: string, opts?: { afterTabId?: string; beforeTabId?: string; paneId?: string | null }) => void;
   setActiveTabId: (taskId: string, tabId: string) => void;
   /** Show a place WITHOUT treating it as a visit — see the implementation. */
   previewPlace: (taskId: string, tabId: string) => void;
@@ -1655,14 +1655,16 @@ export const useApp = create<AppState>((set, get) => ({
     return { splitTree: { ...s.splitTree, [taskId]: updateSplitRatio(tree, splitId, ratio) } };
   }),
 
-  addPaneTab: (taskId, paneId, cli) => {
+  addPaneTab: (taskId, paneId, cli, opts) => {
     const s = get();
     const tabId = crypto.randomUUID();
     const tab: TerminalTab = {
       id: tabId, type: 'terminal',
-      title: cli === 'shell' ? 'Terminal' : agentDisplayName(cli, s.agents),
+      title: opts?.title ?? (cli === 'shell' ? 'Terminal' : agentDisplayName(cli, s.agents)),
       cli,
       paneId,
+      ...(opts?.command ? { command: opts.command } : {}),
+      ...(opts?.initialInput ? { initialInput: opts.initialInput } : {}),
     };
     set(s2 => {
       const tree = s2.splitTree[taskId];
@@ -2475,8 +2477,24 @@ export const useApp = create<AppState>((set, get) => ({
       command: entry.command ?? undefined,
       sessionId: entry.sessionId ?? undefined,
       agentArgs: entry.agentArgs,
+      ...(opts?.paneId ? { paneId: opts.paneId } : {}),
     };
-    get().addTab(taskId, tab, { afterTabId: opts?.afterTabId, beforeTabId: opts?.beforeTabId });
+    if (opts?.paneId) {
+      set(s2 => {
+        const tree = s2.splitTree[taskId];
+        const newTree = tree ? addLeafTab(tree, opts.paneId!, tab.id) : tree;
+        return {
+          tabs: { ...s2.tabs, [taskId]: [...(s2.tabs[taskId] ?? []), tab] },
+          ...(newTree ? { splitTree: { ...s2.splitTree, [taskId]: newTree } } : {}),
+          activePaneId: { ...s2.activePaneId, [taskId]: opts.paneId! },
+        };
+      });
+      focusTerminalTab(tab.id);
+      get().syncDurableTabs(taskId);
+      get().saveSplitLayout(taskId);
+    } else {
+      get().addTab(taskId, tab, { afterTabId: opts?.afterTabId, beforeTabId: opts?.beforeTabId });
+    }
   },
 
   setActiveTabId: (taskId, tabId) => {

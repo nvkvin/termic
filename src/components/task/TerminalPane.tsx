@@ -2709,6 +2709,9 @@ const captureArmedRef = useRef(false);
     const isShell = tab.cli === "shell";
     // The Touch ID install tab: types its line once, never offers.
     const sudoInstallInput = tab.sudoTouchIdInstall;
+    // Initial typed command (new-tab quick search or Touch ID install):
+    // types its line at the first shell prompt, then cleared.
+    const initialInput = tab.initialInput ?? sudoInstallInput;
     // Custom-command tasks run a user-supplied launch command in a
     // login shell — never an agent. They share the shell's "no resume,
     // no agent_id, no per-agent env" treatment; only the spawned argv
@@ -3167,7 +3170,7 @@ const captureArmedRef = useRef(false);
           ? makeCtrlSniffer((kind, payload) => dbg(`raw-${kind}`, payload))
           : null;
         // Cleared to "" once sent, so a respawn of this tab never retypes it.
-        let sudoInputPending = !!sudoInstallInput;
+        let initialInputPending = !!initialInput;
         const tailDecoder = new TextDecoder();
         resumeTailRef.current = "";
         resumeTailOpenRef.current = lastSpawnWasResumeRef.current;
@@ -3179,10 +3182,13 @@ const captureArmedRef = useRef(false);
           }
           // Same wait-for-the-prompt as AuxTerminal's initialInput: bytes
           // written before zsh's line editor is up are echoed twice.
-          if (sudoInputPending && !cancelled) {
-            sudoInputPending = false;
-            patchTab(task.id, tab.id, { sudoTouchIdInstall: "" });
-            ipc.ptyWrite(ptyId, Array.from(new TextEncoder().encode(sudoInstallInput))).catch(() => {});
+          if (initialInputPending && !cancelled) {
+            initialInputPending = false;
+            patchTab(task.id, tab.id, {
+              ...(tab.initialInput ? { initialInput: "" } : {}),
+              ...(tab.sudoTouchIdInstall ? { sudoTouchIdInstall: "" } : {}),
+            });
+            ipc.ptyWrite(ptyId, Array.from(new TextEncoder().encode(initialInput))).catch(() => {});
           }
           oscSniffer?.(u8);
           ctrlSniffer?.(u8);

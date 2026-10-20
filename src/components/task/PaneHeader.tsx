@@ -11,17 +11,12 @@ import { useTranslation } from "react-i18next";
 import type { Task, Tab } from "@/lib/types";
 import type { PaneLeaf } from "@/lib/splitTree";
 import { useApp } from "@/store/app";
+import { useUI } from "@/store/ui";
 import { useShallow } from "zustand/react/shallow";
 import { TabPill } from "./TabBar";
 import { Button } from "@/components/ui/Button";
-import {
-  DropdownRoot, DropdownTrigger, DropdownMenu,
-  DropdownItem, DropdownLabel, DropdownSeparator,
-} from "@/components/ui/Dropdown";
-import { CliIcon, CLI_BRAND_COLOR } from "@/icons/cli";
 import { Plus, X } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { visibleCliIds, isTerminalEntry } from "@/lib/agents";
 import { focusPaneTab } from "@/lib/tabFocus";
 import { requestClosePaneTab, requestClosePaneTabs } from "@/lib/closeTab";
 import { TabContextMenu } from "./TabContextMenu";
@@ -200,11 +195,13 @@ export function PaneHeader({ leaf, task, onClose }: PaneHeaderProps) {
 
   useEffect(() => () => { dragTeardownRef.current?.(); clearDropTarget(); }, []);
 
-  // ⌘T from inside this pane opens this pane's "+" dropdown.
+  // ⌘T from inside this pane opens the quick new-tab palette for this pane.
   useEffect(() => {
     function onNewTabMenu(e: Event) {
       const { taskId: eTaskId, paneId: ePaneId } = (e as CustomEvent).detail ?? {};
-      if (eTaskId === task.id && ePaneId === paneId) setOpen(true);
+      if (eTaskId === task.id && ePaneId === paneId) {
+        useUI.getState().openNewTabPalette(task.id, paneId);
+      }
     }
     window.addEventListener("termic-pane-new-tab-menu", onNewTabMenu);
     return () => window.removeEventListener("termic-pane-new-tab-menu", onNewTabMenu);
@@ -213,31 +210,8 @@ export function PaneHeader({ leaf, task, onClose }: PaneHeaderProps) {
   const activeTaskPaneId = useApp(s => s.activePaneId[task.id] ?? "");
   const isPaneFocused = activeTaskPaneId === paneId;
 
-  const registry        = useApp(s => s.agents);
-  const detectedClis    = useApp(s => s.detectedClis);
-  const visibleClis     = useMemo(
-    () => visibleCliIds(registry.map(a => a.id), registry, detectedClis),
-    [registry, detectedClis],
-  );
-  const customTerminals = useMemo(
-    () => registry.filter(a => isTerminalEntry(a) && !a.disabled),
-    [registry],
-  );
-  const agentEntries = useMemo(
-    () => registry.filter(a => visibleClis.has(a.id)),
-    [registry, visibleClis],
-  );
-
-  const [open, setOpen]               = useState(false);
-  const suppressDropdownReturn        = useRef(false);
   // Drag-ghost label for a tab with no title yet ("Tab"), translated.
   const ghostFallback = t("paneHeader.dragGhostFallback");
-
-  function spawnPaneTab(cli: string) {
-    suppressDropdownReturn.current = true;
-    addPaneTab(task.id, paneId, cli);
-    setOpen(false);
-  }
 
   // Closing the pane's last tab collapses the pane, matching ⌘W
   // (useShortcuts). Without this the X leaves an empty "New pane" behind while
@@ -324,53 +298,17 @@ export function PaneHeader({ leaf, task, onClose }: PaneHeaderProps) {
         )}
       </div>
 
-      {/* + dropdown: same agent/shell menu as the main TabBar. */}
-      <DropdownRoot open={open} onOpenChange={setOpen}>
-        <DropdownTrigger asChild>
-          <Button size="icon" variant="icon" className="h-8 w-8 shrink-0 self-center">
-            <Plus className="h-4 w-4" />
-          </Button>
-        </DropdownTrigger>
-        <DropdownMenu
-          align="end"
-          onCloseAutoFocus={(e) => {
-            if (suppressDropdownReturn.current) {
-              suppressDropdownReturn.current = false;
-              e.preventDefault();
-            }
-          }}
-        >
-          <DropdownLabel>{t("newTab.newTerminal")}</DropdownLabel>
-          <DropdownItem onSelect={() => spawnPaneTab('shell')}>
-            <span className="shrink-0 text-[var(--color-fg-dim)]">
-              <CliIcon cli="shell" className="h-4 w-4" />
-            </span>
-            {t("newTab.terminal")}
-          </DropdownItem>
-          {customTerminals.map(a => (
-            <DropdownItem key={a.id} onSelect={() => spawnPaneTab(a.id)}>
-              <span className={cn("shrink-0", CLI_BRAND_COLOR[a.icon_id] || "text-[var(--color-fg-dim)]")}>
-                <CliIcon cli={a.icon_id} className="h-4 w-4" />
-              </span>
-              {a.display_name}
-            </DropdownItem>
-          ))}
-          {agentEntries.length > 0 && (
-            <>
-              <DropdownSeparator />
-              <DropdownLabel>{t("newTab.newAgent")}</DropdownLabel>
-              {agentEntries.map(a => (
-                <DropdownItem key={a.id} onSelect={() => spawnPaneTab(a.id)}>
-                  <span className={cn("shrink-0", CLI_BRAND_COLOR[a.icon_id] || "text-[var(--color-fg-dim)]")}>
-                    <CliIcon cli={a.icon_id} className="h-4 w-4" />
-                  </span>
-                  {a.display_name}
-                </DropdownItem>
-              ))}
-            </>
-          )}
-        </DropdownMenu>
-      </DropdownRoot>
+      {/* + button: opens the quick new-tab palette for this pane. */}
+      <Button
+        size="icon"
+        variant="icon"
+        data-testid="pane-new-tab-button"
+        onClick={() => useUI.getState().openNewTabPalette(task.id, paneId)}
+        className="h-8 w-8 shrink-0 self-center"
+        title={`${t("newTab.newTerminal")} (⌘T)`}
+      >
+        <Plus className="h-4 w-4" />
+      </Button>
 
       {/* Close pane. */}
       <button

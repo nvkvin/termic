@@ -31,13 +31,13 @@ describe("tab management", () => {
   const openPlusMenu = async () => {
     await browser.waitUntil(
       () => browser.execute((id) => {
-        if (document.querySelector("[role='menu']")) return true;
+        if (document.querySelector("[data-testid='new-tab-palette']") || document.querySelector("[role='menu']")) return true;
         // this task's strip: every visited task stays mounted, hidden, and
         // an unscoped lookup finds the first one, which added the tab to a
         // leftover task whenever an earlier spec left one behind
         const strip = document.querySelector(`[data-task-id="${id}"] [data-main-strip]`);
         const plus = [...(strip?.querySelectorAll("button") ?? [])].find((b) =>
-          b.querySelector("svg.lucide-plus"),
+          b.querySelector("svg.lucide-plus") || b.getAttribute("data-testid") === "new-tab-button",
         );
         if (!plus) return false;
         const el = plus as HTMLElement;
@@ -45,11 +45,11 @@ describe("tab management", () => {
         el.dispatchEvent(new PointerEvent("pointerdown", opts));
         el.dispatchEvent(new PointerEvent("pointerup", opts));
         el.click();
-        return !!document.querySelector("[role='menu']");
+        return !!(document.querySelector("[data-testid='new-tab-palette']") || document.querySelector("[role='menu']"));
       }, taskId),
       { timeout: 15_000, interval: 250, timeoutMsg: "the tab strip's + menu never opened" },
     );
-    await waitVisible("[role='menu']");
+    await waitVisible("[data-testid='new-tab-palette'], [role='menu']");
   };
 
   it("adds a terminal tab via the + menu and switches between tabs", async () => {
@@ -81,12 +81,12 @@ describe("tab management", () => {
     // Open the tab bar's "+" menu through the retrying helper: dispatched
     // once, this is the click the Linux runner drops.
     await openPlusMenu();
-    // Wait for the Radix menu to render, then add a Terminal.
+    // Wait for the launcher palette or Radix menu to render, then add a Terminal.
     await browser.waitUntil(
       () =>
         browser.execute(() =>
-          [...document.querySelectorAll("[role='menuitem']")].some(
-            (e) => e.textContent?.trim() === "Terminal",
+          [...document.querySelectorAll("[data-testid='new-tab-palette'] [data-kind], [role='menuitem']")].some(
+            (e) => (e.textContent?.trim() === "Terminal" || e.querySelector(".truncate")?.textContent?.trim() === "Terminal"),
           ),
         ),
       { timeout: 5_000, timeoutMsg: "the + menu (Terminal item) never opened" },
@@ -141,27 +141,26 @@ describe("tab management", () => {
 
     await openPlusMenu();
     const text = await browser.execute(() =>
+      (document.querySelector("[data-testid='new-tab-palette']") as HTMLElement | null)?.innerText ??
       (document.querySelector("[role='menu']") as HTMLElement | null)?.innerText ?? "");
     expect(text).toContain("Resume");
-    // The whole point: the sessions are NOT on the top level, so the rows the
-    // user came for stay near the cursor however long the history gets.
-    expect(text).not.toContain("now");
 
-    // Hovering the trigger opens the submenu and reveals them.
+    // In the palette, closed tabs are listed with the Resume badge; in a dropdown, under a submenu.
     await browser.execute(() => {
       const t = [...document.querySelectorAll('[aria-haspopup="menu"]')]
         .find(e => e.textContent?.includes("Resume")) as HTMLElement | undefined;
-      if (!t) throw new Error("no Resume submenu trigger");
-      const opts = { bubbles: true, pointerType: "mouse" } as any;
-      t.dispatchEvent(new PointerEvent("pointerover", opts));
-      t.dispatchEvent(new PointerEvent("pointermove", opts));
-      t.click();
+      if (t) {
+        const opts = { bubbles: true, pointerType: "mouse" } as any;
+        t.dispatchEvent(new PointerEvent("pointerover", opts));
+        t.dispatchEvent(new PointerEvent("pointermove", opts));
+        t.click();
+      }
     });
     await browser.waitUntil(
       () => browser.execute(() =>
-        [...document.querySelectorAll("[role='menuitem']")]
+        [...document.querySelectorAll("[data-testid='new-tab-palette'] [data-kind='resume'], [role='menuitem']")]
           .some(e => (e as HTMLElement).innerText.includes("fakeagent"))),
-      { timeout: 8_000, timeoutMsg: "the Resume submenu never listed the closed tab" },
+      { timeout: 8_000, timeoutMsg: "the Resume list never listed the closed tab" },
     );
     await dismissOverlays();
   });
@@ -193,6 +192,12 @@ describe("sidebar task menu: New submenu", () => {
    *  `[role='menuitem']` sweep would mix "Rename" / "Archive task" in. */
   const entriesOfTerminalMenu = () =>
     browser.execute(() => {
+      const pal = document.querySelector("[data-testid='new-tab-palette']");
+      if (pal) {
+        return [...pal.querySelectorAll<HTMLElement>("[data-kind]")].map(
+          (e) => e.querySelector(".truncate")?.textContent?.trim() ?? e.textContent?.trim() ?? "",
+        );
+      }
       const menu = [...document.querySelectorAll("[role='menu']")].find((m) =>
         [...m.querySelectorAll("[role='menuitem']")].some(
           (i) => i.textContent?.trim() === "Terminal",
@@ -313,12 +318,11 @@ describe("sidebar task menu: New submenu", () => {
     const fromSidebar = await openNewSubmenu(taskId!);
     await dismissOverlays();
 
-    // Same list from the "+" button on the active task's strip. Radix opens on
-    // pointerdown, so a bare .click() is not enough.
+    // Same list from the "+" button on the active task's strip.
     await browser.execute((id) => {
       const strip = document.querySelector(`[data-task-id="${id}"] [data-main-strip]`);
       const plus = [...(strip?.querySelectorAll("button") ?? [])].find((b) =>
-        b.querySelector("svg.lucide-plus"),
+        b.querySelector("svg.lucide-plus") || b.getAttribute("data-testid") === "new-tab-button",
       );
       if (!plus) throw new Error("tab '+' button not found");
       const opts = { bubbles: true, pointerType: "mouse", button: 0 } as any;
@@ -329,17 +333,20 @@ describe("sidebar task menu: New submenu", () => {
     await browser.waitUntil(
       () =>
         browser.execute(() =>
+          !!document.querySelector("[data-testid='new-tab-palette']") ||
           [...document.querySelectorAll("[role='menuitem']")].some(
-            (e) => e.textContent?.trim() === "Terminal",
+            (e) => (e.textContent?.trim() === "Terminal" || e.querySelector(".truncate")?.textContent?.trim() === "Terminal"),
           ),
         ),
-      { timeout: 5_000, timeoutMsg: "the + menu never opened" },
+      { timeout: 5_000, timeoutMsg: "the + launcher never opened" },
     );
     const fromTabStrip = await entriesOfTerminalMenu();
     await dismissOverlays();
 
     expect(fromSidebar.length).toBeGreaterThan(1);
-    expect(fromSidebar).toEqual(fromTabStrip);
+    for (const item of fromSidebar) {
+      expect(fromTabStrip).toContain(item);
+    }
   });
 });
 

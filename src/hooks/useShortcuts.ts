@@ -630,7 +630,7 @@ export function useShortcuts() {
           return;
 
         // ⌘T → new tab, behaviour depends on which pane has focus. NO
-        // `isTyping` guard (xterm's hidden textarea).
+        // `isTyping` guard (xterm's hidden textarea). Opens the quick new-tab palette.
         case "new-tab": {
           if (!taskId) return;
           e.preventDefault();
@@ -640,10 +640,9 @@ export function useShortcuts() {
             const focusedLeaf = (document.activeElement as HTMLElement | null)
               ?.closest?.("[data-split-leaf]") as HTMLElement | null;
             const paneId = focusedLeaf?.getAttribute("data-pane-id") ?? null;
-            if (paneId) window.dispatchEvent(new CustomEvent("termic-pane-new-tab-menu", { detail: { taskId, paneId } }));
+            useUI.getState().openNewTabPalette(taskId, paneId);
           } else {
-            // Main pane: open the "+" tab menu.
-            window.dispatchEvent(new CustomEvent("termic-new-tab-menu", { detail: { taskId } }));
+            useUI.getState().openNewTabPalette(taskId);
           }
           return;
         }

@@ -18,6 +18,23 @@ export default {
     now: "刚刚",
   },
 
+  newTabPalette: {
+    srTitle: "新建标签页启动器",
+    srDesc: "搜索并启动智能体、终端和便签",
+    placeholder: "搜索智能体、终端、便签…",
+    noMatching: "未找到匹配的智能体或工具",
+    runCommand: "运行命令：{{cmd}}",
+    runCommandTip: "在新建终端中运行",
+    groupAgents: "智能体",
+    groupTerminals: "终端",
+    groupScratchpads: "便签",
+    groupResume: "恢复已关闭标签",
+    manage: "在设置中配置工具",
+    hintNav: "导航",
+    hintRun: "启动",
+    hintDismiss: "关闭",
+  },
+
   tabBar: {
     broadcastTip: "向此任务的所有智能体广播消息（{{combo}}）",
     splitRightTip: "向右分屏（{{combo}}）",

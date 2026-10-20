@@ -232,6 +232,9 @@ interface UIState {
   commandPaletteView: "root" | "theme";
   /** ⌥⌘P prompt palette — searchable list of library prompts (title only). */
   promptPaletteOpen: boolean;
+  /** Quick new-tab palette (⌘T / + tab) with searchable agents, terminals, and scratchpads.
+   *  `null` when closed; when open, holds the targeted task and optional split pane id. */
+  newTabPalette: { taskId: string; paneId?: string | null } | null;
   /** "Set syntax" picker — which editor tab it will re-highlight; null =
    *  closed. Keyed by tab (not just task) because the pick applies to one
    *  buffer, and the palette can outlive a tab switch underneath it. */
@@ -403,6 +406,8 @@ interface UIState {
   closeCommandPalette: () => void;
   openPromptPalette: () => void;
   closePromptPalette: () => void;
+  openNewTabPalette: (taskId: string, paneId?: string | null) => void;
+  closeNewTabPalette: () => void;
   openSyntaxPalette: (taskId: string, tabId: string) => void;
   closeSyntaxPalette: () => void;
   /** Open the destination picker for `prompt`, seeding the editable body. */
@@ -568,6 +573,7 @@ export const useUI = create<UIState>((set, get) => ({
   commandPaletteOpen: false,
   commandPaletteView: "root",
   promptPaletteOpen: false,
+  newTabPalette: null,
   syntaxPaletteFor: null,
   promptFire: null,
   renameRequest: null,
@@ -669,6 +675,8 @@ export const useUI = create<UIState>((set, get) => ({
   closeCommandPalette:() => set({ commandPaletteOpen: false }),
   openPromptPalette: () => set({ promptPaletteOpen: true }),
   closePromptPalette:() => set({ promptPaletteOpen: false }),
+  openNewTabPalette: (taskId: string, paneId?: string | null) => set({ newTabPalette: { taskId, paneId } }),
+  closeNewTabPalette:() => set({ newTabPalette: null }),
   openSyntaxPalette: (taskId: string, tabId: string) => set({ syntaxPaletteFor: { taskId, tabId } }),
   closeSyntaxPalette:() => set({ syntaxPaletteFor: null }),
   openPromptFire:    (prompt) => set({ promptFire: { prompt, body: prompt.body } }),

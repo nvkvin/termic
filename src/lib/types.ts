@@ -1745,6 +1745,10 @@ export interface TerminalTab extends BaseTab {
    *  shows the offer, since it is where the user is answering it. Runtime
    *  only, never persisted. */
   sudoTouchIdInstall?: string;
+  /** Text typed at the shell's first prompt (e.g. a command run from the
+   *  new-tab palette), then "" once sent so a respawn never retypes it.
+   *  Ending with `\r` runs it. Runtime only, never persisted. */
+  initialInput?: string;
 }
 
 /** One entry in a terminal tab's message queue. `repeat` is the total

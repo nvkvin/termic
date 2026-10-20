@@ -46,6 +46,7 @@ const EXCLUDED: Record<string, string> = {
   openRunCommands: "surfaced",
   openResumeOverride: "surfaced",
   openScratchExport: "needs a specific scratchpad file and scope; reached from scratchpad editor breadcrumb or tree context menu",
+  openNewTabPalette: "needs an active taskId and target pane; reached via Cmd+T or the tab strip + button",
 };
 
 /** `open*` action names declared in the UI store's interface. */

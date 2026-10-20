@@ -20,6 +20,23 @@ export default {
     now: "now",
   },
 
+  newTabPalette: {
+    srTitle: "New tab launcher",
+    srDesc: "Search and launch agents, terminals, and scratchpads",
+    placeholder: "Search agents, terminals, scratchpads...",
+    noMatching: "No matching agents or tools",
+    runCommand: "Run command: {{cmd}}",
+    runCommandTip: "Run in a new terminal",
+    groupAgents: "Agents",
+    groupTerminals: "Terminals",
+    groupScratchpads: "Scratchpads",
+    groupResume: "Resume closed",
+    manage: "Configure tools in Settings",
+    hintNav: "to navigate",
+    hintRun: "to launch",
+    hintDismiss: "to close",
+  },
+
   tabBar: {
     broadcastTip: "Broadcast a message to all agents from this task ({{combo}})",
     splitRightTip: "Split right ({{combo}})",

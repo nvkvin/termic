@@ -15,6 +15,7 @@ import * as ipc from "@/lib/ipc";
 import type { ScratchTab } from "@/lib/types";
 import { SCRATCH_UNTITLED } from "@/lib/scratchTitle";
 import { PROFILE_NS } from "@/lib/profileScope";
+import { addLeafTab } from "@/lib/splitTree";
 
 /** The pads already open in `taskId`'s strip, by scratch id. */
 function openScratchIds(taskId: string): Set<string> {
@@ -111,7 +112,7 @@ export function openScratchFileTab(
  *  pad rather than a tab pointing at nothing. */
 export async function newScratchTab(
   taskId: string,
-  opts?: { scope?: "task" | "project" | "profile" | "global"; projectId?: string }
+  opts?: { scope?: "task" | "project" | "profile" | "global"; projectId?: string; paneId?: string | null }
 ): Promise<string> {
   const scratchId = crypto.randomUUID();
   const scope = opts?.scope ?? "task";
@@ -124,7 +125,22 @@ export async function newScratchTab(
         ? `project_${projectId ?? ""}`
         : taskId;
   const tab = scratchTab({ id: scratchId, scope, projectId, targetId });
-  useApp.getState().addTab(taskId, tab);
+  if (opts?.paneId) {
+    const paneTab = { ...tab, paneId: opts.paneId };
+    useApp.setState(s => {
+      const tree = s.splitTree[taskId];
+      const newTree = tree ? addLeafTab(tree, opts.paneId!, paneTab.id) : tree;
+      return {
+        tabs: { ...s.tabs, [taskId]: [...(s.tabs[taskId] ?? []), paneTab] },
+        ...(newTree ? { splitTree: { ...s.splitTree, [taskId]: newTree } } : {}),
+        activePaneId: { ...s.activePaneId, [taskId]: opts.paneId! },
+      };
+    });
+    useApp.getState().syncDurableTabs(taskId);
+    useApp.getState().saveSplitLayout(taskId);
+  } else {
+    useApp.getState().addTab(taskId, tab);
+  }
   try {
     await ipc.scratchWrite(targetId, scratchId, "");
   } catch (e) {

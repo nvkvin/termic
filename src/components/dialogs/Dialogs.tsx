@@ -38,6 +38,7 @@ import { CommandPalette } from "./CommandPalette";
 import { PromptDestinationDialog } from "./PromptDestinationDialog";
 import { PromptPalette } from "./PromptPalette";
 import { SyntaxPalette } from "./SyntaxPalette";
+import { NewTabPalette } from "./NewTabPalette";
 import { SearchEverywhereDialog } from "./SearchEverywhereDialog";
 import { ScratchCloseDialog } from "./ScratchCloseDialog";
 import { ScratchSaveDialog } from "./ScratchSaveDialog";
@@ -93,6 +94,7 @@ export function Dialogs() {
       <PromptDestinationDialog />
       <PromptPalette />
       <SyntaxPalette />
+      <NewTabPalette />
       <SearchEverywhereDialog />
       <ScratchCloseDialog />
       <ScratchSaveDialog />

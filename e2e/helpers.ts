@@ -702,6 +702,7 @@ export async function dismissOverlays(): Promise<void> {
     // the rest: editor.e2e left one up, and files.e2e's "top result" assertion
     // read the FIRST dialog on screen, which by then was not its own.
     ui.closeSyntaxPalette();
+    ui.closeNewTabPalette();
   });
   await browser.keys(["Escape"]);
   await browser.execute(() => {
@@ -1889,12 +1890,17 @@ export async function clickMenuItemUntilReady(
       // before spending another poll on an empty document.
       const present = await browser.execute((t) =>
         (() => {
-              const open = [...document.querySelectorAll('[role="menu"]')]
-                .filter(m => m.getAttribute("data-state") !== "closed");
+              const open = [
+                ...document.querySelectorAll('[role="menu"]'),
+                ...document.querySelectorAll('[data-testid="new-tab-palette"]'),
+              ].filter(m => m.getAttribute("data-state") !== "closed");
               const scope: (Document | Element)[] = open.length ? [open[open.length - 1]] : [document];
-              return scope.flatMap(sc => [...sc.querySelectorAll<HTMLElement>("[role='menuitem']")]);
+              return scope.flatMap(sc => [
+                ...sc.querySelectorAll<HTMLElement>("[role='menuitem']"),
+                ...sc.querySelectorAll<HTMLElement>("[data-kind]"),
+              ]);
             })().some(
-          (e) => e.textContent?.trim() === t && e.getBoundingClientRect().width > 0,
+          (e) => (e.textContent?.trim() === t || e.querySelector(".truncate")?.textContent?.trim() === t) && e.getBoundingClientRect().width > 0,
         ), text);
       if (reopen && !present) {
         reopens += 1;
@@ -1906,12 +1912,17 @@ export async function clickMenuItemUntilReady(
       }
       const clicked = await browser.execute((t) => {
         const el = (() => {
-              const open = [...document.querySelectorAll('[role="menu"]')]
-                .filter(m => m.getAttribute("data-state") !== "closed");
+              const open = [
+                ...document.querySelectorAll('[role="menu"]'),
+                ...document.querySelectorAll('[data-testid="new-tab-palette"]'),
+              ].filter(m => m.getAttribute("data-state") !== "closed");
               const scope: (Document | Element)[] = open.length ? [open[open.length - 1]] : [document];
-              return scope.flatMap(sc => [...sc.querySelectorAll<HTMLElement>("[role='menuitem']")]);
+              return scope.flatMap(sc => [
+                ...sc.querySelectorAll<HTMLElement>("[role='menuitem']"),
+                ...sc.querySelectorAll<HTMLElement>("[data-kind]"),
+              ]);
             })().find(
-          (e) => e.textContent?.trim() === t && e.getBoundingClientRect().width > 0,
+          (e) => (e.textContent?.trim() === t || e.querySelector(".truncate")?.textContent?.trim() === t) && e.getBoundingClientRect().width > 0,
         );
         if (!el) return false;
         el.click();

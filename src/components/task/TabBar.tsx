@@ -7,8 +7,6 @@ import { useApp, useTaskTabs, useActiveTabId } from "@/store/app";
 import { getAllLeaves } from "@/lib/splitTree";
 import { useTabStripDrag } from "./useTabStripDrag";
 import { Button } from "@/components/ui/Button";
-import { DropdownRoot, DropdownTrigger, DropdownMenu } from "@/components/ui/Dropdown";
-import { NewTabMenuItems } from "./NewTabMenuItems";
 import { newScratchTab, openOrCreateScopedScratchTab } from "@/lib/scratchTabs";
 import { CliIcon, CLI_BRAND_COLOR, CLI_LABEL, resolveIconId } from "@/icons/cli";
 import { Plus, X, GitCompare, FileText, NotepadText, SquareSplitVertical, SquareSplitHorizontal, TerminalSquare, Bell, Megaphone, Pin, Repeat, RotateCw, Square, Play, AlertTriangle } from "lucide-react";
@@ -51,8 +49,6 @@ export function TabBar({ task }: { task: Task }) {
   const openBroadcast = useUI(s => s.openBroadcast);
   const resumeClosedTab = useApp(s => s.resumeClosedTab);
   const setView = useApp(s => s.setView);
-  const [open, setOpen] = useState(false);
-  const suppressDropdownReturn = useRef(false);
   const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null);
 
   // Main strip shows the accent underline on the active tab when the main
@@ -84,14 +80,12 @@ export function TabBar({ task }: { task: Task }) {
     onDropToSplit: (tabId, toPaneId, zone) => useApp.getState().moveTabToSplit(task.id, tabId, toPaneId, zone),
   });
 
-  // ⌘T from the main pane (handled in useShortcuts) opens this menu so
-  // the user can keyboard-pick an agent / terminal. Scoped by taskId —
-  // multiple tasks stay mounted, so only the targeted TabBar
-  // reacts. Radix focuses the first item on open; arrow + Enter from
-  // there. Listener identity is stable across renders → mount once.
+  // ⌘T or + tab menu event opens the searchable new tab palette. Scoped by taskId.
   useEffect(() => {
     const onMenu = (e: Event) => {
-      if ((e as CustomEvent<{ taskId?: string }>).detail?.taskId === task.id) setOpen(true);
+      if ((e as CustomEvent<{ taskId?: string }>).detail?.taskId === task.id) {
+        useUI.getState().openNewTabPalette(task.id);
+      }
     };
     window.addEventListener("termic-new-tab-menu", onMenu);
     return () => window.removeEventListener("termic-new-tab-menu", onMenu);
@@ -103,41 +97,6 @@ export function TabBar({ task }: { task: Task }) {
     setRenaming(null);
   }
 
-
-  // Add a freshly-built terminal tab. `addTab` self-focuses the new
-  // terminal (see store) — all we do here is close the dropdown and
-  // suppress Radix's focus-return so the closing menu doesn't yank
-  // focus back to the '+' trigger before that focus call lands.
-  function addAndFocusTab(tab: Tab) {
-    suppressDropdownReturn.current = true;
-    addTab(task.id, tab);
-    setOpen(false);
-  }
-
-  function spawnTab(cli: string) {
-    const displayName = agentDisplayName(cli, registry);
-    addAndFocusTab({ id: crypto.randomUUID(), type: "terminal", title: displayName, cli });
-  }
-
-  // Reopen a closed tab with its original session id (see resumeClosedTab
-  // in the store) — same dropdown-close/focus dance as addAndFocusTab,
-  // just driven by the store action instead of a locally-built tab.
-  function resumeAndFocus(entryId: string) {
-    suppressDropdownReturn.current = true;
-    resumeClosedTab(task.id, entryId);
-    setOpen(false);
-  }
-
-  /** Plain login-shell tab. Always uncaged: only agents run inside the
-   *  task's seatbelt (see ShellTerminalItem / TerminalPane spawn). */
-  function spawnShellTab() {
-    addAndFocusTab({
-      id: crypto.randomUUID(),
-      type: "terminal",
-      title: "Terminal",
-      cli: "shell",
-    });
-  }
 
   // The store keeps pinned tabs at the head of the strip, so splitting here
   // preserves the display order (and therefore the DOM order the drag code
@@ -228,37 +187,17 @@ export function TabBar({ task }: { task: Task }) {
         >
         {looseTabs.map(renderPill)}
 
-        {/* New tab button — right after the last tab. When scrolling lands,
-            move this back to the sticky right cluster. */}
-        <DropdownRoot open={open} onOpenChange={setOpen}>
-          <DropdownTrigger asChild>
-            <Button size="icon" variant="icon" className="ml-1 h-8 w-8 shrink-0 self-center"><Plus className="h-4 w-4" /></Button>
-          </DropdownTrigger>
-          <DropdownMenu
-            align="start"
-            onCloseAutoFocus={(e) => {
-              if (suppressDropdownReturn.current) {
-                suppressDropdownReturn.current = false;
-                e.preventDefault();
-              }
-            }}
-          >
-            <NewTabMenuItems
-              taskId={task.id}
-              onSpawnCli={spawnTab}
-              onSpawnShell={spawnShellTab}
-              onScratchpad={(scope) => {
-                setOpen(false);
-                void newScratchTab(task.id, {
-                  scope: scope === "global" || scope === "profile" || scope === "project" ? scope : "task",
-                  projectId: scope === "project" ? task.project_id : undefined,
-                });
-              }}
-              onResume={resumeAndFocus}
-              onMore={() => { setOpen(false); setView("history", { projectId: task.project_id }); }}
-            />
-          </DropdownMenu>
-        </DropdownRoot>
+        {/* New tab button — opens the searchable new tab palette (⌘T). */}
+        <Button
+          size="icon"
+          variant="icon"
+          data-testid="new-tab-button"
+          onClick={() => useUI.getState().openNewTabPalette(task.id)}
+          className="ml-1 h-8 w-8 shrink-0 self-center"
+          title={`${t("newTab.newTerminal")} (⌘T)`}
+        >
+          <Plus className="h-4 w-4" />
+        </Button>
         </div>
       </div>
 
