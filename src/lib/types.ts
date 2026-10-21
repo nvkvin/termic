@@ -132,6 +132,9 @@ export interface Project {
    *  per-CLI defaults the proxy enforces. Format mirrors tinyproxy. */
   sandbox_allowed_hosts?: string[];
 
+  /** Mode controlling profile customization inheritance: "inherit" (default), "override", "none". */
+  customization_mode?: "inherit" | "override" | "none";
+
   /** Whether Spotlight is enabled for this project. Disabled by default.
    *  All spotlight UI + commands are gated on this flag. */
   spotlight_enabled?: boolean;

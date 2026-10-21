@@ -1513,6 +1513,36 @@ pub(crate) fn render_profile_with(
             out.push_str(&format!("(allow file-read* file-write* (subpath \"{}\"))\n",
                                   sbpl_escape(&store)));
         }
+
+        // Re-allow read-only access to profile customizations only if the task's project inherits them.
+        let inherits_customizations = crate::load_projects_all()
+            .into_iter()
+            .find(|p| p.id == task.project_id)
+            .map(|p| p.customization_mode == crate::customizations::CustomizationMode::Inherit)
+            .unwrap_or(true);
+
+        if inherits_customizations {
+            if let Ok(pdir) = crate::profile_dir(&task.profile) {
+                let skills_dir = crate::customizations::skills_dir(&pdir);
+                let agents_dir = crate::customizations::agents_dir(&pdir);
+                let mcp_json = crate::customizations::mcp_json_file(&pdir);
+
+                // Narrow allow: ONLY skills, agents, and mcp.json.
+                // NEVER allow mcp.env.local or secret credential files!
+                if skills_dir.exists() {
+                    out.push_str(&format!("(allow file-read* (subpath \"{}\"))\n",
+                                          sbpl_escape(&skills_dir.to_string_lossy())));
+                }
+                if agents_dir.exists() {
+                    out.push_str(&format!("(allow file-read* (subpath \"{}\"))\n",
+                                          sbpl_escape(&agents_dir.to_string_lossy())));
+                }
+                if mcp_json.exists() {
+                    out.push_str(&format!("(allow file-read* (literal \"{}\"))\n",
+                                          sbpl_escape(&mcp_json.to_string_lossy())));
+                }
+            }
+        }
     }
 
     // Control-plane socket deny, emitted per-branch below: it must be the

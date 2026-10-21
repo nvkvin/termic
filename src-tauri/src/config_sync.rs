@@ -61,7 +61,7 @@ pub(crate) const PROJECT_SYNC: &[&str] = &[
     "spotlight_enabled",
     // Kind of project, not a fact about this machine's folder: a plain-folder
     // project is plain everywhere, and the waiting-list rule depends on it.
-    "type", "non_git", "members",
+    "type", "non_git", "members", "customization_mode",
 ];
 
 // Read only by the classification test: export and apply need just SYNC.
@@ -744,6 +744,13 @@ fn list_files(clone: &Path, rev: &str, prefix: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn read_git_file_mode(clone: &Path, rev: &str, path: &str) -> Option<u32> {
+    let out = g(clone, &["ls-tree", rev, path]).ok()?;
+    let line = out.lines().next()?;
+    let mode_str = line.split_whitespace().next()?;
+    u32::from_str_radix(mode_str, 8).ok()
+}
+
 /// Read many files at one rev with a single `git cat-file --batch`.
 fn read_at(clone: &Path, rev: &str, paths: &[String]) -> HashMap<String, Option<Vec<u8>>> {
     use std::io::{Read, Write};
@@ -884,6 +891,9 @@ pub struct SyncRunResult {
     pub prefs: PrefsChanges,
     pub themes_changed: bool,
     pub scratchpad_changed: bool,
+    pub customizations_changed: bool,
+    #[serde(skip)]
+    pub customization_affected_profiles: Vec<ProfileId>,
     pub changes: Vec<Change>,
     pub conflicts: Vec<String>,
     pub error: Option<String>,
@@ -1285,6 +1295,8 @@ pub(crate) fn export_profile(
     }
     export_profile_scratchpad(clone, id, sync_id)?;
     export_project_scratchpads(clone, id, sync_id, sl)?;
+    let pdir = crate::profile_dir(id).map_err(|e| e.to_string())?;
+    crate::customizations::export_customizations(clone, &pdir, sync_id)?;
     Ok(())
 }
 
@@ -1593,11 +1605,14 @@ struct ApplyOutcome {
     changed_profiles: BTreeSet<String>,
     prefs: PrefsChanges,
     themes_changed: bool,
+    customizations_changed: bool,
+    customization_affected_profiles: BTreeSet<ProfileId>,
     scratchpad_changed: bool,
     changes: Vec<Change>,
     tray: Option<Option<bool>>,
     /// A profile was renamed or recoloured from the repo.
     profiles_changed: bool,
+    error: Option<String>,
 }
 
 /// Merge what the repo holds at `new_rev` into local records, for the files
@@ -1927,6 +1942,121 @@ fn apply_paths(
                         }
                     }
                 }
+            } else if let Some(cust_rel) = rel.strip_prefix("customizations/") {
+                let p = std::path::Path::new(cust_rel);
+                let is_valid_rel = p.is_relative() && p.components().all(|c| matches!(c, std::path::Component::Normal(_)));
+                if is_valid_rel && !cust_rel.ends_with(".local") && !cust_rel.contains("secret") && !cust_rel.contains("token") {
+                    if let Ok(pdir) = crate::profile_dir(pid) {
+                        let base_cust = crate::customizations::customizations_dir(&pdir);
+                        let target = base_cust.join(cust_rel);
+                        // Check ancestor safety and ensure base_cust and target aren't symlinks
+                        let base_cust_symlink = base_cust.symlink_metadata().map(|m| m.file_type().is_symlink()).unwrap_or(false);
+                        let mut ancestor_safe = !base_cust_symlink;
+                        let mut cur = base_cust.clone();
+                        for comp in p.components() {
+                            cur.push(comp);
+                            if cur == target { break; }
+                            if cur.symlink_metadata().map(|m| m.file_type().is_symlink()).unwrap_or(false) {
+                                ancestor_safe = false;
+                                break;
+                            }
+                        }
+                        let target_is_symlink = target.symlink_metadata().map(|m| m.file_type().is_symlink()).unwrap_or(false);
+
+                        if ancestor_safe {
+                            if target_is_symlink {
+                                if !dry_run {
+                                    if let Err(e) = fs::remove_file(&target) {
+                                        out.error = Some(format!("Failed to remove destination symlink {}: {e}", target.display()));
+                                        return out;
+                                    }
+                                }
+                            }
+                            match new_files.get(&i.path).and_then(|b| b.as_ref()) {
+                                Some(bytes) => {
+                                    let bytes_changed = fs::read(&target).ok().as_deref() != Some(bytes.as_slice());
+                                    #[cfg(unix)]
+                                    let (mode_changed, want_mode) = {
+                                        use std::os::unix::fs::PermissionsExt;
+                                        let git_mode = read_git_file_mode(clone, new_rev, &i.path);
+                                        let want_exec = git_mode.map(|m| (m & 0o111) != 0).unwrap_or(false);
+                                        let target_exec = target.metadata().map(|m| (m.permissions().mode() & 0o111) != 0).unwrap_or(false);
+                                        let mode_diff = target.exists() && want_exec != target_exec;
+                                        (mode_diff, if want_exec { 0o755 } else { 0o644 })
+                                    };
+                                    #[cfg(not(unix))]
+                                    let (mode_changed, want_mode) = (false, 0o644);
+
+                                    if bytes_changed || mode_changed {
+                                        if !dry_run {
+                                            if let Some(parent) = target.parent() {
+                                                if let Err(e) = fs::create_dir_all(parent) {
+                                                    out.error = Some(format!("Failed to create parent directory for {}: {e}", target.display()));
+                                                    return out;
+                                                }
+                                            }
+                                            if bytes_changed {
+                                                if let Err(e) = fs::write(&target, bytes) {
+                                                    out.error = Some(format!("Failed to write customization file {}: {e}", target.display()));
+                                                    return out;
+                                                }
+                                            }
+                                            #[cfg(unix)]
+                                            {
+                                                use std::os::unix::fs::PermissionsExt;
+                                                if let Err(e) = fs::set_permissions(&target, fs::Permissions::from_mode(want_mode)) {
+                                                    out.error = Some(format!("Failed to set permissions on {}: {e}", target.display()));
+                                                    return out;
+                                                }
+                                            }
+                                            out.changes.push(Change {
+                                                kind: "customization".into(),
+                                                target: cust_rel.into(),
+                                                action: if target.exists() && !bytes_changed { "chmod" } else if target.exists() { "update" } else { "add" }.into(),
+                                                profile: Some(sid.clone()),
+                                                ..Default::default()
+                                            });
+                                            out.customizations_changed = true;
+                                            out.customization_affected_profiles.insert(pid.clone());
+                                        } else {
+                                            out.changes.push(Change {
+                                                kind: "customization".into(),
+                                                target: cust_rel.into(),
+                                                action: if target.exists() && !bytes_changed { "chmod" } else if target.exists() { "update" } else { "add" }.into(),
+                                                profile: Some(sid.clone()),
+                                                ..Default::default()
+                                            });
+                                            out.customizations_changed = true;
+                                            out.customization_affected_profiles.insert(pid.clone());
+                                        }
+                                    }
+                                }
+                                None => {
+                                    if target.exists() {
+                                        out.changes.push(Change {
+                                            kind: "customization".into(),
+                                            target: cust_rel.into(),
+                                            action: "remove".into(),
+                                            profile: Some(sid.clone()),
+                                            ..Default::default()
+                                        });
+                                        if !dry_run {
+                                            if let Err(e) = fs::remove_file(&target) {
+                                                out.error = Some(format!("Failed to remove customization file {}: {e}", target.display()));
+                                                return out;
+                                            }
+                                            out.customizations_changed = true;
+                                            out.customization_affected_profiles.insert(pid.clone());
+                                        } else {
+                                            out.customizations_changed = true;
+                                            out.customization_affected_profiles.insert(pid.clone());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             } else if let Some(file_rel) = rel.strip_prefix("scratch/") {
                 if file_rel.is_empty() || file_rel.contains("..") {
                     continue;
@@ -1989,8 +2119,19 @@ fn apply_paths(
 
         let projects_changed = serde_json::to_value(&projects).ok() != projects_before;
         let settings_changed = serde_json::to_value(&settings).ok() != settings_before;
-        if projects_changed || settings_changed {
+        if projects_changed || settings_changed || out.customization_affected_profiles.contains(pid) {
             out.changed_profiles.insert(ns.clone());
+        }
+        if projects_changed {
+            let old_projects: Vec<Project> = projects_before.and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
+            for p in &projects {
+                if let Some(old_p) = old_projects.iter().find(|op| op.id == p.id) {
+                    if old_p.customization_mode != p.customization_mode {
+                        out.customization_affected_profiles.insert(pid.clone());
+                        out.customizations_changed = true;
+                    }
+                }
+            }
         }
         if !dry_run {
             if projects_changed {
@@ -2213,6 +2354,9 @@ pub(crate) fn run_core(clone: &Path, opts: &RunOpts) -> SyncRunResult {
                     Ok(paths) => {
                         let inputs: Vec<PathInput> = paths.into_iter().map(|p| PathInput { path: p, base: base_up.clone() }).collect();
                         let o = apply_paths(clone, "HEAD", &inputs, &bound, opts.prefs, opts.finder, false);
+                        if let Some(e) = o.error {
+                            return fail(res, state, e);
+                        }
                         merge_outcome(&mut res, o);
                     }
                     Err(e) => return fail(res, state, e),
@@ -2226,6 +2370,9 @@ pub(crate) fn run_core(clone: &Path, opts: &RunOpts) -> SyncRunResult {
         // in this same run.
         if opts.adopt && !bound.is_empty() {
             let adopted = adopt_profiles(clone, opts, &state, &bound);
+            if let Some(err) = adopted.outcome.error {
+                return fail(res, state, err);
+            }
             if !adopted.bound.is_empty() {
                 bound.extend(adopted.bound);
                 res.profiles_changed |= adopted.created;
@@ -2285,8 +2432,17 @@ fn merge_outcome(res: &mut SyncRunResult, o: ApplyOutcome) {
     }
     res.themes_changed |= o.themes_changed;
     res.scratchpad_changed |= o.scratchpad_changed;
+    res.customizations_changed |= o.customizations_changed;
+    for pid in o.customization_affected_profiles {
+        if !res.customization_affected_profiles.contains(&pid) {
+            res.customization_affected_profiles.push(pid);
+        }
+    }
     res.profiles_changed |= o.profiles_changed;
     res.changes.extend(o.changes);
+    if res.error.is_none() {
+        res.error = o.error;
+    }
 }
 
 /// Whether a change is announced and kept until dismissed: a YOLO or sandbox
@@ -2500,6 +2656,9 @@ pub(crate) fn bind(clone: &Path, id: &ProfileId, folder: Option<String>, opts: &
             }
             let bound = vec![(id.clone(), sid.clone())];
             first = apply_paths(clone, "HEAD", &inputs, &bound, opts.prefs, opts.finder, false);
+            if let Some(e) = first.error {
+                return SyncRunResult { error: Some(e), ..Default::default() };
+            }
         }
     }
     // The window applies `first.prefs` after this returns; until it does,
@@ -2524,6 +2683,12 @@ pub(crate) fn bind(clone: &Path, id: &ProfileId, folder: Option<String>, opts: &
     res.prefs = prefs;
     res.themes_changed |= first_res.themes_changed;
     res.scratchpad_changed |= first_res.scratchpad_changed;
+    res.customizations_changed |= first_res.customizations_changed;
+    for pid in first_res.customization_affected_profiles {
+        if !res.customization_affected_profiles.contains(&pid) {
+            res.customization_affected_profiles.push(pid);
+        }
+    }
     let mut state = load_state();
     record_notices(&mut state, &res.changes);
     save_state(&state);
@@ -2597,6 +2762,9 @@ pub(crate) fn resolve(clone: &Path, opts: &RunOpts) -> SyncRunResult {
         })
         .collect();
     let o = apply_paths(clone, &nu, &inputs, &bound, opts.prefs, opts.finder, false);
+    if let Some(e) = o.error {
+        return SyncRunResult { error: Some(e), ..Default::default() };
+    }
     let merged = opts.prefs.map(|p| merged_snapshot(p, &o.prefs));
     merge_outcome(&mut res, o);
     if let Err(e) = g(clone, &["reset", "-q", "--hard", &nu]) {
@@ -2623,6 +2791,12 @@ pub(crate) fn resolve(clone: &Path, opts: &RunOpts) -> SyncRunResult {
     after.prefs = prefs;
     after.themes_changed |= res.themes_changed;
     after.scratchpad_changed |= res.scratchpad_changed;
+    after.customizations_changed |= res.customizations_changed;
+    for pid in res.customization_affected_profiles {
+        if !after.customization_affected_profiles.contains(&pid) {
+            after.customization_affected_profiles.push(pid);
+        }
+    }
     let mut state = load_state();
     record_notices(&mut state, &after.changes);
     save_state(&state);
@@ -2783,6 +2957,9 @@ fn adopt_profiles(clone: &Path, opts: &RunOpts, state: &SyncState, bound: &[(Pro
         let inputs = first_connect_inputs(clone, "HEAD", &f.sync_id, false);
         let one = vec![(id.clone(), f.sync_id.clone())];
         let o = apply_paths(clone, "HEAD", &inputs, &one, opts.prefs, opts.finder, false);
+        if out.outcome.error.is_none() {
+            out.outcome.error = o.error.clone();
+        }
         out.outcome.changes.push(profile_change(&f.name, "add", &f.sync_id));
         out.outcome.changed_profiles.extend(o.changed_profiles);
         out.outcome.prefs.shared.extend(o.prefs.shared);
@@ -2791,6 +2968,10 @@ fn adopt_profiles(clone: &Path, opts: &RunOpts, state: &SyncState, bound: &[(Pro
         }
         out.outcome.themes_changed |= o.themes_changed;
         out.outcome.scratchpad_changed |= o.scratchpad_changed;
+        out.outcome.customizations_changed |= o.customizations_changed;
+        for pid in o.customization_affected_profiles {
+            out.outcome.customization_affected_profiles.insert(pid);
+        }
         // Its own profile.json is where the name it was just created with
         // came from: nothing to report as a rename.
         out.outcome.changes.extend(o.changes.into_iter().filter(|c| !(c.kind == "profile" && c.action == "update")));
@@ -3164,11 +3345,26 @@ fn after_apply(app: &tauri::AppHandle, res: &SyncRunResult) {
         crate::rebuild_tray_menu(app);
         let _ = app.emit("termic://profiles-changed", ());
     }
-    if !res.changed_profiles.is_empty() || res.themes_changed || res.scratchpad_changed || !res.prefs.is_empty() || !res.changes.is_empty() {
+    if res.customizations_changed || !res.customization_affected_profiles.is_empty() {
+        let all_projects = crate::load_projects_all();
+        let all_tasks = crate::load_tasks_all();
+        for pid in &res.customization_affected_profiles {
+            if let Ok(pdir) = crate::profile_dir(pid) {
+                let _ = crate::customizations::ensure_builtin_skills(&pdir);
+                for p in all_projects.iter().filter(|p| &p.profile == pid) {
+                    for t in all_tasks.iter().filter(|t| !t.archived && t.project_id == p.id) {
+                        let _ = crate::customizations::reconcile_customizations(&pdir, std::path::Path::new(&t.path), p.customization_mode, &t.cli);
+                    }
+                }
+            }
+        }
+    }
+    if !res.changed_profiles.is_empty() || res.themes_changed || res.scratchpad_changed || res.customizations_changed || !res.prefs.is_empty() || !res.changes.is_empty() {
         let _ = app.emit("termic://sync-changed", serde_json::json!({
             "profiles": res.changed_profiles,
             "themes": res.themes_changed,
             "scratchpad": res.scratchpad_changed,
+            "customizations": res.customizations_changed,
         }));
     }
 }
@@ -3444,6 +3640,7 @@ mod tests {
             watch_pr_comments: true,
             watch_untrusted_comments: true,
             extra_named_ports: vec!["DB_PORT".into()],
+            customization_mode: crate::customizations::CustomizationMode::Inherit,
             profile: ProfileId::Root,
         }
     }

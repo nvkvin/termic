@@ -866,6 +866,57 @@ pub fn build_spec(
         ));
     }
 
+    // 3.6. Profile customizations (read-only mount so symlinked skills/personas resolve in container)
+    let inherits_customizations = crate::load_projects_all()
+        .into_iter()
+        .find(|p| p.id == task.project_id)
+        .map(|p| p.customization_mode == crate::customizations::CustomizationMode::Inherit)
+        .unwrap_or(true);
+
+    if inherits_customizations {
+        if let Ok(pdir) = crate::profile_dir(&task.profile) {
+            let skills_dir = crate::customizations::skills_dir(&pdir);
+            if skills_dir.exists() {
+                let p = canonicalize_or_keep(&skills_dir.to_string_lossy());
+                if !mounts.iter().any(|m| m.host == p) {
+                    mounts.push(Mount::implicit(
+                        p.clone(),
+                        in_container(&p),
+                        true,
+                        "profile skills",
+                        false,
+                    ));
+                }
+            }
+            let agents_dir = crate::customizations::agents_dir(&pdir);
+            if agents_dir.exists() {
+                let p = canonicalize_or_keep(&agents_dir.to_string_lossy());
+                if !mounts.iter().any(|m| m.host == p) {
+                    mounts.push(Mount::implicit(
+                        p.clone(),
+                        in_container(&p),
+                        true,
+                        "profile personas",
+                        false,
+                    ));
+                }
+            }
+            let mcp_json = crate::customizations::mcp_json_file(&pdir);
+            if mcp_json.exists() {
+                let p = canonicalize_or_keep(&mcp_json.to_string_lossy());
+                if !mounts.iter().any(|m| m.host == p) {
+                    mounts.push(Mount::implicit(
+                        p.clone(),
+                        in_container(&p),
+                        true,
+                        "profile MCP configuration",
+                        false,
+                    ));
+                }
+            }
+        }
+    }
+
     // 4. The persistent per-agent config dir (login + sessions + MCP +
     //    customizations), shared across all Docker tasks of this
     //    agent. rw. Plus relocation env if the agent supports it.
