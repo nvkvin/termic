@@ -1,5 +1,11 @@
 # UI
 
+Profile-wide **Agent customizations** live in Settings → Agents & Terminals,
+above the per-agent controls. The block opens and initializes the current
+profile's folder, shows its actual path, explains the file layout, and offers
+the default for projects without an explicit override. Project settings keep
+the inheritance override. See [customizations.md](customizations.md).
+
 ## Conventions
 
 - Colors are `@theme` CSS vars in `index.css`. Accent terracotta `#d97757`, dark surfaces `#0a0a0a`-`#181818`. Never hard-code hex outside `@theme`.

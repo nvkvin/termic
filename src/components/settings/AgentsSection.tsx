@@ -15,6 +15,7 @@ import { useApp } from "@/store/app";
 import { agentOverrides, resolveAgent } from "@/lib/agents";
 import { fitRows, fitMinHeight } from "@/lib/fitRows";
 import { AgentHooksBlock } from "./AgentHooksBlock";
+import { AgentCustomizationsBlock } from "./AgentCustomizationsBlock";
 import type { Agent, CliInfo } from "@/lib/types";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -407,6 +408,8 @@ export function AgentsSection() {
       </p>
 
       {err && <div className="text-[13px] text-[var(--color-err)]">{err}</div>}
+
+      <AgentCustomizationsBlock />
 
       {/* Above the per-agent tabs, because what is left in it is one decision
           across all of them (install for every agent) plus the coverage count.

@@ -1222,6 +1222,9 @@ export function onPtyExit(ptyId: string, cb: (code: number | null) => void): Pro
 // ───────────────────────────── settings & discovery ─────────────────────────────
 
 export const settingsLoad  = () => invoke<Settings>("settings_load");
+export const customizationsOpen = () => invoke<string>("customizations_open");
+export const customizationsSetEnabled = (enabled: boolean) =>
+  invoke<void>("customizations_set_enabled", { enabled });
 /** Where a project's worktrees land with no per-project override, i.e. purely
  *  from the global default tasks path. Placeholder for Repository → Tasks path. */
 export const projectTasksPathDefault = (projectId: string) =>

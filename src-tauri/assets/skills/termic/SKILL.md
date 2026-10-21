@@ -1,6 +1,6 @@
 ---
 name: termic
-description: Control and orchestrate agents within Termic. Use when creating subtasks, delegating work across projects, requesting peer reviews in a parallel tab, coordinating via asynchronous send/report-back, writing scratchpads, or updating sidebar tab status.
+description: Control agents within Termic and configure shared skills, MCP servers, and agent personas. Use for task delegation across projects, peer reviews in tabs, asynchronous coordination, or profile customization formats and model selection.
 ---
 
 # Termic Task Orchestration
@@ -8,6 +8,21 @@ description: Control and orchestrate agents within Termic. Use when creating sub
 Termic runs coding agents in isolated git-worktree tasks inside a GUI app. The `termic` CLI (absolute path in `$TERMIC_CLI` when available) is a remote control for the running app. If `$TERMIC_CLI` is unset, the control plane is not enabled; do not go looking for the binary. If it refuses with "control plane unavailable", you are inside a sandboxed task and may not use it; say so instead of retrying.
 
 Run `"$TERMIC_CLI" help --json` once for every command, flag, and exit code. `$TERMIC_TASK` / `$TERMIC_TASK_ID` name the task you are running inside, if any; prefer the id for self-reference (names can be renamed or reused).
+
+## Read the Relevant Reference
+
+- Before using customizations with a particular harness, read
+  [Harness compatibility](references/compatibility.md). Termic has native
+  adapters for Claude Code, Codex, and Antigravity; other harnesses have
+  partial compatibility that differs between skills, personas, and MCP.
+- To add or edit shared skills, MCP servers, or agent personas, read
+  [Customizations and profiles](references/customizations.md). It contains
+  file formats, secret handling, profile paths, inheritance, and persona
+  model tiers. Edit customization sources, rather than generated task files.
+- To use MCP instead of the CLI, find every tool's CLI counterpart, or
+  coordinate tasks across projects, read
+  [CLI and MCP control surface](references/control-surface.md). Use the
+  installed CLI's `help --json` or MCP `tools/list` for exact arguments.
 
 ## Choose the Launch Configuration Explicitly
 
@@ -149,4 +164,6 @@ Termic on two computers of one network can be paired. `"$TERMIC_CLI" peer list` 
 - `"$TERMIC_CLI" project add <path>` - register a repo.
 
 DO NOT run `"$TERMIC_CLI" quit`. It exists for the human at the keyboard, not for you. It kills EVERY agent in EVERY task.
-Never edit Termic's own data files; the CLI is the only interface.
+Never edit Termic's internal settings, registry, or task data files directly;
+use the control interface. User-authored files under the profile's
+`customizations/` folder are the intentional exception, described above.

@@ -1,5 +1,11 @@
 # Data model
 
+Profile customizations live in `<profile_dir>/customizations/`.
+`Settings.customizations_enabled` is the profile-wide default (absent/null
+means enabled); `Project.customization_mode` is `default`, `inherit`,
+`override`, or `none`, with missing project fields following the profile
+default. Both choices sync. See [customizations.md](customizations.md).
+
 ## Directories
 
 Three directories, different owners:

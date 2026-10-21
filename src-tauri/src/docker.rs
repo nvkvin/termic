@@ -870,7 +870,7 @@ pub fn build_spec(
     let inherits_customizations = crate::load_projects_all()
         .into_iter()
         .find(|p| p.id == task.project_id)
-        .map(|p| p.customization_mode == crate::customizations::CustomizationMode::Inherit)
+        .map(|p| crate::effective_customization_mode(&p) == crate::customizations::CustomizationMode::Inherit)
         .unwrap_or(true);
 
     if inherits_customizations {

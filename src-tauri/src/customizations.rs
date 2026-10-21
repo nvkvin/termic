@@ -18,13 +18,25 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum CustomizationMode {
-    /// Use profile customizations as defaults whenever the project repository lacks them.
+    /// Follow the current profile's default.
     #[default]
+    Default,
+    /// Use profile customizations as defaults whenever the project repository lacks them.
     Inherit,
     /// Strictly use files committed in the project repository; suppress profile customizations.
     Override,
     /// Completely isolated; do not link any profile customizations.
     None,
+}
+
+impl CustomizationMode {
+    pub fn resolve(self, profile_enabled: bool) -> Self {
+        match self {
+            Self::Default if profile_enabled => Self::Inherit,
+            Self::Default => Self::Override,
+            explicit => explicit,
+        }
+    }
 }
 
 /// Abstract model capability tier for subagent personas.
@@ -122,8 +134,21 @@ pub fn parse_persona_description(content: &str) -> Option<String> {
 
 /// Converts a generic Markdown persona into a Claude Markdown agent definition with ModelTier mapping.
 pub fn render_claude_agent_md(name: &str, content: &str) -> String {
+    render_markdown_agent(name, content, "claude")
+}
+
+/// Antigravity discovers workspace personas in `.agents/agents`, not
+/// `.agents/subagents`. Its persona model field accepts flash/pro tiers.
+pub fn render_antigravity_agent_md(name: &str, content: &str) -> String {
+    render_markdown_agent(name, content, "agy")
+}
+
+fn render_markdown_agent(name: &str, content: &str, provider: &str) -> String {
     let tier = parse_persona_model_tier(content);
-    let (model, _) = resolve_model_tier(tier, "claude");
+    let (mut model, _) = resolve_model_tier(tier, provider);
+    if provider == "agy" && tier == ModelTier::Fast {
+        model = Some("flash");
+    }
     let desc = parse_persona_description(content).unwrap_or_else(|| format!("{name} persona"));
 
     let (frontmatter_lines, body) = if let Some(rest) = content.strip_prefix("---") {
@@ -214,22 +239,43 @@ pub fn mcp_json_file(profile_dir: &Path) -> PathBuf {
 
 /// Canonical bundled `termic` orchestration skill text.
 const BUILTIN_TERMIC_SKILL: &str = include_str!("../assets/skills/termic/SKILL.md");
+const BUILTIN_TERMIC_REFERENCES: &[(&str, &str)] = &[
+    ("customizations.md", include_str!("../assets/skills/termic/references/customizations.md")),
+    ("control-surface.md", include_str!("../assets/skills/termic/references/control-surface.md")),
+    ("compatibility.md", include_str!("../assets/skills/termic/references/compatibility.md")),
+];
 
 /// Seeds the built-in `termic` orchestration skill into the profile's skills directory.
 ///
-/// Uses `.termic-version` to track whether the file has been modified by the user.
+/// Uses `.termic-version` for the entrypoint and per-reference version markers
+/// to track whether each file has been modified by the user.
 /// If unmodified or missing, updates to the bundled version. If the user edited it,
 /// preserves their changes across updates.
 pub fn ensure_builtin_skills(profile_dir: &Path) -> std::io::Result<()> {
     let termic_skill_dir = skills_dir(profile_dir).join("termic");
-    let skill_path = termic_skill_dir.join("SKILL.md");
-    let version_path = termic_skill_dir.join(".termic-version");
-
     fs::create_dir_all(&termic_skill_dir)?;
     fs::create_dir_all(agents_dir(profile_dir))?;
     fs::create_dir_all(mcp_dir(profile_dir))?;
 
-    let bundled_hash = sha256_hex(BUILTIN_TERMIC_SKILL.as_bytes());
+    seed_builtin_file(
+        &termic_skill_dir.join("SKILL.md"),
+        &termic_skill_dir.join(".termic-version"),
+        BUILTIN_TERMIC_SKILL,
+    )?;
+    let references = termic_skill_dir.join("references");
+    fs::create_dir_all(&references)?;
+    for (name, content) in BUILTIN_TERMIC_REFERENCES {
+        seed_builtin_file(
+            &references.join(name),
+            &references.join(format!(".{name}.termic-version")),
+            content,
+        )?;
+    }
+    Ok(())
+}
+
+fn seed_builtin_file(skill_path: &Path, version_path: &Path, bundled: &str) -> std::io::Result<()> {
+    let bundled_hash = sha256_hex(bundled.as_bytes());
 
     if skill_path.exists() {
         if let Ok(existing) = fs::read_to_string(&skill_path) {
@@ -248,8 +294,8 @@ pub fn ensure_builtin_skills(profile_dir: &Path) -> std::io::Result<()> {
         }
     }
 
-    fs::write(&skill_path, BUILTIN_TERMIC_SKILL.as_bytes())?;
-    let _ = fs::write(&version_path, bundled_hash.as_bytes());
+    fs::write(skill_path, bundled.as_bytes())?;
+    fs::write(version_path, bundled_hash.as_bytes())?;
     Ok(())
 }
 
@@ -392,13 +438,14 @@ fn validate_manifest_rel(rel: &str) -> bool {
 /// 2. Syndicates into `.agents/skills/` (universal cross-agent standard).
 /// 3. Records created links and generated files in `.termic/customization-manifest.json` (ancestor & leaf guarded).
 /// 4. When mode is `Override` or `None`, cleans up Termic-owned links and generated adapter files.
-/// 5. Automatically excludes `.agents`, `.codex/agents`, `.mcp.json`, and `.termic` in `.git/info/exclude`.
+/// 5. Excludes individual syndicated links and generated files in `.git/info/exclude`.
 pub fn reconcile_customizations(
     profile_dir: &Path,
     wt: &Path,
     mode: CustomizationMode,
     _agent_id: &str,
 ) -> std::io::Result<()> {
+    let mode = mode.resolve(true);
     let manifest_path = wt.join(MANIFEST_REL);
     let manifest_safe = is_path_and_ancestors_safe(wt, &manifest_path);
     let mut manifest: CustomizationManifest = if manifest_safe && manifest_path.is_file() {
@@ -454,28 +501,19 @@ pub fn reconcile_customizations(
         }
     }
 
-    // 3. Syndicate personas into `<wt>/.agents/subagents/<name>.md`
+    // 3. Antigravity's native workspace persona location. Generate metadata
+    // because portable sources need not declare a native `name` or `model`.
     let prof_agents = agents_dir(profile_dir);
     if prof_agents.is_dir() {
-        let wt_agents_sub = wt.join(".agents").join("subagents");
-        if create_owned_dir_hierarchy(wt, &wt_agents_sub).is_ok() {
-            if let Ok(entries) = fs::read_dir(&prof_agents) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if !path.is_file() {
-                        continue;
-                    }
-                    let name = entry.file_name();
-                    let target = path;
-                    let link = wt_agents_sub.join(&name);
-                    let rel_link = format!(".agents/subagents/{}", name.to_string_lossy());
-
-                    if ensure_link(wt, &target, &link) {
-                        ensure_task_git_excluded(wt, &rel_link);
-                        new_owned.push(rel_link);
-                    }
-                }
+        for entry in fs::read_dir(&prof_agents)? {
+            let path = entry?.path();
+            if !path.is_file() || path.extension().and_then(|v| v.to_str()) != Some("md") {
+                continue;
             }
+            let name = path.file_stem().unwrap_or_default().to_string_lossy();
+            let rel = format!(".agents/agents/{name}/agent.md");
+            let text = render_antigravity_agent_md(&name, &fs::read_to_string(&path)?);
+            write_generated_adapter(wt, &rel, &text, &manifest.owned_files, &mut new_owned_files)?;
         }
     }
 
@@ -613,6 +651,11 @@ pub fn reconcile_customizations(
 
         // 4.1 Native MCP adapter for Codex (.codex/config.toml)
         let _ = reconcile_codex_mcp(wt, &prof_mcp, &mut manifest);
+
+        // Antigravity uses its own workspace filename and remote URL key.
+        let raw = fs::read(&prof_mcp)?;
+        let text = render_antigravity_mcp(&raw)?;
+        write_generated_adapter(wt, ".agents/mcp_config.json", &text, &manifest.owned_files, &mut new_owned_files)?;
     } else {
         // Source MCP was removed: clean up previously owned Codex MCP servers
         let _ = cleanup_codex_mcp(wt, &manifest.owned_mcp_servers);
@@ -811,7 +854,8 @@ fn cleanup_manifest_links(wt: &Path, profile_dir: &Path, owned: &[String]) {
 
 fn cleanup_manifest_files(wt: &Path, files: &HashMap<String, String>) {
     for (rel, expected_hash) in files {
-        if (!rel.starts_with(".codex/agents/") && !rel.starts_with(".claude/agents/")) || rel.contains("..") {
+        if (!rel.starts_with(".codex/agents/") && !rel.starts_with(".claude/agents/")
+            && !rel.starts_with(".agents/agents/") && rel != ".agents/mcp_config.json") || rel.contains("..") {
             continue;
         }
         let p = wt.join(rel);
@@ -827,6 +871,49 @@ fn cleanup_manifest_files(wt: &Path, files: &HashMap<String, String>) {
             }
         }
     }
+}
+
+/// Preserve project files, edited generated files, and symlink destinations.
+/// New adapters share the manifest's existing hash-based ownership contract.
+fn write_generated_adapter(
+    wt: &Path,
+    rel: &str,
+    text: &str,
+    previous: &HashMap<String, String>,
+    active: &mut HashMap<String, String>,
+) -> std::io::Result<()> {
+    let dest = wt.join(rel);
+    if !is_path_and_ancestors_safe(wt, &dest) {
+        return Ok(());
+    }
+    if dest.exists() {
+        let existing = fs::read(&dest)?;
+        if previous.get(rel) != Some(&sha256_hex(&existing)) {
+            return Ok(());
+        }
+    }
+    if let Some(parent) = dest.parent() {
+        create_owned_dir_hierarchy(wt, parent)?;
+    }
+    fs::write(&dest, text)?;
+    ensure_task_git_excluded(wt, rel);
+    active.insert(rel.to_string(), sha256_hex(text.as_bytes()));
+    Ok(())
+}
+
+fn render_antigravity_mcp(bytes: &[u8]) -> std::io::Result<String> {
+    let mut doc: serde_json::Value = serde_json::from_slice(bytes)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    if let Some(servers) = doc.get_mut("mcpServers").and_then(|v| v.as_object_mut()) {
+        for server in servers.values_mut().filter_map(|v| v.as_object_mut()) {
+            let url = server.remove("url").or_else(|| server.remove("httpUrl"));
+            if let Some(url) = url {
+                server.entry("serverUrl").or_insert(url);
+            }
+        }
+    }
+    serde_json::to_string_pretty(&doc)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }
 
 fn reconcile_codex_mcp(
@@ -1399,6 +1486,87 @@ mod tests {
     }
 
     #[test]
+    fn antigravity_native_files_are_rendered_and_removed_with_their_sources() {
+        let dir = tempdir().unwrap();
+        let profile = dir.path().join("profile");
+        let wt = dir.path().join("wt");
+        ensure_builtin_skills(&profile).unwrap();
+        fs::create_dir_all(wt.join(".git/info")).unwrap();
+        for (name, tier, model) in [("fast-review", "fast", "flash"), ("code-review", "balanced", "flash"), ("deep-review", "reasoning", "pro")] {
+            fs::write(agents_dir(&profile).join(format!("{name}.md")), format!("---\ndescription: Reviews changes\nmodel_tier: {tier}\n---\nReview code.\n")).unwrap();
+            // The native format must not require a name in portable sources.
+            let text = render_antigravity_agent_md(name, &fs::read_to_string(agents_dir(&profile).join(format!("{name}.md"))).unwrap());
+            assert!(text.contains(&format!("name: {name}\n")));
+            assert!(text.contains(&format!("model: {model}\n")));
+        }
+        fs::write(mcp_json_file(&profile), r#"{"mcpServers":{"termic-native-stdio":{"command":"example-helper","args":["--stdio"]},"termic-native-http":{"url":"https://example.com/mcp","headers":{"Authorization":"${AUTHORIZATION}"}}}}"#).unwrap();
+        fs::write(mcp_env_file(&profile), "AUTHORIZATION=synthetic-local-only-secret").unwrap();
+        reconcile_customizations(&profile, &wt, CustomizationMode::Inherit, "agy").unwrap();
+        let config_path = wt.join(".agents/mcp_config.json");
+        let config: serde_json::Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+        assert_eq!(config["mcpServers"]["termic-native-http"]["serverUrl"], "https://example.com/mcp");
+        assert!(config["mcpServers"]["termic-native-http"].get("url").is_none());
+        assert_eq!(config["mcpServers"]["termic-native-stdio"]["args"][0], "--stdio");
+        assert!(!fs::read_to_string(&config_path).unwrap().contains("synthetic-local-only-secret"));
+        let excludes = fs::read_to_string(wt.join(".git/info/exclude")).unwrap();
+        assert!(excludes.lines().any(|l| l == ".agents/mcp_config.json"));
+        assert!(!excludes.lines().any(|l| l == ".agents"));
+        reconcile_customizations(&profile, &wt, CustomizationMode::Inherit, "codex").unwrap();
+        assert!(wt.join(".agents/agents/deep-review/agent.md").is_file(), "Opening another CLI must retain native files");
+        fs::remove_file(agents_dir(&profile).join("deep-review.md")).unwrap();
+        fs::remove_file(mcp_json_file(&profile)).unwrap();
+        reconcile_customizations(&profile, &wt, CustomizationMode::Inherit, "agy").unwrap();
+        assert!(!config_path.exists());
+        assert!(!wt.join(".agents/agents/deep-review/agent.md").exists());
+        reconcile_customizations(&profile, &wt, CustomizationMode::None, "agy").unwrap();
+        assert!(!wt.join(".agents/agents/fast-review/agent.md").exists());
+    }
+
+    #[test]
+    fn antigravity_adapter_preserves_project_and_user_edited_files() {
+        let dir = tempdir().unwrap();
+        let profile = dir.path().join("profile");
+        let wt = dir.path().join("wt");
+        ensure_builtin_skills(&profile).unwrap();
+        fs::create_dir_all(wt.join(".agents/agents/reviewer")).unwrap();
+        fs::write(agents_dir(&profile).join("reviewer.md"), "Profile persona").unwrap();
+        fs::write(mcp_json_file(&profile), r#"{"mcpServers":{}}"#).unwrap();
+        let agent_path = wt.join(".agents/agents/reviewer/agent.md");
+        let mcp_path = wt.join(".agents/mcp_config.json");
+        fs::write(&agent_path, "Project persona").unwrap();
+        reconcile_customizations(&profile, &wt, CustomizationMode::Inherit, "agy").unwrap();
+        assert_eq!(fs::read_to_string(&agent_path).unwrap(), "Project persona");
+        fs::write(&mcp_path, "User-edited MCP").unwrap();
+        for mode in [CustomizationMode::Inherit, CustomizationMode::Inherit, CustomizationMode::Override] {
+            reconcile_customizations(&profile, &wt, mode, "agy").unwrap();
+            assert_eq!(fs::read_to_string(&agent_path).unwrap(), "Project persona");
+            assert_eq!(fs::read_to_string(&mcp_path).unwrap(), "User-edited MCP");
+        }
+    }
+
+    #[test]
+    fn antigravity_adapter_does_not_write_through_symlinks() {
+        let dir = tempdir().unwrap();
+        let profile = dir.path().join("profile");
+        let wt = dir.path().join("wt");
+        let outside = dir.path().join("outside");
+        ensure_builtin_skills(&profile).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::create_dir_all(wt.join(".agents")).unwrap();
+        fs::write(agents_dir(&profile).join("reviewer.md"), "Review code.").unwrap();
+        fs::write(mcp_json_file(&profile), r#"{"mcpServers":{}}"#).unwrap();
+        let external_file = outside.join("mcp.json");
+        fs::write(&external_file, "External file").unwrap();
+        crate::fs_link::symlink_any(&outside, wt.join(".agents/agents")).unwrap();
+        crate::fs_link::symlink_any(&external_file, wt.join(".agents/mcp_config.json")).unwrap();
+        reconcile_customizations(&profile, &wt, CustomizationMode::Inherit, "agy").unwrap();
+        reconcile_customizations(&profile, &wt, CustomizationMode::None, "agy").unwrap();
+        assert_eq!(fs::read_to_string(&external_file).unwrap(), "External file");
+        assert!(!outside.join("reviewer").exists());
+        assert!(wt.join(".agents/mcp_config.json").symlink_metadata().unwrap().file_type().is_symlink());
+    }
+
+    #[test]
     fn ensures_builtin_termic_skill_seeding_and_hash_guard() {
         let dir = tempdir().unwrap();
         ensure_builtin_skills(dir.path()).unwrap();
@@ -1415,6 +1583,51 @@ mod tests {
         // Re-seeding preserves user edit
         ensure_builtin_skills(dir.path()).unwrap();
         assert!(fs::read_to_string(&skill_file).unwrap().contains("User addition"));
+    }
+
+    #[test]
+    fn bundled_references_upgrade_independently_and_preserve_user_edits() {
+        let dir = tempdir().unwrap();
+        let skill = skills_dir(dir.path()).join("termic");
+        fs::create_dir_all(&skill).unwrap();
+        // A pre-references install with a customized entrypoint still gains
+        // the reference files, without replacing its user's instructions.
+        fs::write(skill.join("SKILL.md"), "User orchestration instructions").unwrap();
+        ensure_builtin_skills(dir.path()).unwrap();
+        assert_eq!(fs::read_to_string(skill.join("SKILL.md")).unwrap(), "User orchestration instructions");
+        let refs = skill.join("references");
+        for (name, text) in BUILTIN_TERMIC_REFERENCES {
+            assert_eq!(fs::read_to_string(refs.join(name)).unwrap(), *text);
+        }
+        let worktree = dir.path().join("worktree");
+        fs::create_dir_all(&worktree).unwrap();
+        reconcile_customizations(dir.path(), &worktree, CustomizationMode::Inherit, "codex").unwrap();
+        assert_eq!(
+            fs::read_to_string(worktree.join(".agents/skills/termic/references/customizations.md")).unwrap(),
+            BUILTIN_TERMIC_REFERENCES[0].1,
+        );
+
+        fs::write(refs.join("customizations.md"), "User customization guide").unwrap();
+        let old = "Previous bundled control guide";
+        fs::write(refs.join("control-surface.md"), old).unwrap();
+        fs::write(refs.join(".control-surface.md.termic-version"), sha256_hex(old.as_bytes())).unwrap();
+        ensure_builtin_skills(dir.path()).unwrap();
+        assert_eq!(fs::read_to_string(refs.join("customizations.md")).unwrap(), "User customization guide");
+        assert_eq!(fs::read_to_string(refs.join("control-surface.md")).unwrap(), BUILTIN_TERMIC_REFERENCES[1].1);
+
+        // Recreate a missing reference even when its version marker remains.
+        fs::remove_file(refs.join("control-surface.md")).unwrap();
+        ensure_builtin_skills(dir.path()).unwrap();
+        assert_eq!(fs::read_to_string(refs.join("control-surface.md")).unwrap(), BUILTIN_TERMIC_REFERENCES[1].1);
+    }
+
+    #[test]
+    fn bundled_reference_failures_are_reported() {
+        let dir = tempdir().unwrap();
+        let skill = skills_dir(dir.path()).join("termic");
+        fs::create_dir_all(&skill).unwrap();
+        fs::write(skill.join("references"), "Occupied").unwrap();
+        assert!(ensure_builtin_skills(dir.path()).is_err());
     }
 
     #[test]

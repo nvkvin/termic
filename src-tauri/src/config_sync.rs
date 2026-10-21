@@ -95,7 +95,7 @@ pub(crate) const SETTINGS_SYNC: &[&str] = &[
     "agents",
     "sandbox_default_allowed_hosts", "docker_rebuild_frequency",
     "docker_rebuild_auto", "file_tree_exclude", "fetch_before_create",
-    "close_action", "tray_enabled", "auto_install_hooks",
+    "close_action", "tray_enabled", "auto_install_hooks", "customizations_enabled",
     // Repo-relative names (`.claude`, `.mcp.json`), the same on every machine.
     "worktree_symlink_paths",
 ];
@@ -2119,6 +2119,12 @@ fn apply_paths(
 
         let projects_changed = serde_json::to_value(&projects).ok() != projects_before;
         let settings_changed = serde_json::to_value(&settings).ok() != settings_before;
+        let old_customizations_enabled = settings_before.as_ref()
+            .and_then(|v| v.get("customizations_enabled")).and_then(|v| v.as_bool()).unwrap_or(true);
+        if old_customizations_enabled != settings.customizations_enabled.unwrap_or(true) {
+            out.customization_affected_profiles.insert(pid.clone());
+            out.customizations_changed = true;
+        }
         if projects_changed || settings_changed || out.customization_affected_profiles.contains(pid) {
             out.changed_profiles.insert(ns.clone());
         }
@@ -3353,7 +3359,7 @@ fn after_apply(app: &tauri::AppHandle, res: &SyncRunResult) {
                 let _ = crate::customizations::ensure_builtin_skills(&pdir);
                 for p in all_projects.iter().filter(|p| &p.profile == pid) {
                     for t in all_tasks.iter().filter(|t| !t.archived && t.project_id == p.id) {
-                        let _ = crate::customizations::reconcile_customizations(&pdir, std::path::Path::new(&t.path), p.customization_mode, &t.cli);
+                        let _ = crate::customizations::reconcile_customizations(&pdir, std::path::Path::new(&t.path), crate::effective_customization_mode(p), &t.cli);
                     }
                 }
             }
@@ -3673,6 +3679,7 @@ mod tests {
 
     fn full_settings() -> Settings {
         Settings {
+            customizations_enabled: Some(true),
             repos_dir: "/Users/u/src".into(),
             welcomed: true,
             agents: vec![full_agent()],
