@@ -1966,7 +1966,7 @@ fn apply_paths(
                         if ancestor_safe {
                             if target_is_symlink {
                                 if !dry_run {
-                                    if let Err(e) = fs::remove_file(&target) {
+                                    if let Err(e) = crate::fs_link::remove_link(&target) {
                                         out.error = Some(format!("Failed to remove destination symlink {}: {e}", target.display()));
                                         return out;
                                     }

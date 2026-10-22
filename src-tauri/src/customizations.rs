@@ -1209,7 +1209,7 @@ pub fn export_customizations(clone: &Path, profile_dir: &Path, sync_id: &str) ->
     let dst = clone.join("profiles").join(sync_id).join("customizations");
     if let Ok(dst_meta) = dst.symlink_metadata() {
         if dst_meta.file_type().is_symlink() {
-            fs::remove_file(&dst).map_err(|e| format!("Failed to remove destination symlink {}: {e}", dst.display()))?;
+            crate::fs_link::remove_link(&dst).map_err(|e| format!("Failed to remove destination symlink {}: {e}", dst.display()))?;
         }
     }
 
@@ -1282,7 +1282,7 @@ fn export_customizations_recursive(
             // Destination leaf safety: NEVER write through a destination symlink!
             if let Ok(target_meta) = target.symlink_metadata() {
                 if target_meta.file_type().is_symlink() {
-                    fs::remove_file(&target)
+                    crate::fs_link::remove_link(&target)
                         .map_err(|e| format!("Failed to remove destination symlink {}: {e}", target.display()))?;
                 }
             }
@@ -1314,7 +1314,7 @@ fn prune_stale_customizations(dst_root: &Path, current: &Path, exported: &BTreeS
             .map_err(|e| format!("Failed to read metadata for {}: {e}", path.display()))?;
 
         if meta.file_type().is_symlink() {
-            fs::remove_file(&path)
+            crate::fs_link::remove_link(&path)
                 .map_err(|e| format!("Failed to remove stale symlink {}: {e}", path.display()))?;
             continue;
         }
@@ -1735,7 +1735,7 @@ mod tests {
         ensure_builtin_skills(&p).unwrap();
         reconcile_customizations(&p, &w, CustomizationMode::Inherit, "codex").unwrap();
         let leaf = w.join(".agents/skills/termic");
-        fs::remove_file(&leaf).unwrap();
+        crate::fs_link::remove_link(&leaf).unwrap();
         fs::write(&leaf, b"user replacement").unwrap();
         reconcile_customizations(&p, &w, CustomizationMode::Inherit, "codex").unwrap();
         assert_eq!(fs::read(&leaf).unwrap(), b"user replacement");
@@ -1871,9 +1871,8 @@ mod tests {
         let other = skills_dir(&p).join("user-choice");
         fs::create_dir_all(&other).unwrap();
         let leaf = w.join(".agents/skills/termic");
-        fs::remove_file(&leaf).unwrap();
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&other, &leaf).unwrap();
+        crate::fs_link::remove_link(&leaf).unwrap();
+        crate::fs_link::symlink_any(&other, &leaf).unwrap();
         reconcile_customizations(&p, &w, CustomizationMode::None, "codex").unwrap();
         assert!(leaf.symlink_metadata().is_ok(), "Cleanup deleted user-retargeted profile symlink");
     }
@@ -2195,6 +2194,39 @@ mod tests {
     }
 
     #[test]
+    fn export_removes_directory_links_without_touching_their_targets() {
+        let t = tempdir().unwrap();
+        let p = t.path().join("profile");
+        fs::create_dir_all(skills_dir(&p)).unwrap();
+        fs::write(skills_dir(&p).join("note.md"), "Profile skill").unwrap();
+        let clone = t.path().join("clone");
+        let dst = clone.join("profiles/test/customizations");
+        fs::create_dir_all(dst.parent().unwrap()).unwrap();
+        let outside = t.path().join("outside");
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("keep.md"), "External file").unwrap();
+        crate::fs_link::symlink_any(&outside, &dst).unwrap();
+        export_customizations(&clone, &p, "test").unwrap();
+        assert!(!dst.symlink_metadata().unwrap().file_type().is_symlink());
+        let leaf = dst.join("skills/note.md");
+        fs::remove_file(&leaf).unwrap();
+        crate::fs_link::symlink_any(&outside, &leaf).unwrap();
+        let stale = dst.join("stale-link");
+        crate::fs_link::symlink_any(&outside, &stale).unwrap();
+        let missing = t.path().join("deleted-target");
+        fs::create_dir(&missing).unwrap();
+        let dangling = dst.join("dangling-link");
+        crate::fs_link::symlink_any(&missing, &dangling).unwrap();
+        fs::remove_dir(&missing).unwrap();
+        export_customizations(&clone, &p, "test").unwrap();
+        assert_eq!(fs::read_to_string(&leaf).unwrap(), "Profile skill");
+        assert!(stale.symlink_metadata().is_err());
+        assert!(dangling.symlink_metadata().is_err());
+        assert_eq!(fs::read_to_string(outside.join("keep.md")).unwrap(), "External file");
+        assert_eq!(fs::read_dir(&outside).unwrap().count(), 1);
+    }
+
+    #[test]
     fn pruning_error_must_not_report_success() {
         #[cfg(unix)]
         use std::os::unix::fs::PermissionsExt;
@@ -2206,14 +2238,27 @@ mod tests {
         fs::write(stale_dir.join("old.md"), b"stale skill").unwrap();
         #[cfg(unix)]
         fs::set_permissions(&stale_dir, fs::Permissions::from_mode(0o555)).unwrap();
+        // Windows deletion permissions belong to ACLs, not Unix mode bits.
+        // An open handle without FILE_SHARE_DELETE makes removal fail there.
+        #[cfg(windows)]
+        let locked = {
+            use std::os::windows::fs::OpenOptionsExt;
+            fs::OpenOptions::new().read(true).share_mode(0)
+                .open(stale_dir.join("old.md")).unwrap()
+        };
         let outcome = export_customizations(&clone, &p, "test");
         #[cfg(unix)]
         fs::set_permissions(&stale_dir, fs::Permissions::from_mode(0o755)).unwrap();
+        #[cfg(windows)]
+        drop(locked);
         assert!(
             outcome.is_err(),
             "export returned success despite failed removal; stale file exists: {}",
             stale_dir.join("old.md").exists()
         );
+        assert!(stale_dir.join("old.md").exists(), "failed removal lost the stale file");
+        export_customizations(&clone, &p, "test").unwrap();
+        assert!(!stale_dir.join("old.md").exists(), "retry did not remove the stale file");
     }
 
     #[test]

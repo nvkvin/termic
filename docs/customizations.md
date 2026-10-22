@@ -58,6 +58,11 @@ Customizations are reconciled into tasks when agents start, and when project
 inheritance, the profile default, or synced customizations change. A running
 agent may need restarting to discover new files or MCP servers.
 
+Removing owned links leaves their targets intact, including Windows
+directory symlinks and junctions whose source folder has been deleted.
+Export and pruning use the same link-removal rules; deletion failures are
+reported so sync can retry.
+
 ## Native discovery
 
 The adapters write different files for each CLI:

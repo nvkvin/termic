@@ -64,6 +64,20 @@ mod imp {
             Err(io::Error::other(String::from_utf8_lossy(&out.stderr).trim().to_string()))
         }
     }
+
+    #[test]
+    fn removes_a_dangling_junction() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target");
+        let link = dir.path().join("link");
+        std::fs::create_dir(&target).unwrap();
+        // Force the unprivileged fallback even when symlinks are available.
+        junction(&target, &link).unwrap();
+        std::fs::remove_dir(&target).unwrap();
+        assert!(std::fs::symlink_metadata(&link).is_ok());
+        super::remove_link(&link).unwrap();
+        assert!(std::fs::symlink_metadata(&link).is_err());
+    }
 }
 
 #[cfg(test)]
@@ -101,6 +115,19 @@ mod tests {
         assert!(std::fs::symlink_metadata(&dl).is_err());
         assert_eq!(std::fs::read_to_string(d.join("x.txt")).unwrap(), "hi");
     }
+
+    #[test]
+    fn removes_a_dangling_directory_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target");
+        let link = dir.path().join("link");
+        std::fs::create_dir(&target).unwrap();
+        symlink_any(&target, &link).unwrap();
+        std::fs::remove_dir(&target).unwrap();
+        assert!(std::fs::symlink_metadata(&link).is_ok());
+        remove_link(&link).unwrap();
+        assert!(std::fs::symlink_metadata(&link).is_err());
+    }
 }
 
 /// Remove a link made by `symlink_any` without touching its target. On
@@ -108,10 +135,16 @@ mod tests {
 /// directory entry that `remove_file` refuses with "Access is denied", and
 /// `remove_dir` removes the link alone; everywhere else it is `remove_file`.
 pub fn remove_link(link: &Path) -> io::Result<()> {
-    match std::fs::remove_file(link) {
-        Err(e) if cfg!(windows) && link.is_dir() => std::fs::remove_dir(link).map_err(|_| e),
-        other => other,
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileTypeExt;
+        // Inspect the link itself: is_dir() follows the target and returns
+        // false for a dangling directory symlink or junction.
+        if std::fs::symlink_metadata(link)?.file_type().is_symlink_dir() {
+            return std::fs::remove_dir(link);
+        }
     }
+    std::fs::remove_file(link)
 }
 
 /// `fs::remove_dir_all`, patient on Windows.
