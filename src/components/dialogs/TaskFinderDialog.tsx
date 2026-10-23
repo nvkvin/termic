@@ -48,6 +48,7 @@ export const FILTER_OPTIONS: readonly FilterOption[] = [
   { key: "3", column: "settled", labelKey: "taskFinder.filterSettled", accent: COL_ACCENT.settled },
   { key: "4", column: "attention", labelKey: "taskFinder.filterAttention", accent: COL_ACCENT.attention },
   { key: "5", column: "review", labelKey: "taskFinder.filterReview", accent: COL_ACCENT.review },
+  { key: "6", column: "backlog", labelKey: "taskFinder.filterBacklog", accent: COL_ACCENT.backlog },
 ];
 
 export function resolveStatusQualifier(
@@ -519,7 +520,7 @@ export function TaskFinderDialog() {
                       )}
                       style={isActive && accent ? { color: accent } : undefined}
                     >
-                      <kbd className="rounded border border-[var(--color-border)] px-1 py-0.2 text-[9.5px] font-mono leading-none">
+                      <kbd className="rounded border border-[var(--color-border)] px-1 py-0.5 text-[9.5px] font-mono leading-none">
                         {kbd(`⌘${key}`)}
                       </kbd>
                       <span>{t(labelKey)}</span>

@@ -508,9 +508,10 @@ names, git branches, and agent CLIs. Enter activates the task
 whichever element was previously focused.
 
 Quick filter shortcuts switch or toggle status filters on the fly: ⌘1
-(All), ⌘2 (Working), ⌘3 (Settled), ⌘4 (Attention), and ⌘5 (Review). The
-footer bar renders interactive hint buttons displaying the current active
-filter and its key chord (⌘1..5 on macOS, Ctrl+1..5 off macOS).
+(All), ⌘2 (Working), ⌘3 (Settled), ⌘4 (Attention), ⌘5 (Review), and ⌘6
+(Backlog). The footer bar renders interactive hint buttons displaying the
+current active filter and its key chord (⌘1..6 on macOS, Ctrl+1..6 off
+macOS).
 
 ## Add selection to agent (⇧⌘L)
 

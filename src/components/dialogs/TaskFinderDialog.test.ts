@@ -180,15 +180,16 @@ describe("resolveStatusQualifier and STATUS_QUALIFIER_RE", () => {
 });
 
 describe("FILTER_OPTIONS and quick filter shortcuts", () => {
-  it("defines 5 filter options with numeric shortcuts 1-5", () => {
-    expect(FILTER_OPTIONS).toHaveLength(5);
-    expect(FILTER_OPTIONS.map(o => o.key)).toEqual(["1", "2", "3", "4", "5"]);
-    expect(FILTER_OPTIONS.map(o => o.column)).toEqual([null, "working", "settled", "attention", "review"]);
+  it("defines 6 filter options with numeric shortcuts 1-6", () => {
+    expect(FILTER_OPTIONS).toHaveLength(6);
+    expect(FILTER_OPTIONS.map(o => o.key)).toEqual(["1", "2", "3", "4", "5", "6"]);
+    expect(FILTER_OPTIONS.map(o => o.column)).toEqual([null, "working", "settled", "attention", "review", "backlog"]);
     expect(FILTER_OPTIONS[0].labelKey).toBe("taskFinder.filterAll");
     expect(FILTER_OPTIONS[1].labelKey).toBe("taskFinder.filterWorking");
     expect(FILTER_OPTIONS[2].labelKey).toBe("taskFinder.filterSettled");
     expect(FILTER_OPTIONS[3].labelKey).toBe("taskFinder.filterAttention");
     expect(FILTER_OPTIONS[4].labelKey).toBe("taskFinder.filterReview");
+    expect(FILTER_OPTIONS[5].labelKey).toBe("taskFinder.filterBacklog");
   });
 
   it("resolves all filter label keys in en and zh-CN", () => {
@@ -209,12 +210,14 @@ describe("FILTER_OPTIONS and quick filter shortcuts", () => {
     expect(tEn("taskFinder.filterSettled")).toBe("settled");
     expect(tEn("taskFinder.filterAttention")).toBe("attention");
     expect(tEn("taskFinder.filterReview")).toBe("review");
+    expect(tEn("taskFinder.filterBacklog")).toBe("backlog");
 
     expect(tZh("taskFinder.filterAll")).toBe("全部");
     expect(tZh("taskFinder.filterWorking")).toBe("进行中");
     expect(tZh("taskFinder.filterSettled")).toBe("已完成");
     expect(tZh("taskFinder.filterAttention")).toBe("需要注意");
     expect(tZh("taskFinder.filterReview")).toBe("审查中");
+    expect(tZh("taskFinder.filterBacklog")).toBe("未开始");
   });
 
   it("toggles and resets filter column states correctly", () => {
@@ -336,6 +339,17 @@ describe("mounted TaskFinderDialog interactions", () => {
     });
     expect(filterBtn("review").dataset.active).toBe("true");
     expect(document.querySelectorAll("[data-row]")).toHaveLength(1);
+  });
+
+  it("toggles backlog filter with shortcut 6", async () => {
+    await pressShortcut("6");
+    expect(filterBtn("backlog").dataset.active).toBe("true");
+    expect(document.querySelectorAll("[data-row]")).toHaveLength(1);
+    expect(document.querySelector("[data-row]")?.textContent).toContain("backlog-task");
+
+    await pressShortcut("6");
+    expect(filterBtn("all").dataset.active).toBe("true");
+    expect(document.querySelectorAll("[data-row]")).toHaveLength(2);
   });
 
   it("resets query and filter state on reopen", async () => {

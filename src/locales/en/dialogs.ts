@@ -589,6 +589,7 @@ export default {
     filterSettled: "settled",
     filterAttention: "attention",
     filterReview: "review",
+    filterBacklog: "backlog",
     count_one: "{{count}} task",
     count_other: "{{count}} tasks",
   },
